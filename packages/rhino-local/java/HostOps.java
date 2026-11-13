@@ -17,6 +17,7 @@ import javax.crypto.spec.PBEKeySpec;
 import javax.crypto.spec.SecretKeySpec;
 import org.mozilla.javascript.BaseFunction;
 import org.mozilla.javascript.Context;
+import org.mozilla.javascript.Function;
 import org.mozilla.javascript.JavaScriptException;
 import org.mozilla.javascript.Scriptable;
 import org.mozilla.javascript.ScriptableObject;
@@ -49,9 +50,68 @@ public final class HostOps extends BaseFunction {
     }
   }
 
+  /**
+   * True while Rhino is filling {@code JavaScriptException.details} from the thrown value.
+   *
+   * <p>The constructor calls {@code getDetails}, which calls the value's {@code toString}. That
+   * call is the engine wrapping a throw, and it must not be tallied: an uncaught denial is the
+   * measured HTTP 400, and a script that catches the denial and ignores it still grants. A
+   * script's own {@code String(e)} is the same JS function with no {@code JavaScriptException}
+   * frame, so call order is not the distinction. {@code <init>} is matched as well as {@code getDetails}: the
+   * constructor is the frame that remains if {@code getDetails} is inlined into it. HotSpot
+   * reconstructs inlined frames, so both names are normally present.
+   */
+  static boolean inExceptionDetails() {
+    for (StackTraceElement frame : Thread.currentThread().getStackTrace()) {
+      if (!"org.mozilla.javascript.JavaScriptException".equals(frame.getClassName())) {
+        continue;
+      }
+      String method = frame.getMethodName();
+      if ("getDetails".equals(method) || "<init>".equals(method)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   private Object dispatch(Context cx, Scriptable scope, Object[] args) throws Exception {
     String op = (String) Context.jsToJava(args[0], String.class);
     switch (op) {
+      // A real java.util.ArrayList holding a script array's elements, presented as AIC presents
+      // a list (java/SequenceFacade.java). A script string is stored as a Java string, so the
+      // list's own contains(), indexOf() and toString() answer as Java does; a script object is
+      // stored as it is.
+      case "javaList":
+        return JavaCollections.list(cx, scope, args.length > 1 ? args[1] : null,
+            args.length > 2 && Context.toBoolean(args[2]));
+      // A real java.util.HashSet holding a script array's elements (node state keys).
+      case "javaSet":
+        return JavaCollections.set(cx, scope, args.length > 1 ? args[1] : null);
+      // The elements of a list this harness handed out, as a new script array, or null when the
+      // value is not such a list. The harness reads a list a script returned or grew this way.
+      case "javaListItems":
+        return JavaCollections.items(cx, scope, args.length > 1 ? args[1] : null);
+      // Prelude only: the invalid-scope replacement asks whether this toString is Rhino's wrap.
+      case "exceptionDetails":
+        return Boolean.valueOf(inExceptionDetails());
+      // NativeJavaMethod.scriptSignature (Rhino 1.7.14) names a Wrapper by
+      // unwrap().getClass().getName() in Java, which does not consult the class
+      // shutter, and otherwise names a Function "function". A regexp is
+      // NativeRegExpCallable: typeof "object", not a Wrapper, and it implements
+      // Function. Returning null means "not a Java instance" (a script object
+      // is "object"). Script-visible getClass() would reflect java.lang.Class
+      // and the class shutter would refuse the overload message itself.
+      case "scriptSignatureName": {
+        Object value = args.length > 1 ? args[1] : null;
+        if (value instanceof Wrapper) {
+          Object wrapped = ((Wrapper) value).unwrap();
+          return wrapped == null ? null : wrapped.getClass().getName();
+        }
+        if (value instanceof Function) {
+          return "function";
+        }
+        return null;
+      }
       case "base64Encode": {
         // AIC's encode(byte[]) overload refuses a JS array (measured), where
         // most of the crypto methods convert one.

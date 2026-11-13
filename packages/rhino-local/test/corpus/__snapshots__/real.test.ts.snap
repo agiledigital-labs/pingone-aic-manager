@@ -477,16 +477,7 @@ exports[`real scripted-decision corpus > known local-vs-AIC gaps > enum-callback
 ]
 `;
 
-exports[`real scripted-decision corpus > known local-vs-AIC gaps > enum-utils-sub — differs on base64, base64url, crypto, types, arity > arity 1`] = `
-{
-  "base64Encode": "function",
-  "confirmationCallback": 0,
-  "hiddenValueCallback": 2,
-  "nameCallback": 2,
-}
-`;
-
-exports[`real scripted-decision corpus > known local-vs-AIC gaps > enum-utils-sub — differs on base64, base64url, crypto, types, arity > base64 1`] = `
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > enum-utils-sub — differs on base64, base64url, crypto, types > base64 1`] = `
 [
   "atob",
   "btoa",
@@ -496,7 +487,7 @@ exports[`real scripted-decision corpus > known local-vs-AIC gaps > enum-utils-su
 ]
 `;
 
-exports[`real scripted-decision corpus > known local-vs-AIC gaps > enum-utils-sub — differs on base64, base64url, crypto, types, arity > base64url 1`] = `
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > enum-utils-sub — differs on base64, base64url, crypto, types > base64url 1`] = `
 [
   "atob",
   "btoa",
@@ -506,7 +497,7 @@ exports[`real scripted-decision corpus > known local-vs-AIC gaps > enum-utils-su
 ]
 `;
 
-exports[`real scripted-decision corpus > known local-vs-AIC gaps > enum-utils-sub — differs on base64, base64url, crypto, types, arity > crypto 1`] = `
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > enum-utils-sub — differs on base64, base64url, crypto, types > crypto 1`] = `
 [
   "checkBcrypt",
   "getRandomValues",
@@ -515,7 +506,7 @@ exports[`real scripted-decision corpus > known local-vs-AIC gaps > enum-utils-su
 ]
 `;
 
-exports[`real scripted-decision corpus > known local-vs-AIC gaps > enum-utils-sub — differs on base64, base64url, crypto, types, arity > types 1`] = `
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > enum-utils-sub — differs on base64, base64url, crypto, types > types 1`] = `
 [
   "bytesToString",
   "stringToBytes",
@@ -554,12 +545,50 @@ exports[`real scripted-decision corpus > known local-vs-AIC gaps > httpclient-bo
     "ok": true,
     "value": "{"intOne":1.0,"intZero":0.0,"negInt":-5.0,"bigInt":1000000.0,"floatVal":1.5,"undefField":null,"nullField":null,"strField":"s","boolField":true,"nested":{"u":null,"n":null,"i":2.0},"arr":[1.0,null,3.0]}",
   },
+  {
+    "error": "TypeError: [JavaPackage java.util.HashMap] is not a function, it is object.",
+    "name": "engine int mapSize",
+    "ok": false,
+  },
+  {
+    "name": "engine int typeof",
+    "ok": true,
+    "value": "{"jsLiteral":"number/nogetClass","jsComputed":"number/nogetClass","strLength":"number/nogetClass","strIndexOf":"number/nogetClass","listSize":"number/nogetClass","nodeStateKeysSize":"number/nogetClass","reqHeadersSize":"number/nogetClass","jsStrLength":"number/nogetClass","jsStrIndexOf":"number/nogetClass"}",
+  },
+  {
+    "name": "engine ints, object body",
+    "ok": true,
+    "value": "{"intOne":1.0,"intZero":0.0,"negInt":-5.0,"bigInt":1000000.0,"floatVal":1.5,"undefField":null,"nullField":null,"strField":"s","boolField":true,"nested":{"u":null,"n":null,"i":2.0},"arr":[1.0,null,3.0]}",
+  },
+  {
+    "name": "engine ints, local JSON.stringify",
+    "ok": true,
+    "value": "{"jsLiteral":3,"jsComputed":3,"strLength":3,"strIndexOf":2,"listSize":3,"nodeStateKeysSize":0,"reqHeadersSize":0,"jsStrLength":3,"jsStrIndexOf":2}",
+  },
+  {
+    "name": "engine ints, JSON.stringify body",
+    "ok": true,
+    "value": "{"intOne":1.0,"intZero":0.0,"negInt":-5.0,"bigInt":1000000.0,"floatVal":1.5,"undefField":null,"nullField":null,"strField":"s","boolField":true,"nested":{"u":null,"n":null,"i":2.0},"arr":[1.0,null,3.0]}",
+  },
+  {
+    "error": "InternalError: Java class "java.util.HashSet" has no public instance field or method named "0". (AIC Rhino Let Probe#174)",
+    "name": "nodeState.keys()[0]",
+    "ok": false,
+  },
+  {
+    "name": "typeof nodeState.keys()",
+    "ok": true,
+    "value": "object",
+  },
+  {
+    "error": "InternalError: null",
+    "name": "nodeState.keys().iterator().next()",
+    "ok": false,
+  },
 ]
 `;
 
 exports[`real scripted-decision corpus > known local-vs-AIC gaps > identity-enum-attrs — differs on value > value 1`] = `"{"methods":{"getAttributeValues":"function","getAttributes":"undefined","getAttributeNames":"undefined","asMap":"undefined"},"counts":{"manager":0,"fr-idm-managed-user-manager":1,"reports":0,"fr-idm-managed-user-reports":0,"dn":0,"entryDN":0}}"`;
-
-exports[`real scripted-decision corpus > known local-vs-AIC gaps > identity-getattribute-shape — differs on value > value 1`] = `"{"getAttribute_customAttrs":{"call":{"ok":false,"threw":"TypeError: Cannot find function getAttribute"}},"getAttributeValues_customAttrs":{"call":{"ok":true,"undef":false,"isNull":false},"lengthProp":"number","size":{"ok":true,"undef":false,"isNull":false},"toArray":{"ok":true,"undef":false,"isNull":false},"contains":{"ok":true,"undef":false,"isNull":false},"includes":{"ok":false,"threw":"TypeError: Cannot call property includes"},"get0":{"ok":true,"undef":false,"isNull":false},"index0":{"ok":true,"undef":false,"isNull":false},"charAt":{"ok":false,"threw":"TypeError: Cannot find function charAt"},"substring":{"ok":false,"threw":"TypeError: Cannot find function substring"},"lengthValue":1,"count":1,"toArrayLen":1,"asString":"[{}]","keys":{"ok":true,"undef":false,"isNull":false},"customKeys":[]},"getAttribute_mail":{"call":{"ok":false,"threw":"TypeError: Cannot find function getAttribute"}},"getAttributeValues_mail":{"call":{"ok":true,"undef":false,"isNull":false},"lengthProp":"number","size":{"ok":true,"undef":false,"isNull":false},"toArray":{"ok":true,"undef":false,"isNull":false},"contains":{"ok":true,"undef":false,"isNull":false},"includes":{"ok":false,"threw":"TypeError: Cannot call property includes"},"get0":{"ok":true,"undef":false,"isNull":false},"index0":{"ok":true,"undef":false,"isNull":false},"charAt":{"ok":false,"threw":"TypeError: Cannot find function charAt"},"substring":{"ok":false,"threw":"TypeError: Cannot find function substring"},"lengthValue":1,"count":1,"toArrayLen":1},"getAttribute_bogus":{"call":{"ok":false,"threw":"TypeError: Cannot find function getAttribute"}}}"`;
 
 exports[`real scripted-decision corpus > known local-vs-AIC gaps > identity-resolve-diag — differs on value > value 1`] = `"{"alice":"attr-error: InternalError: Cannot invoke \\"org.forgerock.openam.scripting.api.ScriptedIdentity.getAttributeValues(String)\\" because \\"this.amIdentity\\" is null","00000000-0000-0000-0000-000000000000":"ok givenName-size=1","amadmin":"attr-error: InternalError: Cannot invoke \\"org.forgerock.openam.scripting.api.ScriptedIdentity.getAttributeValues(String)\\" because \\"this.amIdentity\\" is null","idRepository_typeof":"object","nodeState_username":"null"}"`;
 
@@ -635,7 +664,7 @@ exports[`real scripted-decision corpus > known local-vs-AIC gaps > java-collecti
 
 exports[`real scripted-decision corpus > known local-vs-AIC gaps > request-headers-dump — differs on headers, parameters, cookies > cookies 1`] = `
 {
-  "className": null,
+  "className": "err:InternalError: Access to Java class "java.lang.Class" is prohibited.",
   "enumerateError": null,
   "keys": [
     "probe",
@@ -759,7 +788,7 @@ exports[`real scripted-decision corpus > known local-vs-AIC gaps > request-heade
 
 exports[`real scripted-decision corpus > known local-vs-AIC gaps > request-headers-dump — differs on headers, parameters, cookies > headers 1`] = `
 {
-  "className": null,
+  "className": "err:InternalError: Access to Java class "java.lang.Class" is prohibited.",
   "enumerateError": null,
   "keys": [
     "x-aic-probe",
@@ -885,7 +914,7 @@ exports[`real scripted-decision corpus > known local-vs-AIC gaps > request-heade
 
 exports[`real scripted-decision corpus > known local-vs-AIC gaps > request-headers-dump — differs on headers, parameters, cookies > parameters 1`] = `
 {
-  "className": null,
+  "className": "err:InternalError: Access to Java class "java.lang.Class" is prohibited.",
   "enumerateError": null,
   "keys": [
     "probeq",
@@ -1011,7 +1040,7 @@ exports[`real scripted-decision corpus > known local-vs-AIC gaps > request-heade
 
 exports[`real scripted-decision corpus > known local-vs-AIC gaps > request-multivalue — differs on headers, parameters > headers 1`] = `
 {
-  "className": "err:TypeError: Cannot find function getClass in object [object Object].",
+  "className": "err:InternalError: Access to Java class "java.lang.Class" is prohibited.",
   "counts": {
     "x-aic-probe": 2,
     "x-aic-probe-joined": 1,
@@ -1045,7 +1074,7 @@ exports[`real scripted-decision corpus > known local-vs-AIC gaps > request-multi
 
 exports[`real scripted-decision corpus > known local-vs-AIC gaps > request-multivalue — differs on headers, parameters > parameters 1`] = `
 {
-  "className": "err:TypeError: Cannot find function getClass in object [object Object].",
+  "className": "err:InternalError: Access to Java class "java.lang.Class" is prohibited.",
   "counts": {
     "probeq": 2,
     "probeqjoined": 1,

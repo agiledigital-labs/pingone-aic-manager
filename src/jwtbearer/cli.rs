@@ -1,7 +1,5 @@
 //! `aic jwt-bearer` parser and command implementation.
 
-use std::path::PathBuf;
-
 use std::io::Write;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 
@@ -160,11 +158,11 @@ pub enum KeyCommand {
         #[arg(long, help = "Tenant to target")]
         tenant: Option<String>,
         #[arg(long, value_name = "FILE")]
-        out: Option<PathBuf>,
+        out: Option<crate::config::UserPath>,
     },
     /// Import a private signing JWK into this tenant's local vault.
     Import {
-        file: PathBuf,
+        file: crate::config::UserPath,
         #[arg(long)]
         realm: Option<String>,
         #[arg(long, help = "Tenant to target")]
@@ -230,7 +228,7 @@ pub enum IssuerCommand {
         #[arg(long)]
         issuer: String,
         #[arg(long, value_name = "FILE")]
-        jwks_from: PathBuf,
+        jwks_from: crate::config::UserPath,
         #[arg(long)]
         realm: Option<String>,
         #[arg(long, help = "Tenant to target")]

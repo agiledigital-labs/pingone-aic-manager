@@ -104,7 +104,6 @@ interface Extras {
 }
 
 function entry(
-  kind: "nextgen" | "legacy",
   name: string,
   originFile: string,
   expectPayload: Record<string, unknown>,
@@ -112,7 +111,6 @@ function entry(
 ): RealEntry {
   const init: {
     name: string;
-    kind: "nextgen" | "legacy";
     origin: string;
     expect: {
       outcome: string | null;
@@ -129,10 +127,9 @@ function entry(
     liveHooks?: LiveHooks;
   } = {
     name,
-    kind,
     origin: `scripts/rhino-script-tester/${originFile}`,
     expect: {
-      outcome: kind === "legacy" ? "ok" : null,
+      outcome: null,
       callbacks: hiddenValue(expectPayload),
     },
     given: firstVisit(extras.given),
@@ -170,7 +167,7 @@ function ng(
   payload: Record<string, unknown>,
   extras: Extras = {}
 ): RealEntry {
-  return entry("nextgen", name, originFile, { ok: true, feature: name, ...payload }, extras);
+  return entry(name, originFile, { ok: true, feature: name, ...payload }, extras);
 }
 
 function ngFeature(
@@ -180,16 +177,7 @@ function ngFeature(
   payload: Record<string, unknown>,
   extras: Extras = {}
 ): RealEntry {
-  return entry("nextgen", name, originFile, { ok: true, feature, ...payload }, extras);
-}
-
-function legacy(
-  name: string,
-  originFile: string,
-  payload: Record<string, unknown>,
-  extras: Extras = {}
-): RealEntry {
-  return entry("legacy", name, originFile, { ok: true, feature: name, ...payload }, extras);
+  return entry(name, originFile, { ok: true, feature, ...payload }, extras);
 }
 
 const BINDINGS_AVAILABILITY_VALUE = JSON.stringify({
@@ -266,7 +254,7 @@ const STRING_NORMALIZE_RESULTS = [
 ];
 
 /**
- * Next-gen and legacy scripted-decision probes copied from
+ * Next-gen scripted-decision probes copied from
  * `scripts/rhino-script-tester/`. Expects are the live-recorded outcomes from
  * `docs/api/12-script-bindings-matrix.md` and `docs/api/14-am-identity-attributes.md`
  * (and, for language rows, the values the fixture itself computes).
@@ -303,7 +291,6 @@ export const realCases: RealEntry[] = [
   // without a `value` key because JSON.stringify drops `undefined`.
   realCase({
     name: "const-top-level",
-    kind: "nextgen",
     origin: "scripts/rhino-script-tester/fixtures/const-top-level.script.js",
     expect: {
       outcome: null,
@@ -396,7 +383,6 @@ export const realCases: RealEntry[] = [
 
   realCase({
     name: "rhino-var-control",
-    kind: "nextgen",
     origin: "scripts/rhino-script-tester/scripts/rhino-var-control.script.js",
     expect: {
       outcome: null,
@@ -572,8 +558,8 @@ export const realCases: RealEntry[] = [
   }, {
     gap: {
       reason:
-        "Same Java-host-object enumeration as enum-callbacks-utils, for utils.base64/base64url/crypto/types (crypto on AIC also has checkBcrypt and randomValues). And AIC reports arity 0 for nameCallback/hiddenValueCallback/confirmationCallback (Java varargs bridges), where the JS mocks declare their parameters.",
-      differs: ["base64", "base64url", "crypto", "types", "arity"],
+        "Same Java-host-object enumeration as enum-callbacks-utils, for utils.base64/base64url/crypto/types (crypto on AIC also has checkBcrypt and randomValues).",
+      differs: ["base64", "base64url", "crypto", "types"],
     },
   }),
 
@@ -603,7 +589,7 @@ export const realCases: RealEntry[] = [
   ng("request-multivalue", "fixtures/request-multivalue.script.js", {}, {
     gap: {
       reason:
-        "Two differences, and the second makes the rest incomparable. (1) AIC's requestHeaders/requestParameters are Java maps: getClass() is refused with `InternalError: Access to Java class \"java.lang.Class\" is prohibited.` and String()/JSON show Java map formatting; the local mock is a JS object (`TypeError: Cannot find function getClass`). (2) The live probe run was a curl with its own headers, parameters and cookies, not this case's `given`, so the remaining keys were never measured against the same input. The live payload is not committed: it carries the tenant host and client-certificate headers.",
+        "Two differences, and the second makes the rest incomparable. (1) AIC's requestHeaders/requestParameters are Java maps: getClass() is refused with `InternalError: Access to Java class \"java.lang.Class\" is prohibited.` and String()/JSON show Java map formatting; the local mock is a JS object that gives the same getClass() refusal and its own formatting. (2) The live probe run was a curl with its own headers, parameters and cookies, not this case's `given`, so the remaining keys were never measured against the same input. The live payload is not committed: it carries the tenant host and client-certificate headers.",
       differs: ["headers", "parameters"],
     },
     given: {
@@ -620,11 +606,8 @@ export const realCases: RealEntry[] = [
   ng("request-headers-dump", "fixtures/request-headers-dump.script.js", {}, {
     gap: {
       reason:
-        "Two differences, and the second makes the rest incomparable. (1) AIC's requestHeaders/requestParameters are Java maps: getClass() is refused with `InternalError: Access to Java class \"java.lang.Class\" is prohibited.` and String()/JSON show Java map formatting; the local mock is a JS object (`TypeError: Cannot find function getClass`). (2) The live probe run was a curl with its own headers, parameters and cookies, not this case's `given`, so the remaining keys were never measured against the same input. The live payload is not committed: it carries the tenant host and client-certificate headers.",
+        "Two differences, and the second makes the rest incomparable. (1) AIC's requestHeaders/requestParameters are Java maps: getClass() is refused with `InternalError: Access to Java class \"java.lang.Class\" is prohibited.` and String()/JSON show Java map formatting; the local mock is a JS object that gives the same getClass() refusal and its own formatting. (2) The live probe run was a curl with its own headers, parameters and cookies, not this case's `given`, so the remaining keys were never measured against the same input. The live payload is not committed: it carries the tenant host and client-certificate headers.",
       differs: ["headers", "parameters", "cookies"],
-      // The probe tries toArray() first and falls back to size()/get(i) when it
-      // throws. Its live result was not committed, so locally it faults.
-      faults: ["request-list-unmeasured"],
     },
     given: {
       requestHeaders: { "x-aic-probe": ["alpha"] },
@@ -633,7 +616,7 @@ export const realCases: RealEntry[] = [
     },
   }),
 
-  // Live payload, verbatim (probe run 2026-09-28).
+  // Live payload, verbatim (probe run 2026-11-13).
   ng("httpclient-body-coercion", "fixtures/httpclient-body-coercion.script.js", {
     "javaIntAdded": true,
     "localStringify": "{\"intOne\":1,\"intZero\":0,\"negInt\":-5,\"bigInt\":1000000,\"floatVal\":1.5,\"nullField\":null,\"strField\":\"s\",\"boolField\":true,\"nested\":{\"n\":null,\"i\":2},\"arr\":[1,null,3],\"javaInt\":1,\"javaLong\":1}",
@@ -667,15 +650,55 @@ export const realCases: RealEntry[] = [
         "name": "httpClient.send echo",
         "ok": true,
         "value": "{\"intOne\":1.0,\"intZero\":0.0,\"negInt\":-5.0,\"bigInt\":1000000.0,\"floatVal\":1.5,\"undefField\":null,\"nullField\":null,\"strField\":\"s\",\"boolField\":true,\"nested\":{\"u\":null,\"n\":null,\"i\":2.0},\"arr\":[1.0,null,3.0],\"javaInt\":1,\"javaLong\":1}"
+      },
+      {
+        "name": "engine int mapSize",
+        "ok": false,
+        "error": "TypeError: [JavaPackage java.util.HashMap] is not a function, it is object."
+      },
+      {
+        "name": "engine int typeof",
+        "ok": true,
+        "value": "{\"jsLiteral\":\"number/nogetClass\",\"jsComputed\":\"number/nogetClass\",\"strLength\":\"number/nogetClass\",\"strIndexOf\":\"number/nogetClass\",\"listSize\":\"number/nogetClass\",\"nodeStateKeysSize\":\"number/nogetClass\",\"reqHeadersSize\":\"number/nogetClass\",\"jsStrLength\":\"number/nogetClass\",\"jsStrIndexOf\":\"number/nogetClass\"}"
+      },
+      {
+        "name": "engine ints, object body",
+        "ok": true,
+        "value": "{\"jsLiteral\":3.0,\"jsComputed\":3.0,\"strLength\":3,\"strIndexOf\":2,\"listSize\":3,\"nodeStateKeysSize\":3,\"reqHeadersSize\":20,\"jsStrLength\":3,\"jsStrIndexOf\":2}"
+      },
+      {
+        "name": "engine ints, local JSON.stringify",
+        "ok": true,
+        "value": "{\"jsLiteral\":3,\"jsComputed\":3,\"strLength\":3,\"strIndexOf\":2,\"listSize\":3,\"nodeStateKeysSize\":3,\"reqHeadersSize\":20,\"jsStrLength\":3,\"jsStrIndexOf\":2}"
+      },
+      {
+        "name": "engine ints, JSON.stringify body",
+        "ok": true,
+        "value": "{\"jsLiteral\":3,\"jsComputed\":3,\"strLength\":3,\"strIndexOf\":2,\"listSize\":3,\"nodeStateKeysSize\":3,\"reqHeadersSize\":20,\"jsStrLength\":3,\"jsStrIndexOf\":2}"
+      },
+      {
+        "name": "nodeState.keys()[0]",
+        "ok": false,
+        "error": "InternalError: Java class \"java.util.HashSet\" has no public instance field or method named \"0\". (AIC Rhino Let Probe#174)"
+      },
+      {
+        "name": "typeof nodeState.keys()",
+        "ok": true,
+        "value": "object"
+      },
+      {
+        "name": "nodeState.keys().iterator().next()",
+        "ok": true,
+        "value": "realm"
       }
     ]
   }, {
     gap: {
       reason:
-        "AIC serialises java.lang.Integer/Long body fields into the request (javaInt, javaLong appear in the echoed body); the local httpClient mock drops them. The echo reply in `given.http` is also a fixed string recorded without those fields, so closing this needs both the mock serialising Java boxed numbers and the reply echoing the request.",
+        "AIC serialises java.lang.Integer/Long body fields into the request (javaInt, javaLong appear in the echoed body); the local httpClient mock drops them. The echo reply in `given.http` is also a fixed string recorded without those fields, so closing this needs both the mock serialising Java boxed numbers and the reply echoing the request. The same fixed reply stands in for all three requests the probe sends, so the engine-integer rows also differ locally. The `nodeState.keys()` rows and the header/state counts differ because the case seeds no node state or request headers.",
       differs: ["value"],
     },
-    http: [{ url: "https://httpbin.org/post", method: "POST" }],
+    http: [{ url: "https://httpbin.org/post", method: "POST", times: 3 }],
     given: {
       http: [
         {
@@ -1151,11 +1174,6 @@ export const realCases: RealEntry[] = [
     {
       given: identityGiven,
       rewrites: probeUserIs(ALICE_ID),
-      gap: {
-        reason:
-          "Only the failed includes() call differs. Both lanes' getAttributeValues have length, size, get, [0], toArray and contains, lack includes, and print `[{}]`. On AIC the Java collection has no includes member, so the call throws `Cannot find function includes`; the local list is a JS array with includes shadowed by undefined, so it throws `Cannot call property includes`.",
-        differs: ["value"],
-      },
     }
   ),
   ng("identity-enum-attrs", "fixtures/identity-enum-attrs.script.js", {}, {
@@ -1175,63 +1193,6 @@ export const realCases: RealEntry[] = [
       B_manager: 1,
     }),
   }, { given: managerSwapGiven, rewrites: reportAndManager }),
-
-  // Legacy engine. Emit is JavaImporter + Action.send; next-gen-only
-  // bindings are undefined so scripts cannot take the callbacksBuilder
-  // fallback.
-  legacy("legacy-bindings", "fixtures-legacy/legacy-bindings.script.js", {
-    value: JSON.stringify({
-      nodeState: "object",
-      sharedState: "object",
-      transientState: "object",
-      callbacks: "object",
-      callbacksBuilder: "undefined",
-      action: "undefined",
-      idRepository: "object",
-      openidm: "undefined",
-      httpClient: "object",
-      utils: "undefined",
-      requestHeaders: "object",
-      requestParameters: "object",
-      requestCookies: "undefined",
-      existingSession: "undefined",
-      resumedFromSuspend: "boolean",
-      secrets: "object",
-      JavaImporter: "function",
-      logger: "object",
-      realm: "string",
-      systemEnv: "object",
-      scriptName: "string",
-    }),
-  }),
-  legacy(
-    "legacy-es2015-globals",
-    "fixtures-legacy/legacy-es2015-globals.script.js",
-    {
-      value: [
-        { name: "typeof Map", ok: true, value: "undefined" },
-        { name: "typeof Set", ok: true, value: "undefined" },
-        { name: "typeof WeakMap", ok: true, value: "undefined" },
-        { name: "typeof WeakSet", ok: true, value: "undefined" },
-        { name: "typeof Symbol", ok: true, value: "undefined" },
-        { name: "typeof Proxy", ok: true, value: "undefined" },
-        { name: "typeof Reflect", ok: true, value: "undefined" },
-        { name: "typeof Promise", ok: true, value: "undefined" },
-        { name: "typeof JSON", ok: true, value: "object" },
-        {
-          name: "new Map + set/get/size",
-          ok: false,
-          error: 'ReferenceError: "Map" is not defined.',
-        },
-        {
-          name: "new Set + add/has/size",
-          ok: false,
-          error: 'ReferenceError: "Set" is not defined.',
-        },
-        { name: "java.util.HashMap", ok: true, value: "1:1" },
-      ],
-    }
-  ),
 
   // Live payload, verbatim (probe run 2026-09-29).
   ng("binding-utils", "fixtures/binding-utils.script.js", {
@@ -4276,7 +4237,6 @@ export const realCases: RealEntry[] = [
   // Live callbacks, parsed from the probe run's /authenticate body (2026-09-29).
   realCase({
     name: "binding-callbacks-builder",
-    kind: "nextgen",
     origin: "scripts/rhino-script-tester/fixtures/binding-callbacks-builder.script.js",
     given: firstVisit(),
     expect: {

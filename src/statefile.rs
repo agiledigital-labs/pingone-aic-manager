@@ -23,10 +23,12 @@
 //!
 //! So every such file has **three** names for
 //! `ProjectConfig::gitignore_content` to carry: the document, `.lock` and
-//! `.new`.
+//! `.new`. New temporary files are private (0600); relationship captures can
+//! contain custom edge properties as well as IDs.
 
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
 use serde::Serialize;
@@ -123,6 +125,7 @@ where
 fn install(file: &Path, describe: &Describe, body: &[u8]) -> Result<()> {
     let temp = temp_path(file);
     let mut handle = OpenOptions::new()
+        .mode(0o600)
         .write(true)
         .create(true)
         .truncate(true)

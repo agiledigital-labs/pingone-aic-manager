@@ -5,6 +5,7 @@ import java.io.InputStreamReader;
 import java.io.PrintStream;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -101,10 +102,10 @@ public final class Runner {
     // Undefined caches an identity hash at class initialization. Initialize on
     // the reader, before workers race: its diagnostic text must agree across JVMs.
     Class.forName("org.mozilla.javascript.Undefined");
-    // No job Context comes from the global factory, but the class shutter
-    // always admits org.mozilla.javascript, so a shuttered script could reach
-    // it and add a listener that outlives its file. Install and seal one
-    // here: a sealed factory refuses listeners and class-loader changes, and
+    // No job Context comes from the global factory, but the engine package is
+    // visible to the engine and, with no shutter (raw runner, IDM), to scripts
+    // by name, so a script could reach it and add a listener that outlives its
+    // file. Install and seal one here: a sealed factory refuses listeners and class-loader changes, and
     // installing it makes a later initGlobal throw.
     org.mozilla.javascript.ContextFactory global = new org.mozilla.javascript.ContextFactory();
     org.mozilla.javascript.ContextFactory.initGlobal(global);
@@ -211,7 +212,7 @@ public final class Runner {
 
   /**
    * What this JVM would make of a script that looked at its surroundings. The
-   * client refuses a JVM whose answers differ from the AM image's, because a
+   * client refuses a JVM whose answers differ from the expected ones, because a
    * host that defaulted to its own timezone or locale would pass a date-shaped
    * test locally that fails on the tenant.
    */
@@ -362,9 +363,9 @@ public final class Runner {
       if (classAllowList != null) {
         cx.setClassShutter(AmClassShutter.of(classAllowList));
       }
-      if (cx instanceof AmContextFactory.ObservedContext) {
-        ((AmContextFactory.ObservedContext) cx).timeoutMs = timeoutMs;
-        ((AmContextFactory.ObservedContext) cx).hostBridge = bridge;
+      if (cx instanceof AmContextFactory.TimedContext) {
+        ((AmContextFactory.TimedContext) cx).timeoutMs = timeoutMs;
+        ((AmContextFactory.TimedContext) cx).hostBridge = bridge;
       }
       final SimpleScriptContext scriptContext = AmScopes.newEngineContext(sourceName);
       injectGlobals(scriptContext, job.get("globals"));
@@ -373,6 +374,7 @@ public final class Runner {
 
       final boolean hasPreamble = preamble != null && !preamble.isEmpty();
       if (hasPreamble || preludeHash != null) {
+        final LibraryHost libraries;
         try {
           final String hostOpName = "__rhinoLocalHostOp";
           HostOps hostOps = new HostOps();
@@ -389,13 +391,23 @@ public final class Runner {
             bridge.setPrototype(ScriptableObject.getFunctionPrototype(scope));
             ScriptableObject.putProperty(scope, "__rhinoLocalJourneyHost", bridge);
           }
-          if (libraryRefs != null) {
-            LibraryHost libraries = new LibraryHost(libraryRefs);
-            libraries.setParentScope(scope);
-            libraries.setPrototype(ScriptableObject.getFunctionPrototype(scope));
-            ScriptableObject.putProperty(scope, LIBRARIES_NAME, libraries);
-          }
+          // Always present, so a library a runner caller seeds directly also
+          // loads in a library scope rather than through the runtime's eval.
+          libraries = new LibraryHost(libraryRefs != null ? libraryRefs : Collections.<String, String>emptyMap());
+          libraries.setParentScope(scope);
+          libraries.setPrototype(ScriptableObject.getFunctionPrototype(scope));
+          ScriptableObject.putProperty(scope, LIBRARIES_NAME, libraries);
           if (preambleData != null) ScriptableObject.putProperty(scope, PREAMBLE_DATA_NAME, preambleData);
+          NativeMethod.Factory nativeMethods = new NativeMethod.Factory();
+          nativeMethods.setParentScope(scope);
+          nativeMethods.setPrototype(ScriptableObject.getFunctionPrototype(scope));
+          ScriptableObject.putProperty(scope, NativeMethod.FACTORY_NAME, nativeMethods);
+          if (Timing.active()) {
+            PhaseTimer timer = new PhaseTimer();
+            timer.setParentScope(scope);
+            timer.setPrototype(ScriptableObject.getFunctionPrototype(scope));
+            ScriptableObject.putProperty(scope, PhaseTimer.NAME, timer);
+          }
           try {
             // The prelude and the preamble run as one script would: the
             // preamble continues the prelude's line numbering under the same
@@ -428,10 +440,13 @@ public final class Runner {
             ScriptableObject.deleteProperty(scope, hostOpName);
             ScriptableObject.deleteProperty(scope, LIBRARIES_NAME);
             ScriptableObject.deleteProperty(scope, PREAMBLE_DATA_NAME);
+            ScriptableObject.deleteProperty(scope, PhaseTimer.NAME);
+            ScriptableObject.deleteProperty(scope, NativeMethod.FACTORY_NAME);
             ScriptableObject.deleteProperty(scope, HarnessFaults.NAME);
             if (bridge != null) ScriptableObject.deleteProperty(scope, "__rhinoLocalJourneyHost");
           }
           ((ScriptContextScope) scope).sealHarnessGlobals();
+          libraries.snapshot(scope);
         } catch (EvaluatorException e) {
           return errorFromRhino(id, "compile_error", e);
         } catch (RhinoException e) {
@@ -447,7 +462,10 @@ public final class Runner {
       final Script script;
       phase = Timing.now();
       try {
-        script = cx.compileString(source, sourceName, 1, null);
+        // Cached like the prelude and the libraries: the key carries the
+        // source's hash, its name and every context setting the compiler
+        // reads, and only the compiled form is shared, never a scope.
+        script = ScriptCache.compile(cx, "subject:" + ScriptCache.sha256(source), () -> source, sourceName, 1, "subject");
       } catch (EvaluatorException e) {
         return errorFromRhino(id, "compile_error", e);
       } catch (RhinoException e) {
@@ -458,6 +476,10 @@ public final class Runner {
 
       final Object completion;
       phase = Timing.now();
+      // The subject's own-time accounting runs only for a timed job; untimed,
+      // the added work is this one ThreadLocal read.
+      final boolean timed = Timing.active();
+      final long bracketed = timed ? Timing.total("moduleBody") + Timing.total("harvest") : 0L;
       try {
         completion = script.exec(cx, scope);
       } catch (RhinoException e) {
@@ -469,12 +491,38 @@ public final class Runner {
         throw e;
       } finally {
         Timing.add("subjectExec", phase);
+        if (timed) {
+          // Closes any bracket the script left open, so the subtraction sees it.
+          Timing.exit(0);
+          Timing.addLess("subjectOwn", phase, Timing.total("moduleBody") + Timing.total("harvest") - bracketed);
+        }
       }
       // Harvest outside the author try: its failures are emulation failures, not script errors.
       if (bridge != null) {
         phase = Timing.now();
         try { return response(id, "ok", JsValues.of(bridge.harvest(cx)), null); }
         finally { Timing.add("harvest", phase); }
+      }
+      // A context whose result is the script's completion value (OIDC claims:
+      // AM reads the value the script evaluates to) names a preamble function
+      // that receives it, so the author source runs unmodified and the value
+      // is exactly what the script left. Its failures are the script's, as
+      // the call happens before the response, and are reported like them.
+      final String completionHarvest = Json.optionalString(job, "completionHarvest");
+      if (completionHarvest != null) {
+        final Object harvest = ScriptableObject.getProperty(scope, completionHarvest);
+        if (!(harvest instanceof org.mozilla.javascript.Function)) {
+          throw new IllegalArgumentException("completionHarvest " + completionHarvest + " is not a function");
+        }
+        phase = Timing.now();
+        try {
+          final Object harvested = ((org.mozilla.javascript.Function) harvest).call(cx, scope, scope, new Object[] { completion });
+          return response(id, "ok", JsValues.of(harvested), null);
+        } catch (RhinoException e) {
+          return errorFromRhino(id, "runtime_error", e);
+        } finally {
+          Timing.add("harvest", phase);
+        }
       }
       final String resultGlobal = Json.optionalString(job, "resultGlobal");
       final Object result = resultGlobal == null
@@ -540,7 +588,8 @@ public final class Runner {
       String lineSource) {
     Map<String, Object> err = new LinkedHashMap<String, Object>();
     err.put("class", t.getClass().getName());
-    err.put("message", t.getMessage());
+    // An exception with no text of its own (a write to a list that takes none) is named by class.
+    err.put("message", t.getMessage() != null ? t.getMessage() : t.getClass().getName());
     err.put("sourceName", sourceName);
     err.put("line", Integer.valueOf(line));
     err.put("column", Integer.valueOf(column));

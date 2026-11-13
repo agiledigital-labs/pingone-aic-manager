@@ -28,6 +28,29 @@ pub(crate) struct AicClient {
     jwk: serde_json::Value,
 }
 
+/// Optional headers on a JSON write. Journaled calls choose their id before
+/// dispatch; ordinary calls still receive a fresh id in this transport.
+#[derive(Default)]
+pub(crate) struct WriteHeaders<'a> {
+    pub api_version: Option<&'a str>,
+    pub if_match: Option<&'a str>,
+    pub transaction_id: Option<&'a str>,
+}
+
+impl<'a> WriteHeaders<'a> {
+    pub(crate) fn new(
+        api_version: Option<&'a str>,
+        if_match: Option<&'a str>,
+        transaction_id: Option<&'a str>,
+    ) -> Self {
+        Self {
+            api_version,
+            if_match,
+            transaction_id,
+        }
+    }
+}
+
 impl AicClient {
     pub fn new(tenant: Tenant, jwk: serde_json::Value) -> Self {
         // A connect timeout, because callers are not free to cancel: `script
@@ -93,19 +116,38 @@ impl AicClient {
         Ok(token)
     }
 
+    /// `GET` a JSON document. On a [`retry_safe`] path a `502`/`503`/`504`
+    /// is retried, twice, with a short backoff: operators saw intermittent
+    /// gateway errors on plain config reads that an immediate manual retry
+    /// cleared. A gateway error does not say the request did not run, so
+    /// only a path known to have no side effects is retried — a `GET` of a
+    /// custom endpoint runs its script — and writes never are.
     pub async fn get(&self, path: &str, api_version: Option<&str>) -> Result<serde_json::Value> {
-        let token = self.bearer().await?;
         let url = self.url(path);
-        let resp = self
-            .http
-            .get(&url)
-            .header("Authorization", format!("Bearer {token}"))
-            .header("Accept-API-Version", api_version.unwrap_or("resource=1.0"))
-            .header("Accept", "application/json")
-            .aic_transaction_id()
-            .send()
-            .await?;
-        self.check_response(resp).await
+        let retryable = retry_safe(path);
+        let mut attempt = 0;
+        let mut sent = Vec::new();
+        loop {
+            let token = self.bearer().await?;
+            let (resp, transaction) = self
+                .send(
+                    self.http
+                        .get(&url)
+                        .header("Authorization", format!("Bearer {token}"))
+                        .header("Accept-API-Version", api_version.unwrap_or("resource=1.0"))
+                        .header("Accept", "application/json")
+                        .aic_transaction_id(),
+                )
+                .await?;
+            sent.extend(transaction);
+            if retryable && let Some(delay) = gateway_retry_delay(resp.status(), attempt) {
+                tracing::warn!(status = %resp.status(), path, attempt, "retrying GET after a gateway error");
+                attempt += 1;
+                tokio::time::sleep(delay).await;
+                continue;
+            }
+            return self.check_response(resp, &sent).await;
+        }
     }
 
     /// `GET` a non-JSON body with **no** `Authorization` header.
@@ -167,16 +209,14 @@ impl AicClient {
         path: &str,
         body: serde_json::Value,
         confirmed_prod: bool,
-        api_version: Option<&str>,
-        if_match: Option<&str>,
+        headers: WriteHeaders<'_>,
     ) -> Result<serde_json::Value> {
         self.ensure_write_allowed(confirmed_prod)?;
         let token = self.bearer().await?;
-        let resp = self
-            .json_request(method, path, body, &token, api_version, if_match)
-            .send()
+        let (resp, transaction) = self
+            .send(self.json_request(method, path, body, &token, headers))
             .await?;
-        self.check_response(resp).await
+        self.check_response(resp, transaction.as_slice()).await
     }
 
     fn json_request(
@@ -185,19 +225,27 @@ impl AicClient {
         path: &str,
         body: serde_json::Value,
         token: &str,
-        api_version: Option<&str>,
-        if_match: Option<&str>,
+        headers: WriteHeaders<'_>,
     ) -> reqwest::RequestBuilder {
         let request = self
             .http
             .request(method, self.url(path))
             .header("Authorization", format!("Bearer {token}"))
-            .header("Accept-API-Version", api_version.unwrap_or("resource=1.0"))
+            .header(
+                "Accept-API-Version",
+                headers.api_version.unwrap_or("resource=1.0"),
+            )
             .header("Content-Type", "application/json")
             .header("Accept", "application/json")
-            .aic_transaction_id()
+            .header(
+                crate::http::TRANSACTION_ID_HEADER,
+                headers
+                    .transaction_id
+                    .map(str::to_owned)
+                    .unwrap_or_else(crate::http::transaction_id),
+            )
             .json(&body);
-        match if_match {
+        match headers.if_match {
             Some(revision) => request.header("If-Match", revision),
             None => request,
         }
@@ -228,11 +276,10 @@ impl AicClient {
         authorization: Option<&str>,
     ) -> Result<serde_json::Value> {
         self.ensure_write_allowed(confirmed_prod)?;
-        let resp = self
-            .form_request(method, path, body, authorization)
-            .send()
+        let (resp, transaction) = self
+            .send(self.form_request(method, path, body, authorization))
             .await?;
-        self.check_response(resp).await
+        self.check_response(resp, transaction.as_slice()).await
     }
 
     fn form_request(
@@ -272,7 +319,28 @@ impl AicClient {
         format!("{}{path}", self.tenant.base_url)
     }
 
-    async fn check_response(&self, resp: reqwest::Response) -> Result<serde_json::Value> {
+    /// Send `request` and return the response with the transaction id it
+    /// carried, so an error can name the id an operator looks up in the logs.
+    async fn send(
+        &self,
+        request: reqwest::RequestBuilder,
+    ) -> Result<(reqwest::Response, Option<String>)> {
+        let request = request.build()?;
+        let transaction = request
+            .headers()
+            .get(crate::http::TRANSACTION_ID_HEADER)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned);
+        Ok((self.http.execute(request).await?, transaction))
+    }
+
+    /// `transactions` are the ids sent for this call, oldest first — more
+    /// than one when a read was retried.
+    async fn check_response(
+        &self,
+        resp: reqwest::Response,
+        transactions: &[String],
+    ) -> Result<serde_json::Value> {
         let status = resp.status();
         if status.is_success() {
             // Some AIC write actions return `200` with an **empty body** —
@@ -285,13 +353,94 @@ impl AicClient {
             }
             Ok(serde_json::from_slice(&bytes)?)
         } else {
+            let server = resp
+                .headers()
+                .get(reqwest::header::SERVER)
+                .and_then(|value| value.to_str().ok())
+                .map(str::to_owned);
             let body = resp.text().await.unwrap_or_default();
             Err(Error::Api {
                 status: status.as_u16(),
-                body,
+                body: trace_gateway_body(status, body, server.as_deref(), transactions),
             })
         }
     }
+}
+
+/// Name the transaction ids on a `5xx` whose body is not JSON.
+///
+/// AM and IDM answer errors with a JSON body; a gateway in front of them
+/// answers with a page or a bare line, and that is the failure operators
+/// see recur with no diagnostic (`docs/api/02-headers-and-versioning.md`). Whether the
+/// request reached AM or IDM at all is answered by the tenant's own logs,
+/// keyed by the id `aic` chose (`docs/api/08-logs.md`), so the error says
+/// which ids to look up. A JSON body is left byte-for-byte alone, because
+/// callers parse it.
+fn trace_gateway_body(
+    status: reqwest::StatusCode,
+    body: String,
+    server: Option<&str>,
+    transactions: &[String],
+) -> String {
+    if !status.is_server_error()
+        || transactions.is_empty()
+        || serde_json::from_str::<serde_json::Value>(&body).is_ok()
+    {
+        return body;
+    }
+    let server = server.map_or(String::new(), |server| format!(" (server: {server})"));
+    let lookups = transactions
+        .iter()
+        .map(|id| format!("`aic logs tx {id}`"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "{body}\n\na non-JSON {status} answer{server}, the shape a gateway gives rather than AM \
+         or IDM. {lookups} shows whether AM or IDM recorded the request."
+    )
+}
+
+/// Backoff before retry `attempt + 1` of a read that answered `status`, or
+/// `None` to stop: only a gateway error, and at most two retries.
+/// Whether a `GET` of `path` may be sent again after a gateway error.
+///
+/// An allowlist, because the HTTP verb is no guarantee here: a `GET` of
+/// `/openidm/endpoint/<name>` runs that endpoint's script, a managed record
+/// read runs `onRead`/`onRetrieve` hooks, a connector read runs connector
+/// scripts, and any of them may write or send. What is listed only reads
+/// stored configuration or schema. `_action` is a command whatever the path.
+///
+/// The decision is made on the path as it will be **sent**: a path the URL
+/// parser rewrites (`/openidm/config/../endpoint/x`, encoded dot segments)
+/// is not retried, because its prefix says nothing about where it goes.
+fn retry_safe(path: &str) -> bool {
+    const READS: [&str; 6] = [
+        "/openidm/config/",
+        "/openidm/schema/",
+        "/am/json/",
+        "/environment/",
+        "/monitoring/",
+        "/openidm/info/",
+    ];
+    let route = path.split_once('?').map_or(path, |(route, _)| route);
+    let Ok(sent) = url::Url::parse(&format!("https://tenant.invalid{path}")) else {
+        return false;
+    };
+    if route.contains('%') || sent.path() != route {
+        return false;
+    }
+    let action = sent.query_pairs().any(|(key, _)| key == "_action");
+    !action
+        && READS
+            .iter()
+            .any(|prefix| route == prefix.trim_end_matches('/') || route.starts_with(prefix))
+}
+
+fn gateway_retry_delay(status: reqwest::StatusCode, attempt: u32) -> Option<std::time::Duration> {
+    const DELAYS_MS: [u64; 2] = [250, 750];
+    let gateway = matches!(status.as_u16(), 502..=504);
+    let delay = DELAYS_MS.get(usize::try_from(attempt).ok()?)?;
+    gateway.then(|| std::time::Duration::from_millis(*delay))
 }
 
 #[cfg(test)]
@@ -501,8 +650,10 @@ mod tests {
                 "/resource",
                 serde_json::json!({}),
                 "token",
-                Some("resource=1.0"),
-                None,
+                WriteHeaders {
+                    api_version: Some("resource=1.0"),
+                    ..Default::default()
+                },
             )
             .build()
             .unwrap();
@@ -512,13 +663,226 @@ mod tests {
                 "/resource",
                 serde_json::json!({}),
                 "token",
-                Some("resource=1.0"),
-                Some("revision-1"),
+                WriteHeaders {
+                    api_version: Some("resource=1.0"),
+                    if_match: Some("revision-1"),
+                    ..Default::default()
+                },
             )
             .build()
             .unwrap();
 
         assert!(plain.headers().get("if-match").is_none());
         assert_eq!(conditional.headers()["if-match"], "revision-1");
+    }
+
+    // Regression: do not regenerate the id after the intent was saved. This
+    // drives the request builder actually used by the agent, without sending.
+    #[test]
+    fn journaled_transaction_id_reaches_the_single_outbound_idm_header() {
+        use crate::agent::{ApiCallRequest, Request};
+        let id = crate::http::transaction_id();
+        let envelope = api::ApiCall::new(
+            "sandbox",
+            "POST",
+            "/openidm/managed/a/a1/link?_action=create",
+        )
+        .transaction_id(&id)
+        .if_match("revision-1")
+        .body(serde_json::json!({"_ref":"managed/b/b1"}))
+        .envelope();
+        let wire = serde_json::to_value(envelope).unwrap();
+        let Request::ApiCall(call): Request = serde_json::from_value(wire).unwrap() else {
+            panic!("API call")
+        };
+        let ApiCallRequest {
+            transaction_id,
+            api_version,
+            if_match,
+            body,
+            ..
+        } = call;
+        let client = AicClient::new(
+            tenant("https://tenant.example".into()),
+            serde_json::Value::Null,
+        );
+        for method in [
+            reqwest::Method::POST,
+            reqwest::Method::PATCH,
+            reqwest::Method::DELETE,
+        ] {
+            let request = client
+                .json_request(
+                    method,
+                    "/openidm/managed/a/a1/link",
+                    body.clone().unwrap(),
+                    "token",
+                    WriteHeaders::new(
+                        api_version.as_deref(),
+                        if_match.as_deref(),
+                        transaction_id.as_deref(),
+                    ),
+                )
+                .build()
+                .unwrap();
+            let values = request
+                .headers()
+                .get_all(crate::http::TRANSACTION_ID_HEADER)
+                .iter()
+                .collect::<Vec<_>>();
+            assert_eq!(values.len(), 1);
+            assert_eq!(values[0].to_str().unwrap(), id);
+            assert_eq!(request.headers()["if-match"], "revision-1");
+        }
+    }
+
+    #[test]
+    fn only_gateway_errors_are_retried_and_only_twice() {
+        use reqwest::StatusCode;
+        for status in [502, 503, 504] {
+            let status = StatusCode::from_u16(status).unwrap();
+            assert!(gateway_retry_delay(status, 0).is_some());
+            assert!(gateway_retry_delay(status, 1).is_some());
+            assert!(gateway_retry_delay(status, 2).is_none());
+        }
+        for status in [200, 400, 401, 404, 412, 500, 501, 505] {
+            let status = StatusCode::from_u16(status).unwrap();
+            assert!(gateway_retry_delay(status, 0).is_none(), "{status}");
+        }
+    }
+
+    /// Drives the real `get` against a server that answers each status in
+    /// `script` in turn, and returns the result and how many requests arrived.
+    async fn get_against(path: &str, script: &'static [u16]) -> (Result<serde_json::Value>, usize) {
+        get_serving(path, script, "{\"ok\":true}").await
+    }
+
+    async fn get_serving(
+        path: &str,
+        script: &'static [u16],
+        body: &'static str,
+    ) -> (Result<serde_json::Value>, usize) {
+        use std::io::{BufRead, BufReader, Write};
+        use std::net::TcpListener;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().expect("port").port();
+        let served = Arc::new(AtomicUsize::new(0));
+        let count = served.clone();
+        std::thread::spawn(move || {
+            while let Ok((mut stream, _)) = listener.accept() {
+                let n = count.fetch_add(1, Ordering::SeqCst);
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut line = String::new();
+                while reader.read_line(&mut line).is_ok_and(|read| read > 2) {
+                    line.clear();
+                }
+                let status = script.get(n).copied().unwrap_or(500);
+                let _ = stream.write_all(
+                    format!(
+                        "HTTP/1.1 {status} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                        body.len()
+                    )
+                    .as_bytes(),
+                );
+            }
+        });
+        let client = AicClient::new(
+            tenant(format!("http://127.0.0.1:{port}")),
+            serde_json::Value::Null,
+        );
+        client
+            .token_cache
+            .lock()
+            .unwrap()
+            .store("test-token".into(), chrono::Utc::now().timestamp() + 3600);
+        let result = client.get(path, None).await;
+        (result, served.load(Ordering::SeqCst))
+    }
+
+    const CONFIG: &str = "/openidm/config/managed";
+
+    #[tokio::test]
+    async fn a_get_that_may_run_a_script_is_never_retried() {
+        for path in [
+            "/openidm/endpoint/example",
+            "/openidm/managed/alpha_user/abc",
+            "/openidm/system/ldap/account?_queryFilter=true",
+            "/openidm/config/managed?_action=reload",
+            "/openidm/config/../endpoint/example",
+            "/openidm/config/%2e%2e/endpoint/example",
+            "/openidm/config/managed?%5Faction=reload",
+        ] {
+            let (result, requests) = get_against(path, &[503, 200]).await;
+            assert!(
+                matches!(result, Err(Error::Api { status: 503, .. })),
+                "{path}"
+            );
+            assert_eq!(requests, 1, "{path}");
+        }
+    }
+
+    #[test]
+    fn only_listed_reads_are_retry_safe() {
+        for path in [
+            "/openidm/config/managed",
+            "/openidm/config",
+            "/openidm/schema/managed/alpha_user",
+            "/am/json/realms/root/realms/alpha/scripts?_queryFilter=true",
+            "/environment/variables",
+        ] {
+            assert!(retry_safe(path), "{path}");
+        }
+        for path in [
+            "/openidm/configuration",
+            "/openidm/endpoint/x",
+            "/am/json/realms/root/realms/alpha/scripts?_action=validate",
+            "/openidm/managed/alpha_user",
+            "/openidm/config/./../endpoint/x",
+            "/am/json/realms/root/realms/alpha/scripts?_queryFilter=true&_action=x",
+        ] {
+            assert!(!retry_safe(path), "{path}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_get_retries_a_gateway_error_until_it_clears() {
+        let (result, requests) = get_against(CONFIG, &[503, 502, 200]).await;
+        assert_eq!(result.unwrap(), serde_json::json!({"ok": true}));
+        assert_eq!(requests, 3);
+    }
+
+    #[tokio::test]
+    async fn a_get_gives_up_after_two_retries_and_never_retries_other_errors() {
+        let (result, requests) = get_against(CONFIG, &[503, 503, 503, 200]).await;
+        assert!(matches!(result, Err(Error::Api { status: 503, .. })));
+        assert_eq!(requests, 3);
+        let (result, requests) = get_against(CONFIG, &[500, 200]).await;
+        assert!(matches!(result, Err(Error::Api { status: 500, .. })));
+        assert_eq!(requests, 1);
+    }
+
+    #[tokio::test]
+    async fn a_gateway_page_names_every_transaction_id_and_a_json_error_is_untouched() {
+        let (result, requests) = get_serving(CONFIG, &[502, 502, 503], "no healthy upstream").await;
+        assert_eq!(requests, 3);
+        let Err(Error::Api { status: 503, body }) = result else {
+            panic!("503")
+        };
+        assert!(body.starts_with("no healthy upstream\n\n"), "{body}");
+        assert_eq!(body.matches("`aic logs tx aic-").count(), 3, "{body}");
+
+        let (result, _) = get_serving(CONFIG, &[500], "{\"code\":500}").await;
+        let Err(Error::Api { status: 500, body }) = result else {
+            panic!("500")
+        };
+        assert_eq!(body, "{\"code\":500}");
+
+        let (result, _) = get_serving(CONFIG, &[404], "not found").await;
+        let Err(Error::Api { status: 404, body }) = result else {
+            panic!("404")
+        };
+        assert_eq!(body, "not found");
     }
 }

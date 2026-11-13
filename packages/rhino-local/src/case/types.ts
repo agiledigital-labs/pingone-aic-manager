@@ -25,11 +25,34 @@ export interface ExpectedObject {
 
 export type Pattern = string | RegExp;
 
-export const CASE_KEYS = ["name", "script", "outcomes", "given", "expect"] as const;
+export const CASE_KEYS = ["name", "script", "outcomes", "given", "expect", "context"] as const;
 export type CaseKey = (typeof CASE_KEYS)[number];
 
-export const ENGINES = ["next-gen", "legacy"] as const;
+/**
+ * The AM script engine. Only next-gen is emulated: the legacy (V1) engine was
+ * removed, and `given.engine: "legacy"` fails validation naming the removal.
+ */
+export const ENGINES = ["next-gen"] as const;
 export type Engine = (typeof ENGINES)[number];
+
+/**
+ * The AM script context a case runs in, by AM's context id without the
+ * `_NEXT_GEN` suffix (the engine is always next-gen). Absent means the
+ * scripted decision node, which is how every case ran before contexts
+ * existed. packages/rhino-local/docs/script-contexts.md.
+ */
+export const SCRIPT_CONTEXTS = [
+  "SCRIPTED_DECISION_NODE",
+  "OAUTH2_ACCESS_TOKEN_MODIFICATION",
+  "OIDC_CLAIMS",
+  "SOCIAL_IDP_PROFILE_TRANSFORMATION",
+  "CONFIG_PROVIDER_NODE",
+  "OAUTH2_VALIDATE_SCOPE",
+  "OAUTH2_MAY_ACT",
+  "LIBRARY",
+] as const;
+export type ScriptContext = (typeof SCRIPT_CONTEXTS)[number];
+export const DEFAULT_SCRIPT_CONTEXT: ScriptContext = "SCRIPTED_DECISION_NODE";
 
 export const GIVEN_KEYS = [
   "sharedState",
@@ -62,6 +85,15 @@ export const GIVEN_KEYS = [
   "identityAttributes",
   "engine",
   "bindings",
+  "accessToken",
+  "identity",
+  "client",
+  "scopes",
+  "request",
+  "oidc",
+  "socialIdp",
+  "validateScope",
+  "library",
 ] as const;
 export type GivenKey = (typeof GIVEN_KEYS)[number];
 
@@ -90,6 +122,13 @@ export const EXPECT_KEYS = [
   "logs",
   "identityWrites",
   "allowUndeclared",
+  "accessToken",
+  "oidc",
+  "socialIdp",
+  "configProvider",
+  "validateScope",
+  "mayAct",
+  "returns",
 ] as const;
 export type ExpectKey = (typeof EXPECT_KEYS)[number];
 
@@ -106,6 +145,13 @@ export const ALLOW_UNDECLARED_CHANNELS = [
   "secureState",
   "sessionProperties",
   "identityWrites",
+  "accessToken",
+  "oidc",
+  "socialIdp",
+  "configProvider",
+  "validateScope",
+  "mayAct",
+  "returns",
 ] as const;
 export type AllowUndeclaredChannel = (typeof ALLOW_UNDECLARED_CHANNELS)[number];
 
@@ -133,6 +179,13 @@ export const DEFAULT_ALLOW_UNDECLARED: {
   secureState: false,
   sessionProperties: false,
   identityWrites: false,
+  accessToken: false,
+  oidc: false,
+  socialIdp: false,
+  configProvider: false,
+  validateScope: false,
+  mayAct: false,
+  returns: false,
 };
 
 export const OPENIDM_WRITE_METHODS = [
@@ -174,7 +227,8 @@ export const STATE_CHANNELS = [
   "secureState",
 ] as const;
 export type StateChannel = (typeof STATE_CHANNELS)[number];
-export type EvidenceChannel = Channel | "nodeState";
+/** `accessToken`, `oidc`, `socialIdp`, `configProvider`, `validateScope` and `mayAct` are judged only for their context, so none is a `Channel` every runner must record. */
+export type EvidenceChannel = Channel | "nodeState" | "accessToken" | "oidc" | "socialIdp" | "configProvider" | "validateScope" | "mayAct" | "returns";
 
 export const ENV_INPUT_KEYS = ["esv", "secrets", "managed", "http", "openidmActions", "openidmFailures", "bindingOverrides"] as const;
 export type EnvInputKey = (typeof ENV_INPUT_KEYS)[number];
@@ -378,6 +432,469 @@ export interface Given {
    * name throws when the case runs.
    */
   bindings?: Record<string, JsonValue>;
+  /** `OAUTH2_ACCESS_TOKEN_MODIFICATION`: the token as AM hands it to the script. */
+  accessToken?: AccessTokenSeed;
+  /** `OAUTH2_ACCESS_TOKEN_MODIFICATION` and `OIDC_CLAIMS`: the resource owner's identity. */
+  identity?: IdentitySeed;
+  /** `OAUTH2_ACCESS_TOKEN_MODIFICATION` and `OIDC_CLAIMS`: `clientProperties`. */
+  client?: ClientSeed;
+  /**
+   * `OAUTH2_ACCESS_TOKEN_MODIFICATION` and `OIDC_CLAIMS`: the `scopes`
+   * binding; defaults to the token's scope, or `["openid"]` for OIDC claims.
+   */
+  scopes?: string[];
+  /** `OAUTH2_ACCESS_TOKEN_MODIFICATION` and `OIDC_CLAIMS`: `requestProperties`. */
+  request?: TokenRequestSeed;
+  /** `OIDC_CLAIMS`: the `claims` binding's subject and `claimsLocales`. */
+  oidc?: OidcClaimsSeed;
+  /** `SOCIAL_IDP_PROFILE_TRANSFORMATION`: the provider's raw profile and the selected provider. */
+  socialIdp?: SocialIdpSeed;
+  /** `OAUTH2_VALIDATE_SCOPE`: the four scope lists AM hands the validator. */
+  validateScope?: ValidateScopeSeed;
+  /**
+   * `LIBRARY`: which export to call, and with what JSON arguments.
+   * `callerContext` is the segment of `logger.getName()` (the caller's AM
+   * context id, measured 2026-11-11). Default
+   * `AUTHENTICATION_TREE_DECISION_NODE`.
+   */
+  library?: LibrarySeed;
+}
+
+/**
+ * Callers a library was required from on 2026-11-11. `logger.getName()`
+ * embeds this id. The direct runner has no caller, so the case names one.
+ */
+export const LIBRARY_CALLER_CONTEXTS = [
+  "AUTHENTICATION_TREE_DECISION_NODE",
+  "OAUTH2_ACCESS_TOKEN_MODIFICATION_NEXT_GEN",
+  "OAUTH2_VALIDATE_SCOPE_NEXT_GEN",
+  "OAUTH2_MAY_ACT_NEXT_GEN",
+  "OAUTH2_EVALUATE_SCOPE_NEXT_GEN",
+] as const;
+export type LibraryCallerContext = (typeof LIBRARY_CALLER_CONTEXTS)[number];
+
+/** Which export a LIBRARY case calls. */
+export interface LibrarySeed {
+  /** The property of the loaded module to call. */
+  export: string;
+  /** JSON arguments. Default `[]` (the export is called with no arguments). */
+  args?: JsonValue[];
+  /**
+   * The caller's AM context id, as `logger.getName()` embeds it, and the
+   * caller's class shutter. Default `AUTHENTICATION_TREE_DECISION_NODE`,
+   * where `java.util.HashSet` constructs. The four OAuth callers refuse it
+   * (the captures record `"err"`; the message was not captured).
+   */
+  callerContext?: LibraryCallerContext;
+  /**
+   * Set by the runner to the id it `require()`s. An author-supplied id is
+   * rejected; `given.libraries` must not use it either.
+   */
+  id?: string;
+}
+
+/**
+ * What the case asserts about the export's result. Fail-closed: omitting
+ * `expect.returns` requires the export to return `undefined` and not throw.
+ */
+export interface LibraryExpect {
+  status: "returned" | "thrown";
+  /** Default `"export"`. `"module"` is the library body throwing while it loads. */
+  phase?: "export" | "module";
+  /** The export returned `undefined` (not JSON `null`). */
+  undefined?: boolean;
+  /** The JSON value returned. Mutually exclusive with `undefined: true`. */
+  value?: JsonValue;
+  /** `typeof` of a thrown value: `"object"` for an Error, `"string"` for a thrown string. */
+  type?: string;
+  /** Error name; `""` for a thrown string. */
+  name?: string;
+  /** `String(error)`, which for `new Error("x")` is `"Error: x"`. */
+  message?: string;
+}
+
+/** The export's result, as the harvest records it. */
+export interface LibraryEffect {
+  status: "returned" | "thrown";
+  phase: "export" | "module";
+  undefined: boolean;
+  /** `null` when the export returned `undefined` or threw. */
+  value: JsonValue | null;
+  type: string;
+  name: string;
+  message: string;
+}
+
+/**
+ * The scope lists an OAuth2 validate scope script receives, as measured on
+ * 2026-11-10 (docs/api/12-script-bindings-matrix.md, "OAuth2 validate
+ * scope"). The script is handed Java lists. `client` and `request` seed
+ * `clientProperties` and `requestProperties`.
+ */
+export interface ValidateScopeSeed {
+  /** `requestedScopes`: the request's `scope` parameter. AM does not substitute the default scopes when it is absent (measured). Default `[]`. */
+  requested?: string[];
+  /** `allowedScopes`: the client's scopes. Default `[]`. */
+  allowed?: string[];
+  /** Next-gen only: `availableScopes`. Default `allowed`. */
+  available?: string[];
+  /** `defaultScopes`: the client's default scopes. Default `[]`. */
+  defaults?: string[];
+}
+
+/**
+ * What AM hands a social IdP profile transformation script beyond the shared
+ * bindings, as measured on 2026-11-10 (docs/api/12-script-bindings-matrix.md,
+ * "Social IdP profile transformation"). The node state comes from
+ * `given.sharedState` / `given.transientState`.
+ */
+export interface SocialIdpSeed {
+  /**
+   * The provider's profile: the `rawProfile` binding (a Java map). Only string values were measured;
+   * reading any other value faults. Default `{}`.
+   */
+  rawProfile?: JsonObject;
+  /**
+   * The `selectedIdp` binding, and `nodeState.get("selectedIdp")` unless the
+   * case seeds that key itself. Default `"rhino-local-idp"`.
+   */
+  selectedIdp?: string;
+}
+
+/** What the case asserts about the profile a transformation script returns. */
+export interface SocialIdpExpect {
+  /**
+   * The normalised profile the handler node receives. Numbers are doubles on
+   * AIC (`4` reaches the node as `4.0`), which JSON cannot tell apart, and a
+   * top-level `undefined` property becomes `null`.
+   */
+  profile?: ExpectedValue;
+  /**
+   * `false` when AM fails the journey after the script (measured: the script
+   * evaluated to undefined, null or a string). Default `true`.
+   */
+  accepted?: boolean;
+}
+
+/** What the case asserts about the `config` map a config provider node script builds. */
+export interface ConfigProviderExpect {
+  /**
+   * The `config` map the wrapped node is configured from, as JSON. Numbers
+   * are doubles on AIC (`42` reaches the node as `42.0`), which JSON cannot
+   * tell apart, and an `undefined` property becomes `null`. How the wrapped
+   * node reads the map is that node's business and is not emulated.
+   */
+  config?: ExpectedValue;
+  /**
+   * `false` when AM fails the journey after the script (measured: `config`
+   * never assigned, or assigned `undefined`, `null`, a string, a number, a
+   * boolean, an array or a function). Default `true`.
+   */
+  accepted?: boolean;
+}
+
+/** What the case asserts about the token request a validate scope script decides. */
+export interface ValidateScopeExpect {
+  /**
+   * The scopes AM grants: exactly the list the function returns, duplicates
+   * dropped, compared as a set. AM does not intersect it with the request
+   * or the client's scopes (measured: a widened or unknown scope is granted).
+   */
+  granted?: string[];
+  /**
+   * The `error_description` of a 400 `invalid_scope` denial: next-gen
+   * `scopeValidatorHelper.throwInvalidScope(msg)`.
+   * Declaring it makes `accepted` default to `false`.
+   */
+  invalidScope?: string;
+  /**
+   * `false` when AM issues no token: an empty, null or undefined result
+   * (403 authorization_declined), an invalid-scope denial (400), or a result
+   * AM cannot read (500). Default `true`.
+   */
+  accepted?: boolean;
+}
+
+/** The validate scope context's result. */
+export interface ValidateScopeEffect {
+  /** `"none"` when AM issues no token. */
+  returned: "scopes" | "none";
+  /** The token endpoint's HTTP status: 200, 400, 403 or 500. */
+  status: number;
+  /** The granted scopes, in the order returned; `null` when none were granted. */
+  granted: string[] | null;
+  /** The invalid-scope denial's message; `null` otherwise. */
+  invalidScope: string | null;
+  /** `null` when a token is issued; otherwise the `error_description` AM answers. */
+  refusal: string | null;
+}
+
+/**
+ * What the case asserts about the `may_act` and `act` claims AM stamps after
+ * an OAuth2 may-act script. Fail-closed: a claim the case does not declare
+ * is a mismatch unless `allowUndeclared.mayAct` is set. A present key whose
+ * value is `null` means the claim was JSON null; omitting the key means the
+ * claim was absent. Those are different on this context (measured 2026-11-10).
+ */
+export interface MayActExpect {
+  /** The `may_act` claim. Present and `null`: JSON null. Omit: the claim must be absent. */
+  mayAct?: JsonValue;
+  /** The `act` claim, with the same present-null / omitted-absent distinction. */
+  act?: JsonValue;
+  /**
+   * The scopes on the issued token, compared as a set. Defaults to the
+   * request's scopes.
+   */
+  scope?: string[];
+  /**
+   * `false` when AM issues no token (the script threw, or the claim could
+   * not be written). Default `true`. Cannot be combined with `mayAct`,
+   * `act` or `scope`.
+   */
+  issued?: boolean;
+  /** The `error_description` of a failed token request. */
+  refusal?: string;
+}
+
+/** The may-act context's result: the claims AM stamped, and the token's scope. */
+export interface MayActEffect {
+  /** The token endpoint's HTTP status: 200 when the script finished, 500 when AM discarded it. */
+  status: number;
+  /** `false` when `may_act` is absent from the token. Distinct from a JSON-null claim. */
+  mayActPresent: boolean;
+  /** The `may_act` claim; `null` when it is JSON null or absent (see `mayActPresent`). */
+  mayAct: JsonValue | null;
+  /** `false` when `act` is absent from the token. */
+  actPresent: boolean;
+  /** The `act` claim; `null` when it is JSON null or absent (see `actPresent`). */
+  act: JsonValue | null;
+  /** The scopes on the issued token; `null` when AM issued none. */
+  scope: string[] | null;
+  /** The scopes the request handed the script, before the script changes them. */
+  seedScope: string[];
+  /** `null` when a token is issued; otherwise the `error_description` AM answers. */
+  refusal: string | null;
+}
+
+/** The config provider node context's result. */
+export interface ConfigProviderEffect {
+  /** `"none"` when AM takes no map, which fails the journey. */
+  returned: "config" | "none";
+  /** The map the wrapped node is configured from; `null` when none was set. */
+  config: JsonObject | null;
+  /** `null` when accepted; otherwise why AM fails the journey. */
+  refusal: string | null;
+}
+
+/** The social IdP profile transformation context's result. */
+export interface SocialIdpEffect {
+  /** `"none"` when AM takes no profile, which fails the journey. */
+  returned: "profile" | "none";
+  /** The profile the handler node receives; `null` when none was returned. */
+  profile: JsonObject | null;
+  /** `null` when accepted; otherwise why AM fails the journey. */
+  refusal: string | null;
+}
+
+/**
+ * What AM hands an OIDC claims script beyond the shared bindings. Defaults
+ * are a password-grant token request, as measured on 2026-11-10
+ * (docs/api/12-script-bindings-matrix.md, "OIDC claims").
+ */
+export interface OidcClaimsSeed {
+  /** The `claims` binding's `sub` and AM's id-token subject. Default `given.identity.name`. */
+  sub?: string;
+  /** The `claims` binding's `subname`. Default `sub`. */
+  subname?: string;
+  /** The `claims_locales` request parameter, split. Default `[]`. */
+  claimsLocales?: string[];
+}
+
+/**
+ * What the case asserts about the claims an OIDC claims script returns.
+ * Fail-closed: returned claims the case does not declare are a mismatch
+ * unless `allowUndeclared.oidc` is set.
+ */
+export interface OidcClaimsExpect {
+  /** The userinfo response: the returned `values` verbatim, `null` kept. `{}` when the script returned none. */
+  userinfo?: ExpectedValue;
+  /**
+   * The id token's script-derived claims: the non-null `values`, with `sub`
+   * and `subname` as AM resolves them (see {@link OidcClaimsEffect.idToken}).
+   * AM's own claims (`aud`, `iss`, `exp`, ...) are not included.
+   */
+  idToken?: ExpectedValue;
+  /** The returned `compositeScopes`, `null` when absent. Measured to filter nothing. */
+  compositeScopes?: ExpectedValue;
+  /**
+   * `false` when AM would fail the token request although the script
+   * returned. Default `true`.
+   */
+  issued?: boolean;
+}
+
+/** The OIDC claims context's result. */
+export interface OidcClaimsEffect {
+  /** `"none"` when AM takes no script claims (undefined, or an object with no `values`). */
+  returned: "claims" | "none";
+  /** What the userinfo endpoint answers with: the returned values verbatim, `{}` for none. */
+  userinfo: JsonObject;
+  /**
+   * The id token's script-derived claims. `sub` and `subname` come from the
+   * returned values when they hold `sub` (and `subname` only if returned),
+   * otherwise from `given.oidc`; every other non-null value is copied.
+   */
+  idToken: JsonObject;
+  compositeScopes: JsonValue;
+  /** `null` when issued; otherwise AM's `error_description`. */
+  refusal: string | null;
+}
+
+/**
+ * The access token at the moment AM runs the modification script. Every key
+ * is optional; the defaults are a `client_credentials` token as measured on
+ * 2026-11-10 (docs/api/12-script-bindings-matrix.md).
+ */
+export interface AccessTokenSeed {
+  /** Default `"test-client"`. */
+  clientId?: string;
+  /** Default `clientId` — what a `client_credentials` grant has. */
+  resourceOwnerId?: string;
+  /** Default `"client_credentials"`. */
+  grantType?: string;
+  /** Default `given.realm`, else `"/alpha"`. */
+  realm?: string;
+  /** Default `[]`. The granted scope, as `getScope()` and the `scope` claim show it. */
+  scope?: string[];
+  /** Default `[clientId]`. */
+  audience?: string[];
+  /** Default `"access_token"`. */
+  tokenName?: string;
+  /** Default `"Bearer"`. */
+  tokenType?: string;
+  /** Epoch seconds. Default: the time the case starts. */
+  authTimeSeconds?: number;
+  /** Epoch milliseconds. Default `authTimeSeconds * 1000 + 3600000`. */
+  expiryTime?: number;
+  /**
+   * The custom fields (`getCustomFields()`, the extra JWT claims). Default
+   * `{ subname: resourceOwnerId, expires_in: 3599 }`, as measured on a
+   * one-hour token.
+   */
+  fields?: JsonObject;
+  nonce?: string | null;
+  authLevel?: number | null;
+  claims?: string | null;
+  /** Default placeholders; AIC's are per token. */
+  tokenId?: string;
+  auditTrackingId?: string;
+  authGrantId?: string;
+}
+
+/**
+ * The access-token seed `OAUTH2_MAY_ACT` accepts. The context was measured
+ * on `client_credentials` and reads only these members; the rest of
+ * {@link AccessTokenSeed} is refused rather than dropped.
+ */
+export interface MayActAccessTokenSeed {
+  /** Default `"test-client"`. */
+  clientId?: string;
+  /** Only `"client_credentials"` was measured. */
+  grantType?: "client_credentials";
+  /** Default `given.realm`, else `"/alpha"`. */
+  realm?: string;
+  /** Default `[]`, or `given.scopes` when that is set. */
+  scope?: string[];
+  /** Only `expires_in` was read. Default `3600`. */
+  fields?: { expires_in?: number };
+}
+
+/** The identity bound as `identity`. Default: the client's own agent profile. */
+export interface IdentitySeed {
+  /** Default the token's `resourceOwnerId`. */
+  name?: string;
+  /** Default `id=<name>,ou=agentonly,o=<realm>,ou=services,ou=am-config` (measured for a client). */
+  universalId?: string;
+  /** Default `true`. */
+  exists?: boolean;
+  /** Attribute values by name; an unlisted name reads as an empty collection, as measured. */
+  attributes?: Record<string, string[]>;
+}
+
+/** `clientProperties`. */
+export interface ClientSeed {
+  /** Default the token's `clientId`. */
+  clientId?: string;
+  /** Screaming case, as AM gives them: default `["CLIENT_CREDENTIALS"]`. */
+  allowedGrantTypes?: string[];
+  /** Default the token's scope. */
+  allowedScopes?: string[];
+  /** Default `[]`. */
+  allowedResponseTypes?: string[];
+  /** Default `{}`. */
+  customProperties?: Record<string, string>;
+  /** Default `[]`. */
+  redirectUris?: string[];
+}
+
+/** `requestProperties`: the token request as AM received it. */
+export interface TokenRequestSeed {
+  /** Default `{ grant_type, scope, client_id }` from the token. */
+  params?: Record<string, string[]>;
+  /** Looked up case-insensitively, as measured. Default `{}`. */
+  headers?: Record<string, string[]>;
+  /** Default `https://tenant.example.com/am/oauth2/realms/root/realms/<realm>/access_token`. */
+  uri?: string;
+}
+
+/**
+ * What the case asserts about the token the script leaves behind. Fail-closed:
+ * a change the case does not declare is a mismatch unless
+ * `allowUndeclared.accessToken` is set.
+ */
+export interface AccessTokenExpect {
+  /** Custom fields (JWT claims) added, changed or removed, against `given.accessToken.fields`. */
+  fields?: StateDiff;
+  /** Fields `addExtraData` / `addExtraJsonData` put in the token endpoint's JSON response. */
+  responseFields?: StateDiff;
+  /** The final scope, compared as a set (AM's order is a hash order). */
+  scope?: string[];
+  /** The final expiry, epoch milliseconds. */
+  expiryTime?: ExpectedValue;
+  nonce?: ExpectedValue;
+  authLevel?: ExpectedValue;
+  claims?: ExpectedValue;
+  /** Next-gen only: `setAct`, `setMayAct`, `setPermissions`. */
+  act?: ExpectedValue;
+  mayAct?: ExpectedValue;
+  permissions?: ExpectedValue;
+  /**
+   * `false` when AM would refuse to issue the token although the script
+   * returned (measured: after `removeScopes()`, a `500 server_error`). Default
+   * `true`.
+   */
+  issued?: boolean;
+}
+
+/** The token as the harvest reports it, before and after the script. */
+export interface AccessTokenState {
+  fields: JsonObject;
+  responseFields: JsonObject;
+  scope: string[];
+  expiryTime: number;
+  nonce: JsonValue;
+  authLevel: JsonValue;
+  claims: JsonValue;
+  act: JsonValue;
+  mayAct: JsonValue;
+  permissions: JsonValue;
+}
+
+export interface AccessTokenEffect {
+  initial: AccessTokenState;
+  final: AccessTokenState;
+  /** `null` when issued; otherwise AM's `error_description`. */
+  refusal: string | null;
 }
 
 export interface Expect {
@@ -399,6 +916,20 @@ export interface Expect {
   logs?: LogExpect[];
   identityWrites?: IdentityWriteExpect[];
   allowUndeclared?: AllowUndeclared;
+  /** `OAUTH2_ACCESS_TOKEN_MODIFICATION` only. */
+  accessToken?: AccessTokenExpect;
+  /** `OIDC_CLAIMS` only. */
+  oidc?: OidcClaimsExpect;
+  /** `SOCIAL_IDP_PROFILE_TRANSFORMATION` only. */
+  socialIdp?: SocialIdpExpect;
+  /** `CONFIG_PROVIDER_NODE` only. */
+  configProvider?: ConfigProviderExpect;
+  /** `OAUTH2_VALIDATE_SCOPE` only. */
+  validateScope?: ValidateScopeExpect;
+  /** `OAUTH2_MAY_ACT` only. */
+  mayAct?: MayActExpect;
+  /** `LIBRARY` only. */
+  returns?: LibraryExpect;
 }
 
 export interface CaseInit {
@@ -417,7 +948,237 @@ export interface CaseInit {
   outcomes?: readonly string[];
   given?: Given;
   expect: Expect;
+  /** Absent: the scripted decision node. */
+  context?: "SCRIPTED_DECISION_NODE";
 }
+
+/**
+ * A case for a context other than the decision node. `expect.outcome` does
+ * not exist there; each context accepts its own `given` and `expect` keys,
+ * and validation refuses the rest.
+ */
+export interface AccessTokenCaseInit {
+  name: string;
+  script: string;
+  context: "OAUTH2_ACCESS_TOKEN_MODIFICATION";
+  given?: Pick<
+    Given,
+    | "engine"
+    | "realm"
+    | "scriptName"
+    | "esv"
+    | "esvUndeclared"
+    | "secrets"
+    | "libraries"
+    | "managed"
+    | "http"
+    | "openidmActions"
+    | "openidmFailures"
+    | "bindingOverrides"
+    | "accessToken"
+    | "identity"
+    | "client"
+    | "scopes"
+    | "request"
+  >;
+  expect: Pick<Expect, "accessToken" | "openidm" | "http" | "logs" | "allowUndeclared">;
+}
+
+/** An `OIDC_CLAIMS` case: the script's value is the claims AM emits. */
+export interface OidcClaimsCaseInit {
+  name: string;
+  script: string;
+  context: "OIDC_CLAIMS";
+  given?: Pick<
+    Given,
+    | "engine"
+    | "realm"
+    | "scriptName"
+    | "esv"
+    | "esvUndeclared"
+    | "secrets"
+    | "libraries"
+    | "managed"
+    | "http"
+    | "openidmActions"
+    | "openidmFailures"
+    | "bindingOverrides"
+    | "identity"
+    | "client"
+    | "scopes"
+    | "request"
+    | "oidc"
+  >;
+  expect: Pick<Expect, "oidc" | "openidm" | "http" | "logs" | "allowUndeclared">;
+}
+
+/** A `SOCIAL_IDP_PROFILE_TRANSFORMATION` case: the script's value is the normalised profile. */
+export interface SocialIdpCaseInit {
+  name: string;
+  script: string;
+  context: "SOCIAL_IDP_PROFILE_TRANSFORMATION";
+  given?: Pick<
+    Given,
+    | "engine"
+    | "realm"
+    | "scriptName"
+    | "esv"
+    | "esvUndeclared"
+    | "secrets"
+    | "libraries"
+    | "managed"
+    | "http"
+    | "openidmActions"
+    | "openidmFailures"
+    | "bindingOverrides"
+    | "sharedState"
+    | "transientState"
+    | "requestHeaders"
+    | "requestParameters"
+    | "cookieName"
+    | "loggerScriptId"
+    | "socialIdp"
+  >;
+  expect: Pick<
+    Expect,
+    "socialIdp" | "sharedState" | "transientState" | "openidm" | "http" | "logs" | "allowUndeclared"
+  >;
+}
+
+/** A `CONFIG_PROVIDER_NODE` case: the script's `config` global configures the wrapped node. */
+export interface ConfigProviderCaseInit {
+  name: string;
+  script: string;
+  context: "CONFIG_PROVIDER_NODE";
+  given?: Pick<
+    Given,
+    | "engine"
+    | "realm"
+    | "scriptName"
+    | "esv"
+    | "esvUndeclared"
+    | "secrets"
+    | "libraries"
+    | "managed"
+    | "http"
+    | "openidmActions"
+    | "openidmFailures"
+    | "bindingOverrides"
+    | "sharedState"
+    | "transientState"
+    | "requestHeaders"
+    | "requestParameters"
+    | "cookieName"
+    | "loggerScriptId"
+  >;
+  expect: Pick<
+    Expect,
+    "configProvider" | "sharedState" | "transientState" | "openidm" | "http" | "logs" | "allowUndeclared"
+  >;
+}
+
+/** An `OAUTH2_VALIDATE_SCOPE` case: AM calls the script's `validateAccessTokenScope()` and grants what it returns. */
+export interface ValidateScopeCaseInit {
+  name: string;
+  script: string;
+  context: "OAUTH2_VALIDATE_SCOPE";
+  given?: Pick<
+    Given,
+    | "engine"
+    | "realm"
+    | "scriptName"
+    | "esv"
+    | "esvUndeclared"
+    | "secrets"
+    | "libraries"
+    | "managed"
+    | "http"
+    | "openidmActions"
+    | "openidmFailures"
+    | "bindingOverrides"
+    | "loggerScriptId"
+    | "cookieName"
+    | "client"
+    | "request"
+    | "validateScope"
+  >;
+  expect: Pick<Expect, "validateScope" | "openidm" | "http" | "logs" | "allowUndeclared">;
+}
+
+/**
+ * An `OAUTH2_MAY_ACT` case: AM runs the script's body, then stamps `may_act`
+ * and `act` from the token. The script's completion value is ignored.
+ */
+export interface MayActCaseInit {
+  name: string;
+  script: string;
+  context: "OAUTH2_MAY_ACT";
+  given?: Pick<
+    Given,
+    | "engine"
+    | "realm"
+    | "scriptName"
+    | "esv"
+    | "esvUndeclared"
+    | "secrets"
+    | "libraries"
+    | "managed"
+    | "http"
+    | "openidmActions"
+    | "openidmFailures"
+    | "bindingOverrides"
+    | "loggerScriptId"
+    | "cookieName"
+    | "client"
+    | "request"
+    | "identity"
+    | "scopes"
+  > & {
+    accessToken?: MayActAccessTokenSeed;
+  };
+  expect: Pick<Expect, "mayAct" | "openidm" | "http" | "logs" | "allowUndeclared">;
+}
+
+/**
+ * A `LIBRARY` case: the script is the library body. The harness `require()`s
+ * it and calls `given.library.export` with `given.library.args`.
+ */
+export interface LibraryCaseInit {
+  name: string;
+  script: string;
+  context: "LIBRARY";
+  /** `library.export` is required: a library case names the export it calls. */
+  given: Pick<
+    Given,
+    | "engine"
+    | "realm"
+    | "scriptName"
+    | "esv"
+    | "esvUndeclared"
+    | "secrets"
+    | "libraries"
+    | "managed"
+    | "http"
+    | "openidmActions"
+    | "openidmFailures"
+    | "bindingOverrides"
+    | "loggerScriptId"
+    | "cookieName"
+  > & {
+    library: LibrarySeed;
+  };
+  expect: Pick<Expect, "returns" | "openidm" | "http" | "logs" | "allowUndeclared">;
+}
+
+export type AnyCaseInit =
+  | CaseInit
+  | AccessTokenCaseInit
+  | OidcClaimsCaseInit
+  | SocialIdpCaseInit
+  | ConfigProviderCaseInit
+  | ValidateScopeCaseInit
+  | MayActCaseInit
+  | LibraryCaseInit;
 
 export interface Case {
   name: string;
@@ -425,6 +1186,8 @@ export interface Case {
   outcomes?: readonly string[];
   given: Given;
   expect: Expect;
+  /** Absent: the scripted decision node. */
+  context?: ScriptContext;
 }
 
 export interface StateBucket {
@@ -480,6 +1243,20 @@ export interface RecordedEffects {
   http: HttpEffect[];
   logs: LogEffect[];
   identityWrites?: IdentityWriteEffect[] | undefined;
+  /** The token context's result; absent for every other context. */
+  accessToken?: AccessTokenEffect | undefined;
+  /** The OIDC claims context's result; absent for every other context. */
+  oidc?: OidcClaimsEffect | undefined;
+  /** The social IdP profile transformation context's result; absent for every other context. */
+  socialIdp?: SocialIdpEffect | undefined;
+  /** The config provider node context's result; absent for every other context. */
+  configProvider?: ConfigProviderEffect | undefined;
+  /** The validate scope context's result; absent for every other context. */
+  validateScope?: ValidateScopeEffect | undefined;
+  /** The may-act context's result; absent for every other context. */
+  mayAct?: MayActEffect | undefined;
+  /** The library context's result; absent for every other context. */
+  returns?: LibraryEffect | undefined;
   /** Omitted by exact recorders; present when a lane has qualified evidence. */
   evidence?: RecordingEvidence;
   /**

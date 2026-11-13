@@ -543,32 +543,38 @@ type AmUserAttribute =
 // generates `declare const requestProperties: object` — unusable under `strict`:
 // no member read, no indexing, no autocomplete. They are named here instead.
 //
-// Verified members, from a live next-gen validate-scope script on the
-// token-exchange and password grants (docs/api/22-token-exchange.md, 2026-08-25
-// — the working script is `~/w/aic-demos/capability-tokens/scripts/am/`):
+// Measured on the next-gen engine (2026-11-10, docs/api/12-script-bindings-matrix.md:
+// access-token modification, OIDC claims, validate scope and may-act, each on a
+// live token request), and earlier on validate scope (docs/api/22-token-exchange.md,
+// 2026-08-25):
 //
-//     var params = requestProperties.requestParams;   // property access, not .get()
-//     var v = params[name];                           // still a Java multimap inside
-//     return v && v.length ? String(v[0]) : null;     // so a Java list inside
+//     var params = requestProperties.requestParams;
+//     var v = params[name];                           // a Java list of JS strings
+//     return v && v.length ? v[0] : null;
 //
-// plus `requestHeaders` (which carries the client's `Authorization: Basic …`)
-// and `requestUri`. `realm`, and every member of `ClientProperties`, are carried
-// over from the LEGACY OIDC claims bindings in oidc-claims.d.ts and are NOT
-// verified on the next-gen engine; neither is DCR's `requestProperties`, which
-// shares the binding name and nothing else that has been checked here.
+// Both spellings are measured: `params[name]` (a missing key is `undefined`) and
+// `params.get(name)` (a missing key is `null`; on validate scope, 2026-11-10).
+// Header keys answer to `get` case-insensitively and to lower and Title case as
+// properties.
 //
-// Reading one is `String(v[0])`, not `v[0] === "…"`: the element type is
-// `JavaString`, so a direct comparison against a JS string literal is a type
-// error rather than a comparison that may quietly be false. Membership takes a
-// plain literal — `allowedScopes.contains("openid")` — because the lookup
-// parameters in rhino-1.7.14.d.ts widen for Java strings.
+// `requestProperties` has four entries: `realm`, `requestUri` (JS strings),
+// `requestHeaders` (which carries the client's `Authorization: Basic …`; keys
+// answer to lower and Title case) and `requestParams`. `clientProperties` has
+// six: `clientId`, `customProperties`, `redirectUris` and the three `allowed*`
+// sets, which are NOT declared — see below. DCR's `requestProperties` shares the
+// binding name and nothing else that has been checked here.
+//
+// The elements are JS strings on the next-gen engine, so `v[0] === "…"` is a
+// real comparison (the legacy engine hands back Java strings, and `===` is
+// `false` there). The list around them is a `MeasuredJavaList`: no `includes`,
+// `indexOf` or `join`.
 //
 // Note also that `requestHeaders["content-type"]` is possibly `undefined` under
 // the base tsconfig's `noUncheckedIndexedAccess`, so indexing straight into it
 // does not compile. That is not pedantry: the same expression throws in Rhino
 // on a request that lacks the header. Bind it first, and guard —
 // `var v = requestProperties.requestHeaders["content-type"];` then
-// `v && v.length ? String(v[0]) : null`.
+// `v && v.length ? v[0] : null`.
 //
 // The index signature is what keeps that honest. Members named below are the
 // ones with evidence and get autocomplete; anything else is still reachable as
@@ -580,26 +586,55 @@ type AmUserAttribute =
 // which is the same fault `noUncheckedIndexedAccess` catches on the named
 // members, waved away one line lower down. `unknown` keeps the key reachable
 // and makes you narrow it first.
+type RequestPropertyMap = Record<string, MeasuredJavaList<string>> & {
+  /** `null` for a key the request lacks (measured on validate scope). */
+  get(key: StringLike): MeasuredJavaList<string> | null;
+};
+
 interface RequestProperties {
   /** Query/form parameters of the OAuth2 request. Does **not** carry
    * `password` or `client_secret` (verified on the `password` grant). */
-  requestParams: Record<string, JavaArray<JavaString>>;
+  requestParams: RequestPropertyMap;
   /** Request headers, client credentials included — keep them out of logs. */
-  requestHeaders: Record<string, JavaArray<JavaString>>;
-  requestUri: StringLike;
-  /** Legacy-derived; not verified next-gen. */
-  realm: StringLike;
+  requestHeaders: RequestPropertyMap;
+  requestUri: string;
+  realm: string;
   [key: string]: unknown;
 }
 
-// Legacy-derived in full — see the note above. Only `clientId` is a safe
-// assumption; the three lists are the legacy OIDC claims shape.
+// `allowedGrantTypes`, `allowedScopes` and `allowedResponseTypes` are
+// deliberately absent. Every member access on any of the three is the class
+// shutter on the next-gen engine — `Access to Java class "java.util.HashSet"`
+// (or `TreeSet`, `LinkedHashSet`) `is prohibited` — measured in access-token
+// modification, OIDC claims, validate scope and may-act (2026-11-10). Declared,
+// they let `clientProperties.allowedScopes.contains(…)` compile and throw. With
+// the index signature below, a dot read is a type error and a bracket read is
+// `unknown`. The legacy engine's `clientProperties` is a separate type in its
+// own overlay, where those sets are readable.
+//
+// `customProperties` and `redirectUris` were measured only empty, so their
+// element types are not claimed.
 interface ClientProperties {
   clientId: StringLike;
-  allowedGrantTypes: JavaArray<JavaString>;
-  allowedScopes: JavaArray<JavaString>;
-  allowedResponseTypes: JavaArray<JavaString>;
+  customProperties: JavaMap<StringLike, unknown>;
+  redirectUris: MeasuredJavaList<unknown>;
   [key: string]: unknown;
+}
+
+// A next-gen OAuth2 scope collection: `scopes` in token modification, may-act and
+// OIDC claims. A Java list of JS strings, not a JS array — `Array.isArray` is
+// false and no `Array.prototype` method exists (measured 2026-11-10, docs/api/12).
+// Declared: `length`, `[i]` and `contains()`, measured in all three contexts;
+// `size()`, measured in token modification and may-act but not in OIDC claims; and
+// `toArray()`, measured in OIDC claims and may-act (not a JS array). `get(i)` is
+// not declared, because no scope set was measured calling it, and `add()` is
+// measured only on token modification and validate scope (unmeasured on may-act),
+// so it is not here either. Token modification (`TokenScopeList`), may-act
+// (`MayActScopeList`) and validate scope (`ValidateScopeList`) each extend this in
+// their own overlay with what was measured there.
+interface ScopeList extends MeasuredJavaListCore<string> {
+  contains(scope: StringLike): boolean;
+  toArray(): MeasuredJavaArray;
 }
 
 // Only next-generation scripts can require() library scripts (resolved via the

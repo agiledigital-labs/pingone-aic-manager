@@ -43,9 +43,9 @@ with `fixtures-legacy/legacy-idrepository-methods.script.js`
   narrowing the return.
 
   It is **not** a `java.util.Set`, which this file claimed until 2026-09-10 —
-  a Set has no `length` and no index access. Nor is it the `String[]` the AM
-  8.1.1 class file declares: `String(v)` is `[{}]`, the bracketed `toString` of
-  a collection, where a Java array stringifies as `[Ljava.lang.String;@…`.
+  a Set has no `length` and no index access. Nor is it a Java `String[]`:
+  `String(v)` is `[{}]`, the bracketed `toString` of a collection, where a Java
+  array stringifies as `[Ljava.lang.String;@…`.
   `includes()` is the one array-ish member that does **not** exist here, so
   `getAttributeValues(n).includes(x)` type-checks against `JavaArray` and throws
   — use `contains()`.
@@ -53,10 +53,7 @@ with `fixtures-legacy/legacy-idrepository-methods.script.js`
 - **The next-gen binding has no `getAttribute` at all** (verified 2026-09-10).
   `idRepository.getIdentity(uuid).getAttribute("fr-idm-custom-attrs")` throws
   `TypeError: Cannot find function getAttribute in object
-  …ScriptedIdentityScriptWrapper`. The AM 8.1.1 `ScriptedIdentity` class does
-  declare `getAttribute(String) -> java.util.Set` as public, so this is the
-  **wrapper** withholding it, not the class lacking it — an on-prem class file
-  is evidence about what AM could expose, never about what AIC does.
+  …ScriptedIdentityScriptWrapper`.
   `getAttribute` lives on the classic `AMIdentity` bindings instead (legacy OIDC
   claims, legacy access-token modification), where it returns a
   `java.util.HashSet` — see

@@ -617,6 +617,35 @@ fn carry_unmodelled(old: &Value, rebuilt: &mut Value, repointed_from: Option<&st
     });
 }
 
+/// Keeps an unchanged reverse end's own attributes ([`ATTRIBUTE_KEYS`] and
+/// the node's `validate`) exactly as the tenant has them, absent keys
+/// included. The relationship form collects these for the source end only, so
+/// without this a save rewrote the reverse with `wrap_with_attrs`' defaults
+/// (`searchable: false`, `userEditable: true`, `validate: false`), whatever
+/// the tenant held. Called only when the reverse keeps its object, key and
+/// cardinality.
+fn keep_reverse_attributes(old: &Value, rebuilt: &mut Value) {
+    fn keep(from: &Value, into: &mut Value, key: &str) {
+        let Some(into) = into.as_object_mut() else {
+            return;
+        };
+        match from.get(key) {
+            Some(value) => {
+                into.insert(key.to_string(), value.clone());
+            }
+            None => {
+                into.remove(key);
+            }
+        }
+    }
+    for key in ATTRIBUTE_KEYS {
+        keep(old, rebuilt, key);
+    }
+    if let (Some(old_node), Some(node)) = (relationship_node(old), relationship_node_mut(rebuilt)) {
+        keep(old_node, node, "validate");
+    }
+}
+
 /// Keeps the resource collection the tenant has rather than the one the builder
 /// would invent.
 ///
@@ -905,6 +934,14 @@ pub fn apply_relationship_spec(
         // cannot change, so none of its entries is ever repointed away.
         if let Some(old) = &old_reverse {
             carry_unmodelled(old, &mut property, None);
+            // The form models the source end only; the reverse end's flags
+            // are the builder's defaults. Rewriting the same reverse in place
+            // keeps the tenant's instead.
+            if previous.is_some_and(|previous| previous.old_target == spec.target_object)
+                && is_many(old) == is_many(&property)
+            {
+                keep_reverse_attributes(old, &mut property);
+            }
         }
         let target = crate::managed::api::object_named_mut(&mut updated, &spec.target_object)
             .map_err(|error| error.to_string())?;
@@ -2133,6 +2170,8 @@ fn add_field_spec_from_draft(draft: &AddFieldState) -> Result<AddFieldSpec, Stri
         user_editable: draft.user_editable,
         enum_values: draft.parsed_enum_values()?,
         default_value: draft.parsed_default(),
+        nullable: false,
+        after: None,
     })
 }
 
@@ -2787,6 +2826,26 @@ pub struct AddFieldApplied {
 
 // ── Allowed-value constraints ────────────────────────────────────────────
 
+/// A node's declared type: the string itself, or the one non-null member of a
+/// nullable `["<type>", "null"]` (what `field add --nullable` writes), so the
+/// enum and default editors treat a nullable field as its base type.
+fn declared_kind(node: &Value) -> Option<&str> {
+    match node.get("type")? {
+        Value::String(kind) => Some(kind),
+        Value::Array(kinds) if kinds.iter().any(|kind| kind.as_str() == Some("null")) => {
+            let mut bases = kinds
+                .iter()
+                .filter_map(Value::as_str)
+                .filter(|kind| *kind != "null");
+            match (bases.next(), bases.next()) {
+                (Some(base), None) => Some(base),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
 /// Returns the node which owns an enum constraint and its declared type.
 ///
 /// Scalars store it on the property; arrays store it on `items`. Keeping that
@@ -2795,7 +2854,7 @@ fn enum_target(property: &Value) -> Result<(&Value, &str), String> {
     if crate::managed::state::is_relationship_property(property) {
         return Err("enum constraints are not supported for type 'relationship'".into());
     }
-    let target = match property.get("type").and_then(Value::as_str) {
+    let target = match declared_kind(property) {
         Some("string" | "number" | "integer") => property,
         Some("array") => property.get("items").ok_or_else(|| {
             "enum constraints are not supported for array items of missing type".to_string()
@@ -2809,10 +2868,7 @@ fn enum_target(property: &Value) -> Result<(&Value, &str), String> {
             return Err("enum constraints are not supported for a property with no type".into());
         }
     };
-    let kind = target
-        .get("type")
-        .and_then(Value::as_str)
-        .unwrap_or("missing");
+    let kind = declared_kind(target).unwrap_or("missing");
     if matches!(kind, "string" | "number" | "integer") {
         Ok((target, kind))
     } else {
@@ -2830,6 +2886,28 @@ pub fn enum_constraint_eligible(property: &Value) -> bool {
     enum_target(property).is_ok()
 }
 
+/// Whether a property's kind takes a `default` this tool can write.
+///
+/// Object and object-array defaults are refused, not merely unvalidated: how IDM
+/// applies one is unmeasured, and a default the server accepts but cannot apply
+/// costs the whole object (see [`default_error`]).
+pub fn default_eligible(property: &Value) -> bool {
+    let scalar =
+        |kind: Option<&str>| matches!(kind, Some("string" | "boolean" | "number" | "integer"));
+    match declared_kind(property) {
+        Some("array") => scalar(property.pointer("/items/type").and_then(Value::as_str)),
+        kind => scalar(kind),
+    }
+}
+
+/// Whether a field type offered by the scalar-field form takes a default.
+pub fn scalar_type_supports_default(field_type: ScalarFieldType) -> bool {
+    !matches!(
+        field_type,
+        ScalarFieldType::Object | ScalarFieldType::ObjectArray
+    )
+}
+
 /// Whether a field type offered by the scalar-field form supports a constraint.
 pub fn scalar_type_supports_enum(field_type: ScalarFieldType) -> bool {
     matches!(
@@ -2840,7 +2918,7 @@ pub fn scalar_type_supports_enum(field_type: ScalarFieldType) -> bool {
 
 fn enum_target_mut(property: &mut Value) -> Result<(&mut Value, String), String> {
     let kind = enum_target(property)?.1.to_string();
-    let target = if property.get("type").and_then(Value::as_str) == Some("array") {
+    let target = if declared_kind(property) == Some("array") {
         property.get_mut("items").ok_or_else(|| {
             "enum constraints are not supported for array items of missing type".to_string()
         })?
@@ -2950,10 +3028,18 @@ fn default_error(kind: &str, detail: impl std::fmt::Display) -> String {
 }
 
 fn coerce_default_value(raw: &str, property: &Value) -> Result<Value, String> {
-    let kind = property
-        .get("type")
-        .and_then(Value::as_str)
-        .unwrap_or("missing");
+    let kind = declared_kind(property).unwrap_or("missing");
+    let item_kind = property.pointer("/items/type").and_then(Value::as_str);
+    if kind == "object" || (kind == "array" && item_kind == Some("object")) {
+        return Err(format!(
+            "a default for an {} field is not offered: how IDM applies one is unmeasured, and a default it accepts but cannot apply makes the object 404",
+            if kind == "object" {
+                "object"
+            } else {
+                "object[]"
+            }
+        ));
+    }
     match kind {
         "string" => Ok(Value::String(raw.to_string())),
         "boolean" => match raw {
@@ -2999,10 +3085,7 @@ fn matches_property_type(value: &Value, kind: &str) -> bool {
 }
 
 fn validate_default_enum(property: &Value, value: &Value) -> Result<(), String> {
-    let kind = property
-        .get("type")
-        .and_then(Value::as_str)
-        .unwrap_or("missing");
+    let kind = declared_kind(property).unwrap_or("missing");
     let permitted = if kind == "array" {
         property.pointer("/items/enum")
     } else {
@@ -3268,6 +3351,8 @@ pub fn apply_add_field(object_def: &Value, spec: &AddFieldSpec) -> Result<AddFie
         ScalarFieldType::Boolean => json!({"type": "boolean"}),
         ScalarFieldType::Number => json!({"type": "number"}),
         ScalarFieldType::StringArray => json!({"type": "array", "items": {"type": "string"}}),
+        ScalarFieldType::Object => json!({"type": "object"}),
+        ScalarFieldType::ObjectArray => json!({"type": "array", "items": {"type": "object"}}),
     };
     let property_map = property
         .as_object_mut()
@@ -3288,7 +3373,16 @@ pub fn apply_add_field(object_def: &Value, spec: &AddFieldSpec) -> Result<AddFie
         apply_default_change(&mut property, &DefaultChange::Set(default_value.clone()))?;
     }
 
+    // Last, so the enum and default above saw the plain `type` they key on.
+    if spec.nullable {
+        let kind = property["type"].take();
+        property["type"] = json!([kind, "null"]);
+    }
+
     insert_new_property(&mut object, &field_key, property, spec.required)?;
+    if let Some(after) = &spec.after {
+        move_order_key_after(&mut object, &field_key, after)?;
+    }
     Ok(AddFieldApplied {
         object,
         field_key,
@@ -3315,6 +3409,27 @@ pub fn apply_add_hook(object_def: &Value, object_name: &str, event: &str) -> Res
             "source": format!("// {event} for {object_name}\n"),
         }),
     );
+    Ok(object)
+}
+
+/// Removes a lifecycle hook from an object definition. Unlike `apply_add_hook`
+/// an absent hook is an error, not a no-op: a delete that found nothing to
+/// delete should not report success.
+pub fn apply_delete_hook(
+    object_def: &Value,
+    object_name: &str,
+    event: &str,
+) -> Result<Value, String> {
+    if !crate::managed::state::HOOK_EVENTS.contains(&event) {
+        return Err(format!("unsupported managed lifecycle hook '{event}'"));
+    }
+    let mut object = object_def.clone();
+    let object_map = object
+        .as_object_mut()
+        .ok_or_else(|| format!("managed object '{object_name}' is not object-valued"))?;
+    object_map
+        .remove(event)
+        .ok_or_else(|| format!("{object_name} has no {event} hook"))?;
     Ok(object)
 }
 
@@ -3483,6 +3598,32 @@ fn append_order_key(object: &mut Value, field_key: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Moves `field_key` to sit right after `after` in `schema.order`. `after`
+/// must be a declared property and already listed in the order.
+fn move_order_key_after(object: &mut Value, field_key: &str, after: &str) -> Result<(), String> {
+    if after == field_key {
+        return Err(format!(
+            "--after cannot name the new field '{field_key}' itself"
+        ));
+    }
+    if crate::managed::state::properties(object).is_none_or(|p| !p.contains_key(after)) {
+        return Err(format!(
+            "--after '{after}' is not a property of this object"
+        ));
+    }
+    let order = schema_mut(object)?
+        .get_mut("order")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| "schema.order is not an array".to_string())?;
+    order.retain(|value| value.as_str() != Some(field_key));
+    let at = order
+        .iter()
+        .position(|value| value.as_str() == Some(after))
+        .ok_or_else(|| format!("--after '{after}' is not listed in schema.order"))?;
+    order.insert(at + 1, Value::String(field_key.to_string()));
+    Ok(())
+}
+
 fn rename_order_key(object: &mut Value, old_key: &str, new_key: &str) -> Result<(), String> {
     let schema = schema_mut(object)?;
     let order_value = schema
@@ -3621,19 +3762,29 @@ pub fn cancel_active_draft(app: &mut App) {
 
 pub fn advance_focus(edit: &mut FieldEditState, forward: bool) {
     edit.focused = if forward {
-        edit.focused
-            .next(edit.caps, enum_constraint_eligible(&edit.original_property))
+        edit.focused.next(
+            edit.caps,
+            enum_constraint_eligible(&edit.original_property),
+            default_eligible(&edit.original_property),
+        )
     } else {
-        edit.focused
-            .prev(edit.caps, enum_constraint_eligible(&edit.original_property))
+        edit.focused.prev(
+            edit.caps,
+            enum_constraint_eligible(&edit.original_property),
+            default_eligible(&edit.original_property),
+        )
     };
 }
 
 pub fn advance_add_field_focus(draft: &mut AddFieldState, forward: bool) {
     draft.focused = if forward {
-        draft.focused.next(draft.enum_eligible())
+        draft
+            .focused
+            .next(draft.enum_eligible(), draft.default_eligible())
     } else {
-        draft.focused.prev(draft.enum_eligible())
+        draft
+            .focused
+            .prev(draft.enum_eligible(), draft.default_eligible())
     };
 }
 
@@ -3708,6 +3859,182 @@ mod tests {
             user_editable: true,
             enum_values: None,
             default_value: None,
+            nullable: false,
+            after: None,
+        }
+    }
+
+    fn widget() -> Value {
+        json!({
+            "name": "custom_widget",
+            "schema": {
+                "properties": {"a": {"type": "string"}, "b": {"type": "string"}},
+                "required": [],
+                "order": ["a", "b"]
+            }
+        })
+    }
+
+    #[test]
+    fn object_fields_refuse_a_default_on_add_and_on_edit() {
+        // `[]` is the discriminating object[] case: element validation is
+        // vacuous over it, so it slipped through before the refusal existed.
+        for (field_type, nullable, raw) in [
+            (ScalarFieldType::Object, false, "{}"),
+            (ScalarFieldType::Object, true, "{}"),
+            (ScalarFieldType::ObjectArray, false, "[{}]"),
+            (ScalarFieldType::ObjectArray, false, "[]"),
+        ] {
+            let spec = AddFieldSpec {
+                field_type,
+                nullable,
+                default_value: Some(raw.into()),
+                ..add_field_spec("details")
+            };
+            let error = apply_add_field(&widget(), &spec).map(|_| ()).unwrap_err();
+            assert!(
+                error.contains("is not offered"),
+                "{field_type:?} {raw}: {error}"
+            );
+            assert!(!scalar_type_supports_default(field_type));
+        }
+
+        let added = apply_add_field(
+            &widget(),
+            &AddFieldSpec {
+                field_type: ScalarFieldType::Object,
+                ..add_field_spec("details")
+            },
+        )
+        .unwrap()
+        .object;
+        let property = &added["schema"]["properties"]["details"];
+        assert!(!default_eligible(property));
+        let edit = FieldEditSpec {
+            default_change: DefaultChange::Set("{}".into()),
+            ..FieldEditSpec::default()
+        };
+        let error = apply_field_edit(&added, "details", &edit)
+            .map(|_| ())
+            .unwrap_err();
+        assert!(error.contains("is not offered"), "{error}");
+    }
+
+    #[test]
+    fn default_eligibility_accepts_scalar_and_scalar_array_kinds_only() {
+        for property in [
+            json!({"type": "string"}),
+            json!({"type": ["boolean", "null"]}),
+            json!({"type": "integer"}),
+            json!({"type": "array", "items": {"type": "number"}}),
+        ] {
+            assert!(default_eligible(&property), "{property}");
+        }
+        for property in [
+            json!({"type": "object"}),
+            json!({"type": ["object", "null"]}),
+            json!({"type": "array", "items": {"type": "object"}}),
+            json!({"type": "array"}),
+            json!({"type": "relationship"}),
+        ] {
+            assert!(!default_eligible(&property), "{property}");
+        }
+    }
+
+    #[test]
+    fn add_field_writes_object_types_nullable_and_order_position() {
+        let add = |spec: AddFieldSpec| apply_add_field(&widget(), &spec).map(|a| a.object);
+
+        let object = add(AddFieldSpec {
+            field_type: ScalarFieldType::Object,
+            ..add_field_spec("details")
+        })
+        .unwrap();
+        assert_eq!(
+            object["schema"]["properties"]["details"]["type"],
+            json!("object")
+        );
+        let list = add(AddFieldSpec {
+            field_type: ScalarFieldType::ObjectArray,
+            ..add_field_spec("items")
+        })
+        .unwrap();
+        assert_eq!(
+            list["schema"]["properties"]["items"]["type"],
+            json!("array")
+        );
+        assert_eq!(
+            list["schema"]["properties"]["items"]["items"],
+            json!({"type": "object"})
+        );
+
+        // Discriminating: the enum and default key on a plain `type`, so the
+        // nullable wrap must come after them, not before.
+        let nullable = add(AddFieldSpec {
+            nullable: true,
+            enum_values: Some(enum_spec(&[("x", None), ("y", None)])),
+            default_value: Some("x".into()),
+            ..add_field_spec("code")
+        })
+        .unwrap();
+        let code = &nullable["schema"]["properties"]["code"];
+        assert_eq!(code["type"], json!(["string", "null"]));
+        assert_eq!(code["default"], json!("x"));
+        assert_eq!(crate::managed::state::property_type(code), "string?");
+        // And a nullable field stays editable as its base type afterwards.
+        assert_eq!(property_enum(code).map(|e| e.values.len()), Some(2));
+        let edit = |spec: FieldEditSpec| apply_field_edit(&nullable, "code", &spec);
+        let reset = edit(FieldEditSpec {
+            default_change: DefaultChange::Set("y".into()),
+            ..FieldEditSpec::default()
+        })
+        .unwrap();
+        let code = &reset.object["schema"]["properties"]["code"];
+        assert_eq!(
+            (&code["type"], &code["default"]),
+            (&json!(["string", "null"]), &json!("y"))
+        );
+        let cleared = edit(FieldEditSpec {
+            enum_change: EnumChange::Clear,
+            ..FieldEditSpec::default()
+        })
+        .unwrap();
+        let code = &cleared.object["schema"]["properties"]["code"];
+        assert_eq!(
+            (&code["type"], code.get("enum")),
+            (&json!(["string", "null"]), None)
+        );
+        assert!(
+            edit(FieldEditSpec {
+                enum_change: EnumChange::Set(enum_spec(&[("x", None)])),
+                ..FieldEditSpec::default()
+            })
+            .is_err(),
+            "narrowing a nullable field's enum still needs consent"
+        );
+
+        let placed = add(AddFieldSpec {
+            after: Some("a".into()),
+            ..add_field_spec("code")
+        })
+        .unwrap();
+        assert_eq!(placed["schema"]["order"], json!(["a", "code", "b"]));
+        let appended = add(add_field_spec("code")).unwrap();
+        assert_eq!(appended["schema"]["order"], json!(["a", "b", "code"]));
+
+        for after in ["missing", "code"] {
+            assert!(
+                add(AddFieldSpec {
+                    after: Some(after.into()),
+                    ..add_field_spec("code")
+                })
+                .is_err(),
+                "{after}"
+            );
+        }
+        for kind in ScalarFieldType::ALL {
+            assert_eq!(ScalarFieldType::from_label(kind.label()), Some(kind));
+            assert_eq!(kind.next().prev(), kind);
         }
     }
 
@@ -4076,6 +4403,8 @@ mod tests {
                 &AddFieldSpec {
                     field_type,
                     default_value: Some(raw.into()),
+                    nullable: false,
+                    after: None,
                     ..add_field_spec("value")
                 },
             )
@@ -4090,6 +4419,8 @@ mod tests {
             &AddFieldSpec {
                 field_type: ScalarFieldType::StringArray,
                 default_value: Some(r#"["a"]"#.into()),
+                nullable: false,
+                after: None,
                 ..add_field_spec("values")
             },
         )
@@ -4176,6 +4507,8 @@ mod tests {
             &AddFieldSpec {
                 enum_values: Some(enum_spec(&[("new", None)])),
                 default_value: Some("done".into()),
+                nullable: false,
+                after: None,
                 ..add_field_spec("status")
             },
         )
@@ -4365,6 +4698,27 @@ mod tests {
         });
         let unchanged = apply_add_hook(&existing, "alpha_lock", "onCreate").unwrap();
         assert_eq!(unchanged, existing);
+    }
+
+    #[test]
+    fn delete_hook_removes_only_that_hook_and_refuses_an_absent_one() {
+        let object = json!({
+            "name": "alpha_lock",
+            "schema": {"properties": {}, "required": [], "order": []},
+            "onCreate": {"type": "text/javascript", "source": "a();"},
+            "onUpdate": {"type": "text/javascript", "source": "b();"}
+        });
+        let deleted = apply_delete_hook(&object, "alpha_lock", "onCreate").unwrap();
+        let mut expected = object.clone();
+        expected.as_object_mut().unwrap().remove("onCreate");
+        assert_eq!(deleted, expected);
+
+        assert_eq!(
+            apply_delete_hook(&deleted, "alpha_lock", "onCreate").unwrap_err(),
+            "alpha_lock has no onCreate hook"
+        );
+        // `schema` is a top-level key too; only lifecycle events are hooks.
+        assert!(apply_delete_hook(&object, "alpha_lock", "schema").is_err());
     }
 
     #[test]
@@ -5817,6 +6171,69 @@ mod tests {
 
             assert_eq!(saved, tenant, "{order}");
         }
+    }
+
+    #[test]
+    fn editing_either_end_keeps_the_other_ends_flags() {
+        // Each end carries flags the builder would never write, and different
+        // from each other, so a reset to defaults or a copy across ends shows.
+        for (forward, reverse) in [
+            (Cardinality::Many, ReverseCardinality::One),
+            (Cardinality::One, ReverseCardinality::Many),
+        ] {
+            let spec = relationship_spec(forward, reverse);
+            let mut tenant =
+                apply_relationship_spec(&relationship_doc(&["a", "b"]), &spec, None).unwrap();
+            let owned = &mut tenant["objects"][1]["schema"]["properties"]["owned"];
+            owned["searchable"] = json!(true);
+            owned["userEditable"] = json!(false);
+            owned["viewable"] = json!(false);
+            owned["title"] = json!("Owned things");
+            owned.as_object_mut().unwrap().remove("returnByDefault");
+            relationship_node_mut(owned).unwrap()["validate"] = json!(true);
+            let previous = PreviousRelationship {
+                old_key: "owner".into(),
+                old_target: "b".into(),
+                old_reverse_key: Some("owned".into()),
+            };
+            let mut edited = spec.clone();
+            edited.searchable = !spec.searchable;
+
+            let saved = apply_relationship_spec(&tenant, &edited, Some(&previous)).unwrap();
+
+            let reverse_end =
+                |doc: &Value| doc["objects"][1]["schema"]["properties"]["owned"].clone();
+            assert_eq!(
+                reverse_end(&saved),
+                reverse_end(&tenant),
+                "{forward:?}/{reverse:?}"
+            );
+            assert_eq!(
+                saved["objects"][0]["schema"]["properties"]["owner"]["searchable"],
+                json!(edited.searchable),
+            );
+        }
+    }
+
+    #[test]
+    fn a_reverse_whose_cardinality_changes_is_rebuilt() {
+        let spec = relationship_spec(Cardinality::One, ReverseCardinality::One);
+        let mut tenant =
+            apply_relationship_spec(&relationship_doc(&["a", "b"]), &spec, None).unwrap();
+        tenant["objects"][1]["schema"]["properties"]["owned"]["searchable"] = json!(true);
+        let previous = PreviousRelationship {
+            old_key: "owner".into(),
+            old_target: "b".into(),
+            old_reverse_key: Some("owned".into()),
+        };
+        let flipped = relationship_spec(Cardinality::One, ReverseCardinality::Many);
+
+        let saved = apply_relationship_spec(&tenant, &flipped, Some(&previous)).unwrap();
+
+        assert_eq!(
+            saved["objects"][1]["schema"]["properties"]["owned"],
+            reverse_property(&flipped).unwrap(),
+        );
     }
 
     #[test]

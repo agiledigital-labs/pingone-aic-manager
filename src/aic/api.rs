@@ -2,7 +2,9 @@
 //! — neither one builds an `AicClient` directly. The bearer-mint, token
 //! cache, prod-confirm guard, and HTTP connection pool all live in the
 //! agent process; this module is the thin client glue that wraps a single
-//! request/response in the `agent::Request::ApiCall` envelope.
+//! request/response in the `agent::Request::ApiCall` envelope. Durable managed
+//! conversions supply a pre-journaled transaction id for JSON writes; the
+//! daemon forwards it unchanged to the shared HTTP transport.
 //!
 //! Add a new resource (scripts, OAuth2, journeys) by adding a module
 //! alongside this one (e.g. `esv::api`) that uses these primitives — do
@@ -194,6 +196,7 @@ pub struct ApiCall<'a> {
     content_type: Option<&'a str>,
     api_version: Option<&'a str>,
     if_match: Option<&'a str>,
+    transaction_id: Option<&'a str>,
 }
 
 impl<'a> ApiCall<'a> {
@@ -207,6 +210,7 @@ impl<'a> ApiCall<'a> {
             content_type: None,
             api_version: None,
             if_match: None,
+            transaction_id: None,
         }
     }
 
@@ -260,6 +264,12 @@ impl<'a> ApiCall<'a> {
         self
     }
 
+    /// Use the id already saved in a durable request intent.
+    pub fn transaction_id(mut self, id: &'a str) -> Self {
+        self.transaction_id = Some(id);
+        self
+    }
+
     /// The wire envelope this call will be sent as. Split out from
     /// [`Self::send`] so tests can pin the wrapper-to-envelope mapping
     /// without a live agent.
@@ -273,6 +283,7 @@ impl<'a> ApiCall<'a> {
             content_type: self.content_type.map(str::to_owned),
             api_version: self.api_version.map(str::to_owned),
             if_match: self.if_match.map(str::to_owned),
+            transaction_id: self.transaction_id.map(str::to_owned),
         })
     }
 
@@ -287,6 +298,7 @@ impl<'a> ApiCall<'a> {
             Response::ProdConfirmRequired => Err(Error::ProdConfirmRequired),
             Response::ApiError { status, body } => Err(Error::Api { status, body }),
             Response::Error { message } => Err(Error::Config(message)),
+            Response::Transport { message } => Err(Error::Transport(message)),
             other => Err(Error::Config(format!("unexpected agent reply: {other:?}"))),
         }
     }
@@ -323,6 +335,7 @@ mod tests {
             content_type: None,
             api_version: None,
             if_match: None,
+            transaction_id: None,
         }
     }
 

@@ -76,10 +76,10 @@ export const filterTable: FilterRow[] = [
   same('userName.first eq "x"', "ast", [], "reviewer repro: dotted name is one key; unknown field is 0 rows, measured"),
   same('/a:b eq "x"', "ast", [], "reviewer repro: any non-space pointer"),
   same('nomé eq "x"', "ast", [], "reviewer repro: non-ASCII pointer"),
-  // Round 3 wrongly had `count eq 1e3` here as certainly valid; CREST 27.1.1
-  // rejects it (see the fault rows). A `.` makes it a double there.
+  // Round 3 wrongly had `count eq 1e3` here as certainly valid; it is
+  // unmeasured (see the fault rows). A `.` probably makes it a double.
   // Round 5 P2-2: it parses, but a decimal against a number field is unknown (see below).
-  undecided("count eq 1.5e3", "type", "count", "exponent with a `.`: CREST 27.1.1 parses it as a double; against a number, unmeasured"),
+  undecided("count eq 1.5e3", "type", "count", "exponent with a `.`: probably a double; against a number, unmeasured"),
   same("count eq 9007199254740991", "ast", [], "2^53 - 1: the largest integer a JS number holds exactly"),
   same("count eq 2", "ast", ["b"], "integer"),
   same('text eq "a\\"b"', "ast", [], "escaped quote parses, measured"),
@@ -119,16 +119,16 @@ export const filterTable: FilterRow[] = [
   same('/a~2 eq "x"', "unsupported", "fault", "invalid RFC 6901 escape"),
   same('text eq"x"', "unsupported", "fault", "no space before a string, unmeasured"),
   same('text in "x"', "ast", "fault", "in with a scalar, unmeasured"),
-  // Round-3 P2-1: the on-prem CREST 27.1.1 parser rejects each of these
-  // (reviewer's QueryFilters.parse probe). That jar is a hypothesis about AIC,
-  // not a measurement, so they are the fault, not AIC's catchable parse error.
-  same("count eq 1e3", "unsupported", "fault", "exponent with no `.`: CREST 27.1.1 Long.parseLong refuses it"),
+  // Round-3 P2-1: each of these is probably rejected by AIC. That is a
+  // hypothesis, not a measurement, so they are the fault, not AIC's catchable
+  // parse error.
+  same("count eq 1e3", "unsupported", "fault", "exponent with no `.`: unmeasured on AIC"),
   same("count eq 1E3", "unsupported", "fault", "exponent with no `.`"),
   same("count eq 1e-3", "unsupported", "fault", "exponent with no `.`"),
   same("count eq 99999999999999999999", "unsupported", "fault", "beyond Java long"),
   same("count eq 9223372036854775808", "unsupported", "fault", "Long.MAX_VALUE + 1"),
-  same("count eq 9007199254740993", "unsupported", "fault", "2^53 + 1: CREST holds it, a JS number rounds it to 2^53"),
-  same('text\teq "x"', "unsupported", "fault", "tab separator: CREST 27.1.1 splits on U+0020 only"),
+  same("count eq 9007199254740993", "unsupported", "fault", "2^53 + 1: a JS number rounds it to 2^53"),
+  same('text\teq "x"', "unsupported", "fault", "tab separator: unmeasured on AIC"),
   same('text eq "x"\tand count pr', "unsupported", "fault", "tab separator"),
   same("text pr\n", "unsupported", "fault", "trailing newline"),
   same("text pr\n and count pr", "unsupported", "fault", "newline separator"),

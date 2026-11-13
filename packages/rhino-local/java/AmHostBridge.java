@@ -202,6 +202,7 @@ final class AmHostBridge extends BaseFunction {
       new java.util.HashSet<String>(
           java.util.Arrays.asList(
               "__rhinoLocalMapEntries",
+              "__noSuchMethod__",
               "toJSON",
               "toString",
               "get",
@@ -291,16 +292,23 @@ final class AmHostBridge extends BaseFunction {
     }
 
     /**
-     * docs/api/12: every JS number goes out as a Java double (1 is 1.0, measured for integers up
-     * to 1e6 at any depth); a boxed java.lang.Integer or Long goes out as written. Anything else
-     * is rendered the same way but flagged, since its form on the wire was not measured.
+     * docs/api/12: a number literal goes out as a Java double (1 is 1.0, measured for integers up
+     * to 1e6 at any depth); a boxed java.lang.Integer or Long goes out as written (measured).
+     * Anything else is flagged, since its form on the wire was not measured.
      */
     private String wireNumber(Object value, double number, boolean wrapped) {
       if (wrapped && (value instanceof Integer || value instanceof Long)) return value.toString();
-      if (!wrapped && value instanceof Integer) {
+      if (value instanceof Integer || value instanceof Long) {
+        // Measured: a boxed Integer or Long goes out as written. Here a boxed value reaches the
+        // script as a plain number, so it cannot be told from a number the engine itself holds
+        // as an Integer ('abc'.length, indexOf, a Java size()). Those were measured too and go out
+        // the same way; a JSON.parse result was never sent to a tenant, and the note is for it.
         assumed.add(
-            "httpClient body text for a number the script engine holds as a Java Integer (results"
-                + " of length, indexOf, JSON.parse), written as a Java double");
+            "httpClient body text for a number the script engine holds as a Java "
+                + value.getClass().getSimpleName()
+                + ": written as an integer, which is measured for a boxed value and for length,"
+                + " indexOf and size() results, and assumed for a JSON.parse result");
+        return value.toString();
       } else if (!(value instanceof Double)) {
         assumed.add(
             "httpClient body text for a number held as a Java "

@@ -13,13 +13,16 @@ use serde_json::Value;
 use crate::managed::api::is_inline_hook;
 use crate::tui::widgets::{JsonShape, ValueShape};
 
-/// Scalar property type supported by the managed field creator.
+/// Property type supported by the managed field creator. Not only scalars
+/// any more (`object`, `object[]`); the name predates them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScalarFieldType {
     String,
     Boolean,
     Number,
     StringArray,
+    Object,
+    ObjectArray,
 }
 
 impl ScalarFieldType {
@@ -28,7 +31,8 @@ impl ScalarFieldType {
             Self::String => ValueShape::Text,
             Self::Boolean => ValueShape::Bool,
             Self::Number => ValueShape::Decimal,
-            Self::StringArray => ValueShape::Json(JsonShape::Array),
+            Self::StringArray | Self::ObjectArray => ValueShape::Json(JsonShape::Array),
+            Self::Object => ValueShape::Json(JsonShape::Object),
         }
     }
 
@@ -37,16 +41,20 @@ impl ScalarFieldType {
             Self::String => Self::Boolean,
             Self::Boolean => Self::Number,
             Self::Number => Self::StringArray,
-            Self::StringArray => Self::String,
+            Self::StringArray => Self::Object,
+            Self::Object => Self::ObjectArray,
+            Self::ObjectArray => Self::String,
         }
     }
 
     pub fn prev(self) -> Self {
         match self {
-            Self::String => Self::StringArray,
+            Self::String => Self::ObjectArray,
             Self::Boolean => Self::String,
             Self::Number => Self::Boolean,
             Self::StringArray => Self::Number,
+            Self::Object => Self::StringArray,
+            Self::ObjectArray => Self::Object,
         }
     }
 
@@ -56,7 +64,23 @@ impl ScalarFieldType {
             Self::Boolean => "boolean",
             Self::Number => "number",
             Self::StringArray => "string[]",
+            Self::Object => "object",
+            Self::ObjectArray => "object[]",
         }
+    }
+
+    /// Every type, in the form's cycle order; `--type` accepts each label.
+    pub const ALL: [Self; 6] = [
+        Self::String,
+        Self::Boolean,
+        Self::Number,
+        Self::StringArray,
+        Self::Object,
+        Self::ObjectArray,
+    ];
+
+    pub fn from_label(label: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|kind| kind.label() == label)
     }
 }
 
@@ -172,6 +196,10 @@ pub struct AddFieldSpec {
     pub user_editable: bool,
     pub enum_values: Option<EnumSpec>,
     pub default_value: Option<String>,
+    /// Write `type` as `[<type>, "null"]`, the form repo-exported schemas use.
+    pub nullable: bool,
+    /// Place the key in `schema.order` right after this one; `None` appends.
+    pub after: Option<String>,
 }
 
 /// The `format` a `relationship snapshot` file carries.

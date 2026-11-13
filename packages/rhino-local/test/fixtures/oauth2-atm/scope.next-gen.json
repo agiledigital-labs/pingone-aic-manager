@@ -1,0 +1,37 @@
+{
+  "body": {
+    "expires_in": 599,
+    "scope": "zzemuc-probe zzemuc-viaBinding",
+    "token_type": "Bearer"
+  },
+  "captured": "2026-11-10, sandbox tenant, stateless client_credentials token (rhino-local ctx1)",
+  "claims": {
+    "aud": "zzemuC-atm",
+    "client_id": "zzemuC-atm",
+    "cts": "OAUTH2_STATELESS_GRANT",
+    "expires_in": 3600,
+    "grant_type": "client_credentials",
+    "realm": "/alpha",
+    "scope": [
+      "zzemuc-viaBinding",
+      "zzemuc-probe"
+    ],
+    "sub": "zzemuC-atm",
+    "subname": "zzemuC-atm",
+    "tokenName": "access_token",
+    "token_type": "Bearer"
+  },
+  "expMinusIat": 600,
+  "http": 200,
+  "probe": {
+    "afterArray": "number:2",
+    "authBase": "number:3600000",
+    "bindingAdd": "string:[zzemuc-probe, zzemuc-viaBinding]",
+    "bindingAddAfter": "string:3 / token 2",
+    "expAfter": "number:600000",
+    "getAdd": "throw:InternalError: null",
+    "setArray": "undefined",
+    "setBinding": "undefined",
+    "setExp": "undefined"
+  }
+}

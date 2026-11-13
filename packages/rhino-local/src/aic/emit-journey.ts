@@ -96,11 +96,6 @@ export function emitWrapperJourney(
   source: string,
   options: EmitJourneyOptions = {}
 ): WrapperJourney {
-  if (kase.given.engine === "legacy") {
-    throw new Error(
-      "rhino-local: AIC wrapper emit is next-gen only; legacy needs JavaImporter + Action.send"
-    );
-  }
   const runId = options.runId ?? randomUUID().replace(/-/g, "").slice(0, 12);
   if (!RUN_ID_PATTERN.test(runId)) {
     throw new Error(

@@ -1,0 +1,61 @@
+{
+ "empty": {
+  "next-gen": {
+   "http": 200,
+   "normalizedProfile": "{  }",
+   "script": "({});\n",
+   "sharedStateAdded": []
+  }
+ },
+ "null": {
+  "next-gen": {
+   "http": 401,
+   "normalizedProfile": null,
+   "script": "null;\n",
+   "sharedStateAdded": null
+  }
+ },
+ "object": {
+  "next-gen": {
+   "http": 200,
+   "normalizedProfile": "{ \"givenName\": \"zzG\", \"familyName\": \"zzF\", \"email\": \"zz@example.com\", \"id\": \"zz-id\", \"zzNum\": 4.0, \"zzFrac\": 1.5, \"zzBool\": true, \"zzNull\": null, \"zzUndef\": null, \"zzNested\": { \"a\": [ 1.0, \"b\" ] } }",
+   "script": "({ givenName: \"zzG\", familyName: \"zzF\", email: \"zz@example.com\", id: \"zz-id\", zzNum: 4, zzFrac: 1.5, zzBool: true, zzNull: null, zzUndef: undefined, zzNested: { a: [1, \"b\"] } });\n",
+   "sharedStateAdded": []
+  }
+ },
+ "putshared": {
+  "next-gen": {
+   "http": 200,
+   "normalizedProfile": "{ \"id\": \"zz\" }",
+   "script": "nodeState.putShared(\"zzShared\", { a: 1 }); nodeState.putTransient(\"zzTransient\", \"t\"); ({ id: \"zz\" });\n",
+   "sharedStateAdded": [
+    "zzShared",
+    "zzTransient"
+   ]
+  }
+ },
+ "string": {
+  "next-gen": {
+   "http": 401,
+   "normalizedProfile": null,
+   "script": "\"zz\";\n",
+   "sharedStateAdded": null
+  }
+ },
+ "throw": {
+  "next-gen": {
+   "http": 401,
+   "normalizedProfile": null,
+   "script": "throw new Error(\"zzBoom\");\n",
+   "sharedStateAdded": null
+  }
+ },
+ "undefined": {
+  "next-gen": {
+   "http": 401,
+   "normalizedProfile": null,
+   "script": "undefined;\n",
+   "sharedStateAdded": null
+  }
+ }
+}

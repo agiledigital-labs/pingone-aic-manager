@@ -452,6 +452,23 @@ impl Namespace {
         ]
     }
 
+    /// A script name as the store keys it. A managed hook is `<object>.<hook>`,
+    /// but its workspace file is `idm/managed/<object>/<hook>.cjs`, so the path
+    /// form `<object>/<hook>` is accepted too. Object names cannot contain `/`,
+    /// so the rewrite is unambiguous; every other kind's name is unchanged.
+    pub fn canonical_name(&self, name: &str) -> String {
+        if self.kind == Kind::IdmManagedHook
+            && let Some((object, hook)) = name.rsplit_once('/')
+            && !object.is_empty()
+            && !object.contains('/')
+            && !hook.is_empty()
+            && !hook.contains('.')
+        {
+            return format!("{object}.{hook}");
+        }
+        name.to_string()
+    }
+
     /// The prefix label (`alpha`/`bravo`/`endpoint`/`schedule`/`managed`/`sync`).
     pub fn label(&self) -> &str {
         match self.kind {

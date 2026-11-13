@@ -1,0 +1,391 @@
+{
+ "_note": {
+  "measured": "2026-11-10, sandbox alpha, client_credentials, stateless client with scopes zzemuc6-a/b and default scope zzemuc6-a; each script is the whole may-act script on the client's accessTokenMayActScript override",
+  "result": "http plus the issued token's may_act and act claims (\"<absent>\" when the claim is missing) or AM's error; err-* scripts carry caught error messages out in may_act, the Java hash in a message levelled to @<hash>"
+ },
+ "act-null": {
+  "next-gen": {
+   "act": null,
+   "claimScope": [
+    "zzemuc6-a"
+   ],
+   "http": 200,
+   "may_act": "<absent>",
+   "scope": "zzemuc6-a",
+   "script": "// May-act result probe: act-null\ntoken.setAct(null);\n"
+  }
+ },
+ "act-object": {
+  "next-gen": {
+   "act": {
+    "sub": "zzemuC6-actor"
+   },
+   "claimScope": [
+    "zzemuc6-a"
+   ],
+   "http": 200,
+   "may_act": "<absent>",
+   "scope": "zzemuc6-a",
+   "script": "// May-act result probe: act-object\ntoken.setAct({ sub: \"zzemuC6-actor\" });\n"
+  }
+ },
+ "act-string": {
+  "next-gen": {
+   "error": "server_error",
+   "error_description": "Error running may_act script",
+   "http": 500,
+   "script": "// May-act result probe: act-string\ntoken.setAct(\"zzemuC6-actor\");\n"
+  }
+ },
+ "array": {
+  "next-gen": {
+   "error": "server_error",
+   "error_description": "Error running may_act script",
+   "http": 500,
+   "script": "// May-act result probe: array\ntoken.setMayAct([\"zzemuC6-x\"]);\n"
+  }
+ },
+ "caught": {
+  "next-gen": {
+   "act": "<absent>",
+   "claimScope": [
+    "zzemuc6-a"
+   ],
+   "http": 200,
+   "may_act": {
+    "client_id": "zzemuC6-caught"
+   },
+   "scope": "zzemuc6-a",
+   "script": "// May-act result probe: caught\ntry { token.setMayAct(\"zz\"); } catch (e) { token.setMayAct({ client_id: \"zzemuC6-caught\" }); }\n"
+  }
+ },
+ "date": {
+  "next-gen": {
+   "error": "server_error",
+   "error_description": "Failed to write json: com.fasterxml.jackson.databind.JsonMappingException: No Context associated with current Thread (through reference chain: java.util.LinkedHashMap[\"may_act\"]->org.mozilla.javascript.NativeObject[\"d\"]->org.mozilla.javascript.NativeDate[\"prototype\"]->org.mozilla.javascript.NativeDate[\"allIds\"])",
+   "http": 500,
+   "script": "// May-act result probe: date\ntoken.setMayAct({ client_id: \"zzemuC6-x\", d: new Date(0) });\n"
+  }
+ },
+ "empty": {
+  "next-gen": {
+   "act": "<absent>",
+   "claimScope": [
+    "zzemuc6-a"
+   ],
+   "http": 200,
+   "may_act": {},
+   "scope": "zzemuc6-a",
+   "script": "// May-act result probe: empty\ntoken.setMayAct({});\n"
+  }
+ },
+ "err-args": {
+  "next-gen": {
+   "act": "<absent>",
+   "claimScope": [
+    "zzemuc6-a"
+   ],
+   "http": 200,
+   "may_act": {
+    "client_id": "zzemuC6-err",
+    "r": {
+     "actString": "object|[object Error]|InternalError|InternalError: Can't find method org.forgerock.openam.oauth2.token.ExchangeableTokenScriptWrapper.setAct(string).",
+     "array": "object|[object Error]|InternalError|InternalError: Cannot convert org.mozilla.javascript.NativeArray@<hash> to java.util.Map",
+     "bool": "object|[object Error]|InternalError|InternalError: Can't find method org.forgerock.openam.oauth2.token.ExchangeableTokenScriptWrapper.setMayAct(boolean).",
+     "fn": "object|[object Error]|InternalError|InternalError: Cannot convert function to interface java.util.Map since it contains methods with different names",
+     "getFieldNull": "object|[object Error]|InternalError|InternalError: null",
+     "getFieldObj": "no-throw",
+     "getMayActArg": "object|[object Error]|InternalError|InternalError: Can't find method org.forgerock.openam.oauth2.token.ExchangeableTokenScriptWrapper.getMayAct(number).",
+     "noarg": "object|[object Error]|InternalError|InternalError: Can't find method org.forgerock.openam.oauth2.token.ExchangeableTokenScriptWrapper.setMayAct().",
+     "number": "object|[object Error]|InternalError|InternalError: Can't find method org.forgerock.openam.oauth2.token.ExchangeableTokenScriptWrapper.setMayAct(number).",
+     "string": "object|[object Error]|InternalError|InternalError: Can't find method org.forgerock.openam.oauth2.token.ExchangeableTokenScriptWrapper.setMayAct(string).",
+     "two": "object|[object Error]|InternalError|InternalError: Can't find method org.forgerock.openam.oauth2.token.ExchangeableTokenScriptWrapper.setMayAct(object,object).",
+     "undef": "object|[object Error]|InternalError|InternalError: Can't find method org.forgerock.openam.oauth2.token.ExchangeableTokenScriptWrapper.setMayAct(org.mozilla.javascript.Undefined)."
+    }
+   },
+   "scope": "zzemuc6-a",
+   "script": "// May-act caught-error probe: err-args\nfunction rec(f) { try { f(); return \"no-throw\"; } catch (e) { return typeof e + \"|\" + Object.prototype.toString.call(e) + \"|\" + (e && e.name) + \"|\" + String(e).replace(/ \\([^()]*#[0-9]+\\)$/, \"\"); } }\nvar r = {};\nr.string = rec(function () { token.setMayAct(\"zz\"); }); r.number = rec(function () { token.setMayAct(7); }); r.array = rec(function () { token.setMayAct([\"zz\"]); }); r.noarg = rec(function () { token.setMayAct(); }); r.two = rec(function () { token.setMayAct({}, {}); }); r.bool = rec(function () { token.setMayAct(true); }); r.undef = rec(function () { token.setMayAct(undefined); }); r.actString = rec(function () { token.setAct(\"zz\"); }); r.getMayActArg = rec(function () { token.getMayAct(1); }); r.getFieldNull = rec(function () { return token.getField(null); }); r.getFieldObj = rec(function () { token.getField({}); }); r.fn = rec(function () { token.setMayAct(function () {}); });\ntoken.setMayAct({ client_id: \"zzemuC6-err\", r: r });\n"
+  }
+ },
+ "err-java": {
+  "next-gen": {
+   "act": "<absent>",
+   "claimScope": [
+    "zzemuc6-a"
+   ],
+   "http": 200,
+   "may_act": {
+    "client_id": "zzemuC6-err",
+    "r": {
+     "hashMap": "object|[object Error]|TypeError|TypeError: [JavaPackage java.util.HashMap] is not a function, it is object.",
+     "setField": "object|[object Error]|TypeError|TypeError: Cannot find function setField in object org.forgerock.openam.oauth2.token.ExchangeableTokenScriptWrapper@<hash>.",
+     "toStr": "object|[object Error]|TypeError|TypeError: Cannot find function toString in object org.forgerock.openam.oauth2.token.ExchangeableTokenScriptWrapper@<hash>."
+    }
+   },
+   "scope": "zzemuc6-a",
+   "script": "// May-act caught-error probe: err-java\nfunction rec(f) { try { f(); return \"no-throw\"; } catch (e) { return typeof e + \"|\" + Object.prototype.toString.call(e) + \"|\" + (e && e.name) + \"|\" + String(e).replace(/ \\([^()]*#[0-9]+\\)$/, \"\"); } }\nvar r = {};\nr.hashMap = rec(function () { var m = new java.util.HashMap(); token.setMayAct(m); }); r.setField = rec(function () { token.setField(\"a\", \"b\"); }); r.toStr = rec(function () { return token.toString(); });\ntoken.setMayAct({ client_id: \"zzemuC6-err\", r: r });\n"
+  }
+ },
+ "getfield-after": {
+  "next-gen": {
+   "act": {
+    "j": "{\"client_id\":\"zzemuC6-x\"}",
+    "sub": "zzemuC6-f",
+    "t": "object|[object Object]"
+   },
+   "claimScope": [
+    "zzemuc6-a"
+   ],
+   "http": 200,
+   "may_act": {
+    "client_id": "zzemuC6-x"
+   },
+   "scope": "zzemuc6-a",
+   "script": "// May-act result probe: getfield-after\ntoken.setMayAct({ client_id: \"zzemuC6-x\" }); var f = token.getField(\"may_act\"); token.setAct({ sub: \"zzemuC6-f\", t: typeof f + \"|\" + Object.prototype.toString.call(f), j: JSON.stringify(f) });\n"
+  }
+ },
+ "java-map": {
+  "next-gen": {
+   "error": "server_error",
+   "error_description": "Error running may_act script",
+   "http": 500,
+   "script": "// May-act result probe: java-map\nvar m = new java.util.HashMap(); m.put(\"client_id\", \"zzemuC6-x\"); token.setMayAct(m);\n"
+  }
+ },
+ "mutate-after": {
+  "next-gen": {
+   "act": "<absent>",
+   "claimScope": [
+    "zzemuc6-a"
+   ],
+   "http": 200,
+   "may_act": {
+    "client_id": "zzemuC6-after",
+    "extra": "x"
+   },
+   "scope": "zzemuc6-a",
+   "script": "// May-act result probe: mutate-after\nvar o = { client_id: \"zzemuC6-before\" }; token.setMayAct(o); o.client_id = \"zzemuC6-after\"; o.extra = \"x\";\n"
+  }
+ },
+ "nested": {
+  "next-gen": {
+   "act": "<absent>",
+   "claimScope": [
+    "zzemuc6-a"
+   ],
+   "http": 200,
+   "may_act": {
+    "client_id": "zzemuC6-x",
+    "n": {
+     "a": 1.0,
+     "b": [
+      1.0,
+      "a"
+     ]
+    },
+    "sub": "zzemuC6-s"
+   },
+   "scope": "zzemuc6-a",
+   "script": "// May-act result probe: nested\ntoken.setMayAct({ client_id: \"zzemuC6-x\", sub: \"zzemuC6-s\", n: { a: 1, b: [1, \"a\"] } });\n"
+  }
+ },
+ "noarg": {
+  "next-gen": {
+   "error": "server_error",
+   "error_description": "Error running may_act script",
+   "http": 500,
+   "script": "// May-act result probe: noarg\ntoken.setMayAct();\n"
+  }
+ },
+ "none": {
+  "next-gen": {
+   "act": "<absent>",
+   "claimScope": [
+    "zzemuc6-a"
+   ],
+   "http": 200,
+   "may_act": "<absent>",
+   "scope": "zzemuc6-a",
+   "script": "// May-act result probe: none\nvar x = 1;\n"
+  }
+ },
+ "nonfinite": {
+  "next-gen": {
+   "act": "<absent>",
+   "claimScope": [
+    "zzemuc6-a"
+   ],
+   "http": 200,
+   "may_act": {
+    "client_id": "zzemuC6-x",
+    "n": "NaN"
+   },
+   "scope": "zzemuc6-a",
+   "script": "// May-act result probe: nonfinite\ntoken.setMayAct({ client_id: \"zzemuC6-x\", n: NaN });\n"
+  }
+ },
+ "null": {
+  "next-gen": {
+   "act": "<absent>",
+   "claimScope": [
+    "zzemuc6-a"
+   ],
+   "http": 200,
+   "may_act": null,
+   "scope": "zzemuc6-a",
+   "script": "// May-act result probe: null\ntoken.setMayAct(null);\n"
+  }
+ },
+ "null-member": {
+  "next-gen": {
+   "act": "<absent>",
+   "claimScope": [
+    "zzemuc6-a"
+   ],
+   "http": 200,
+   "may_act": {
+    "client_id": "zzemuC6-x",
+    "z": null
+   },
+   "scope": "zzemuc6-a",
+   "script": "// May-act result probe: null-member\ntoken.setMayAct({ client_id: \"zzemuC6-x\", z: null });\n"
+  }
+ },
+ "number": {
+  "next-gen": {
+   "error": "server_error",
+   "error_description": "Error running may_act script",
+   "http": 500,
+   "script": "// May-act result probe: number\ntoken.setMayAct(7);\n"
+  }
+ },
+ "numbers": {
+  "next-gen": {
+   "act": "<absent>",
+   "claimScope": [
+    "zzemuc6-a"
+   ],
+   "http": 200,
+   "may_act": {
+    "b": true,
+    "client_id": "zzemuC6-x",
+    "f": 1.5,
+    "i": 1.0
+   },
+   "scope": "zzemuc6-a",
+   "script": "// May-act result probe: numbers\ntoken.setMayAct({ client_id: \"zzemuC6-x\", i: 1, f: 1.5, b: true });\n"
+  }
+ },
+ "object": {
+  "next-gen": {
+   "act": "<absent>",
+   "claimScope": [
+    "zzemuc6-a"
+   ],
+   "http": 200,
+   "may_act": {
+    "client_id": "zzemuC6-x"
+   },
+   "scope": "zzemuc6-a",
+   "script": "// May-act result probe: object\ntoken.setMayAct({ client_id: \"zzemuC6-x\" });\n"
+  }
+ },
+ "roundtrip": {
+  "next-gen": {
+   "act": "<absent>",
+   "claimScope": [
+    "zzemuc6-a"
+   ],
+   "http": 200,
+   "may_act": {
+    "client_id": "zzemuC6-got",
+    "j": "{\"client_id\":\"zzemuC6-x\",\"n\":{\"a\":1},\"l\":[1,\"a\"]}",
+    "na": "number|1",
+    "same": "true",
+    "tl": "object|true|[object Array]",
+    "tn": "object|[object Object]"
+   },
+   "scope": "zzemuc6-a",
+   "script": "// May-act result probe: roundtrip\ntoken.setMayAct({ client_id: \"zzemuC6-x\", n: { a: 1 }, l: [1, \"a\"] }); var m = token.getMayAct(); token.setMayAct({ client_id: \"zzemuC6-got\", tn: typeof m.n + \"|\" + Object.prototype.toString.call(m.n), tl: typeof m.l + \"|\" + Array.isArray(m.l) + \"|\" + Object.prototype.toString.call(m.l), na: typeof m.n.a + \"|\" + m.n.a, j: JSON.stringify(m), same: String(m === token.getMayAct()) });\n"
+  }
+ },
+ "set-then-null": {
+  "next-gen": {
+   "act": "<absent>",
+   "claimScope": [
+    "zzemuc6-a"
+   ],
+   "http": 200,
+   "may_act": null,
+   "scope": "zzemuc6-a",
+   "script": "// May-act result probe: set-then-null\ntoken.setMayAct({ client_id: \"zzemuC6-a\" }); token.setMayAct(null);\n"
+  }
+ },
+ "string": {
+  "next-gen": {
+   "error": "server_error",
+   "error_description": "Error running may_act script",
+   "http": 500,
+   "script": "// May-act result probe: string\ntoken.setMayAct(\"zzemuC6-x\");\n"
+  }
+ },
+ "throw": {
+  "next-gen": {
+   "error": "server_error",
+   "error_description": "Error running may_act script",
+   "http": 500,
+   "script": "// May-act result probe: throw\nthrow new Error(\"zz\");\n"
+  }
+ },
+ "throw-after-set": {
+  "next-gen": {
+   "error": "server_error",
+   "error_description": "Error running may_act script",
+   "http": 500,
+   "script": "// May-act result probe: throw-after-set\ntoken.setMayAct({ client_id: \"zzemuC6-x\" }); throw new Error(\"zz\");\n"
+  }
+ },
+ "top-return": {
+  "next-gen": {
+   "act": "<absent>",
+   "claimScope": [
+    "zzemuc6-a"
+   ],
+   "http": 200,
+   "may_act": {
+    "client_id": "zzemuC6-x"
+   },
+   "scope": "zzemuc6-a",
+   "script": "// May-act result probe: top-return\ntoken.setMayAct({ client_id: \"zzemuC6-x\" }); ({ client_id: \"zzemuC6-y\" });\n"
+  }
+ },
+ "twice": {
+  "next-gen": {
+   "act": "<absent>",
+   "claimScope": [
+    "zzemuc6-a"
+   ],
+   "http": 200,
+   "may_act": {
+    "client_id": "zzemuC6-b"
+   },
+   "scope": "zzemuc6-a",
+   "script": "// May-act result probe: twice\ntoken.setMayAct({ client_id: \"zzemuC6-a\" }); token.setMayAct({ client_id: \"zzemuC6-b\" });\n"
+  }
+ },
+ "undefined-member": {
+  "next-gen": {
+   "act": "<absent>",
+   "claimScope": [
+    "zzemuc6-a"
+   ],
+   "http": 200,
+   "may_act": {
+    "client_id": "zzemuC6-x",
+    "z": null
+   },
+   "scope": "zzemuc6-a",
+   "script": "// May-act result probe: undefined-member\ntoken.setMayAct({ client_id: \"zzemuC6-x\", z: undefined });\n"
+  }
+ }
+}

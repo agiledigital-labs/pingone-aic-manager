@@ -1,5 +1,12 @@
-//! `aic managed relationship repair` — remove a `config/repo.ds` relationship
-//! mapping that names no declared property.
+//! The single `config/repo.ds` write workflow: stale-mapping removal for
+//! `relationship repair` (and, with `--empty-entry`, removal of a deleted type's
+//! empty per-type entry), atomic pair addition for `map` / new `set`, and
+//! explicit in-place conversion rollback (both ends removed in one PUT), and
+//! its preliminary unchanged-document write check before records are touched.
+//! `conversion_records` plans full rollback eligibility before any unlink;
+//! this writer independently replans against fresh documents at the final PUT.
+//! Addition decisions and allocation live in `storage`; both use the same
+//! recheck, backup, whole-document PUT and read-back machinery below.
 //!
 //! A relationship delete leaves its `repo.ds` mappings behind, and a leftover
 //! makes the next `relationship set` that reuses the key, or reads through it,
@@ -21,10 +28,14 @@
 //!   one) and broke nothing that was read afterwards.
 //!
 //! What was **not** measured, and is therefore refused: removing a mapping
-//! that another mapping reads through, removing the last mapped property of
-//! an object, and anything on an object `config/managed` does not declare.
+//! that another mapping reads through, and anything on an object
+//! `config/managed` does not declare. Removing an object's last mapped
+//! property is allowed and keeps its per-type entry with `properties: {}`,
+//! the measured state of a freshly added entry. That entry is removed only
+//! by [`plan_remove_entry`] (`--empty-entry`), for a deleted or an existing type.
 //!
-//! Remove only. It never adds or edits a mapping.
+//! Additions use the measured 2026-11-01 shape and waitForCompletion=true.
+//! A WritePermit proves consent outside dry-run; callers also gate production.
 //!
 //! Nothing here performs I/O except through the closures [`apply_with`] is
 //! handed, so a test drives the real order of reads and writes.
@@ -37,8 +48,18 @@ use serde_json::Value;
 
 use crate::managed::verify::{self, Mapping};
 
-/// What removing one stale mapping will do, computed from one read of each
-/// document.
+#[derive(Debug, Clone, PartialEq)]
+enum Operation {
+    Remove,
+    Add(Box<super::storage::Addition>),
+    Rollback(super::conversion::Pair),
+    Confirm(super::conversion::Pair),
+    /// Remove an empty per-type `genericMapping."managed/<object>"` entry for
+    /// a type `config/managed` no longer declares.
+    RemoveEntry,
+}
+
+/// A removal or atomic addition computed from one read of each document.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Plan {
     pub object: String,
@@ -50,12 +71,21 @@ pub struct Plan {
     /// the tenant no longer holds exactly this.
     #[serde(skip)]
     before: Value,
-    /// `before` minus the one entry: the whole document that is `PUT`.
+    #[serde(skip)]
+    operation: Operation,
+    /// The whole transformed document that is `PUT`.
     #[serde(skip)]
     after: Value,
 }
 
 impl Plan {
+    pub fn addition(&self) -> Option<&super::storage::Addition> {
+        match &self.operation {
+            Operation::Add(addition) => Some(addition),
+            _ => None,
+        }
+    }
+
     pub fn before(&self) -> &Value {
         &self.before
     }
@@ -65,17 +95,20 @@ impl Plan {
     }
 
     pub fn label(&self) -> String {
-        format!("{}.{}", self.object, self.key)
+        match self.operation {
+            Operation::RemoveEntry => format!("managed/{}", self.object),
+            _ => format!("{}.{}", self.object, self.key),
+        }
     }
 }
 
-/// Proof that the operator consented to a non-dry-run repair. The field is
+/// Proof that the operator consented to a non-dry-run mapping write. The field is
 /// private, so [`authorize`] is the only place one is made, and
 /// [`apply_with`] requires one: a dry run cannot reach the write.
-pub struct RepairPermit(());
+pub struct WritePermit(());
 
-pub fn authorize(dry_run: bool, consented: bool) -> Option<RepairPermit> {
-    (!dry_run && consented).then_some(RepairPermit(()))
+pub fn authorize(dry_run: bool, consented: bool) -> Option<WritePermit> {
+    (!dry_run && consented).then_some(WritePermit(()))
 }
 
 /// The plan for removing `object.key`'s mapping, or why it is refused.
@@ -168,13 +201,6 @@ pub fn plan(managed: &Value, repo_ds: &Value, object: &str, key: &str) -> Result
             names.join(", ")
         ));
     }
-    if entries.len() == 1 {
-        return Err(format!(
-            "refusing to repair {label}: it is the last mapped property of managed/{object}, \
-             and removing an object's last mapping is unmeasured"
-        ));
-    }
-
     let mut after = repo_ds.clone();
     let removed = after
         .pointer_mut(&format!(
@@ -192,6 +218,16 @@ pub fn plan(managed: &Value, repo_ds: &Value, object: &str, key: &str) -> Result
     }
 
     let mut notes = Vec::new();
+    if entries.len() == 1 {
+        // The entry stays, with `properties: {}`: the state a new per-type
+        // entry starts in, measured to keep records readable and creatable
+        // (docs/api/10). Removing the entry itself would move where the
+        // object's records are looked up, which is not measured.
+        notes.push(format!(
+            "{label} is the last mapped property of managed/{object}; its per-type entry \
+             stays, with no properties — the state a new per-type entry starts in"
+        ));
+    }
     if mapping.kind == "reverseReference"
         && let (Some(partner_object), Some(partner_key)) = (
             mapping
@@ -225,8 +261,229 @@ pub fn plan(managed: &Value, repo_ds: &Value, object: &str, key: &str) -> Result
         key: key.to_string(),
         mapping,
         notes,
+        operation: Operation::Remove,
         before: repo_ds.clone(),
         after,
+    })
+}
+
+/// The plan for removing `object`'s empty per-type `repo.ds` entry, or why it
+/// is refused.
+///
+/// Measured on the sandbox (2026-11-10, `docs/api/10-managed-objects.md`):
+/// for a type that **still exists**, with records and links written while it
+/// was mapped, removing its empty entry by a backed-up whole-document `PUT`
+/// left every record readable by id and by query and new records creatable,
+/// immediately and after ~65 s. For a type `config/managed` no longer declares
+/// the same removal was measured on 2026-11-09. So both are allowed, but only
+/// for the entry `aic` itself generates for the type
+/// (`storage::generated_entry`); any other value or field is refused. Also
+/// refused: an entry that still maps a property, and one another mapping names
+/// as its `resourcePath` (unmeasured).
+pub fn plan_remove_entry(managed: &Value, repo_ds: &Value, object: &str) -> Result<Plan, String> {
+    let label = format!("managed/{object}");
+    let key = format!("managed/{object}");
+    let Some(entry) = repo_ds.pointer(&format!(
+        "/resourceMapping/genericMapping/{}",
+        pointer_token(&key)
+    )) else {
+        return Err(format!(
+            "config/repo.ds has no genericMapping entry for {label}; nothing to remove"
+        ));
+    };
+    if let Some(properties) = entry.get("properties").and_then(Value::as_object)
+        && !properties.is_empty()
+    {
+        let names: Vec<&str> = properties.keys().map(String::as_str).collect();
+        return Err(format!(
+            "refusing to remove {label}'s per-type entry: it still maps {}. Remove those \
+             mappings first (`relationship repair <object>.<key>`)",
+            names.join(", ")
+        ));
+    }
+    if entry.get("properties").is_some_and(|p| !p.is_object()) {
+        return Err(format!(
+            "refusing to remove {label}'s per-type entry: its `properties` is not an object"
+        ));
+    }
+    let readers = readers_of(repo_ds, object);
+    if !readers.is_empty() {
+        return Err(format!(
+            "refusing to remove {label}'s per-type entry: config/repo.ds maps {} to \
+             managed/{object}, and removing the entry under a mapping that names it is unmeasured",
+            readers.join(", ")
+        ));
+    }
+    let mut after = repo_ds.clone();
+    let removed = after
+        .pointer_mut("/resourceMapping/genericMapping")
+        .and_then(Value::as_object_mut)
+        .and_then(|entries| entries.remove(&key));
+    if removed.is_none() {
+        return Err(format!("internal: could not locate {label} to remove"));
+    }
+    // Only the layout `aic` itself generates for this type is a measured one
+    // (docs/api/10). Any other value decides where records are stored, so
+    // removing it is refused rather than noted.
+    let generated = super::storage::generated_entry(object);
+    let mut differing: Vec<String> = Vec::new();
+    if let (Some(actual), Some(expected)) = (entry.as_object(), generated.as_object()) {
+        for (name, value) in expected {
+            if name != "properties" && actual.get(name) != Some(value) {
+                differing.push(name.clone());
+            }
+        }
+        for name in actual.keys() {
+            if !expected.contains_key(name) {
+                differing.push(name.clone());
+            }
+        }
+    } else {
+        differing.push("(the entry is not an object)".into());
+    }
+    if !differing.is_empty() {
+        return Err(format!(
+            "refusing to remove {label}'s per-type entry: it is not the layout aic generates \
+             (differs in {}), and removing a storage layout that was not measured is refused",
+            differing.join(", ")
+        ));
+    }
+    let mut notes = Vec::new();
+    if crate::managed::api::object_named(managed, object).is_ok() {
+        notes.push(format!(
+            "{object} is still declared in config/managed; its records were measured to stay \
+             readable and creatable after its empty entry was removed (docs/api/10)"
+        ));
+    }
+    Ok(Plan {
+        object: object.to_string(),
+        key: String::new(),
+        mapping: Mapping {
+            kind: "per-type entry".into(),
+            resource_path: Some(key),
+            property_name: None,
+        },
+        notes,
+        operation: Operation::RemoveEntry,
+        before: repo_ds.clone(),
+        after,
+    })
+}
+
+/// `object.key` labels of every `repo.ds` mapping, in any section, whose
+/// `resourcePath` is `managed/<object>`.
+fn readers_of(repo_ds: &Value, object: &str) -> Vec<String> {
+    let target = format!("managed/{object}");
+    let mut found = Vec::new();
+    let Some(sections) = repo_ds.get("resourceMapping").and_then(Value::as_object) else {
+        return found;
+    };
+    for (section, entries) in sections {
+        let Some(entries) = entries.as_object() else {
+            continue;
+        };
+        for (resource, entry) in entries {
+            let Some(properties) = entry.get("properties").and_then(Value::as_object) else {
+                continue;
+            };
+            for (key, mapping) in properties {
+                if mapping.get("resourcePath").and_then(Value::as_str) == Some(target.as_str()) {
+                    found.push(format!("{resource}.{key} ({section})"));
+                }
+            }
+        }
+    }
+    found
+}
+
+/// Plan an atomic addition; the writer treats this like a removal except for
+/// its pure recheck. Link emptiness is checked by the caller before applying.
+pub fn plan_add(managed: &Value, repo: &Value, object: &str, key: &str) -> Result<Plan, String> {
+    let addition = super::storage::plan(managed, repo, object, key)?;
+    let mapping = verify::mapped(&addition.after, object, key)
+        .ok_or("internal: addition did not produce a reference")?;
+    Ok(Plan {
+        object: object.into(),
+        key: key.into(),
+        mapping,
+        notes: Vec::new(),
+        before: repo.clone(),
+        after: addition.after.clone(),
+        operation: Operation::Add(Box::new(addition)),
+    })
+}
+
+/// Explicit rollback removes both captured mapping entries atomically. It
+/// keeps per-type metadata: removing that entry could hide newer records.
+/// The caller must first prove the mapped link store empty.
+pub fn plan_rollback(
+    managed: &Value,
+    repo: &Value,
+    pair: &super::conversion::Pair,
+) -> Result<Plan, String> {
+    super::conversion::guard(pair, managed, repo, super::storage::Mode::Mapped)
+        .map_err(super::conversion::config_detail)?;
+    let mut after = repo.clone();
+    for entry in &pair.mappings {
+        // Another mapping reading the forward must not be stranded. The
+        // pair's own reverse is removed in this same document.
+        for dependent in verify::all_relationship_mappings(repo) {
+            if dependent.mapping.kind == "reverseReference"
+                && dependent.mapping.resource_path.as_deref()
+                    == Some(format!("managed/{}", entry.object).as_str())
+                && dependent.mapping.property_name.as_deref() == Some(entry.key.as_str())
+                && !pair.mappings.iter().any(|own| {
+                    dependent.resource == format!("managed/{}", own.object)
+                        && dependent.section == own.section
+                        && dependent.key == own.key
+                })
+            {
+                return Err(format!(
+                    "rollback refused: {} also reads through {}.{}",
+                    dependent.label(),
+                    entry.object,
+                    entry.key
+                ));
+            }
+        }
+        after["resourceMapping"][&entry.section][format!("managed/{}", entry.object)]["properties"]
+            .as_object_mut()
+            .ok_or("mapping properties vanished")?
+            .remove(&entry.key);
+    }
+    let mapping = verify::mapped(repo, &pair.forward.object, &pair.forward.key)
+        .ok_or("reference vanished")?;
+    Ok(Plan {
+        object: pair.forward.object.clone(),
+        key: pair.forward.key.clone(),
+        mapping,
+        notes: Vec::new(),
+        before: repo.clone(),
+        after,
+        operation: Operation::Rollback(pair.clone()),
+    })
+}
+
+/// Submit the unchanged document before rollback removes records. A write
+/// denial stops the operation before any unlink; this does not lock access
+/// against changes during the later record work.
+pub fn plan_confirm(
+    managed: &Value,
+    repo: &Value,
+    pair: &super::conversion::Pair,
+) -> Result<Plan, String> {
+    super::conversion::guard(pair, managed, repo, super::storage::Mode::Mapped)
+        .map_err(super::conversion::config_detail)?;
+    let mapping = verify::mapped(repo, &pair.forward.object, &pair.forward.key)
+        .ok_or("reference vanished")?;
+    Ok(Plan {
+        object: pair.forward.object.clone(),
+        key: pair.forward.key.clone(),
+        mapping,
+        notes: Vec::new(),
+        before: repo.clone(),
+        after: repo.clone(),
+        operation: Operation::Confirm(pair.clone()),
     })
 }
 
@@ -277,12 +534,6 @@ fn dependents(managed: &Value, repo_ds: &Value, object: &str, key: &str) -> Vec<
                     Some(_) if verify::SYSTEM_RELATIONSHIPS.contains(&located.key.as_str()) => {
                         Owner::StaleBlocked("it is one of IDM's own relationships")
                     }
-                    Some(_)
-                        if verify::generic_mappings_of(repo_ds, other)
-                            .is_some_and(|entries| entries.len() == 1) =>
-                    {
-                        Owner::StaleBlocked("it is its object's last mapping")
-                    }
                     Some(_) => Owner::Stale,
                 },
             },
@@ -295,6 +546,48 @@ fn pointer_token(token: &str) -> String {
     token.replace('~', "~0").replace('/', "~1")
 }
 
+/// Plans removing every mapping in `ends` from `repo_ds`, against a
+/// `config/managed` that no longer declares them (`managed` is the document
+/// *after* the delete), in an order where each removal is one [`plan`] allows
+/// on its own: a `reverseReference` that reads through a `reference` comes out
+/// first. Each plan's `before` is the previous plan's `after`, so they apply
+/// in sequence.
+///
+/// All or nothing: when no remaining end can be removed next, the reasons are
+/// returned and nothing should be written — a delete that leaves some of its
+/// mappings behind is the state this exists to avoid.
+pub fn plan_sequence(
+    managed: &Value,
+    repo_ds: &Value,
+    ends: &[(String, String)],
+) -> Result<Vec<Plan>, Vec<String>> {
+    let mut remaining: Vec<&(String, String)> = ends.iter().collect();
+    let mut current = repo_ds.clone();
+    let mut plans = Vec::new();
+    while !remaining.is_empty() {
+        let mut refusals = Vec::new();
+        let next = remaining
+            .iter()
+            .enumerate()
+            .find_map(
+                |(index, (object, key))| match plan(managed, &current, object, key) {
+                    Ok(plan) => Some((index, plan)),
+                    Err(reason) => {
+                        refusals.push(reason);
+                        None
+                    }
+                },
+            );
+        let Some((index, plan)) = next else {
+            return Err(refusals);
+        };
+        remaining.remove(index);
+        current = plan.after.clone();
+        plans.push(plan);
+    }
+    Ok(plans)
+}
+
 /// The pre-write check against fresh reads of both documents: `repo.ds` must
 /// be exactly what the plan was computed from, and the plan must still hold
 /// against the fresh `config/managed` (a property declared since would make
@@ -302,12 +595,29 @@ fn pointer_token(token: &str) -> String {
 pub fn recheck(plan: &Plan, managed: &Value, repo_ds: &Value) -> Result<(), String> {
     if repo_ds != &plan.before {
         return Err(format!(
-            "config/repo.ds changed since it was read for {}; nothing was written. Run repair \
+            "config/repo.ds changed since it was read for {}; nothing was written. Run {} \
              again to plan against the current document",
-            plan.label()
+            plan.label(),
+            match plan.operation {
+                Operation::Rollback(_) | Operation::Confirm(_) => "rollback-map",
+                Operation::Add(_) => "map",
+                Operation::Remove | Operation::RemoveEntry => "repair",
+            }
         ));
     }
-    self::plan(managed, repo_ds, &plan.object, &plan.key).map(|_| ())
+    let fresh = match &plan.operation {
+        Operation::Rollback(pair) => plan_rollback(managed, repo_ds, pair)?,
+        Operation::Confirm(pair) => plan_confirm(managed, repo_ds, pair)?,
+        Operation::Add(_) => plan_add(managed, repo_ds, &plan.object, &plan.key)?,
+        Operation::Remove => self::plan(managed, repo_ds, &plan.object, &plan.key)?,
+        Operation::RemoveEntry => plan_remove_entry(managed, repo_ds, &plan.object)?,
+    };
+    if fresh.after != plan.after {
+        return Err(
+            "relationship schema changed since planning; nothing written. Plan again".into(),
+        );
+    }
+    Ok(())
 }
 
 /// How the read-back left things.
@@ -364,14 +674,15 @@ pub struct Applied {
 #[allow(clippy::too_many_arguments)]
 pub async fn apply_with(
     plan: &Plan,
-    _permit: &RepairPermit,
+    _permit: &WritePermit,
     mut read_managed: impl AsyncFnMut() -> crate::Result<Value>,
     mut read_repo_ds: impl AsyncFnMut() -> crate::Result<Value>,
     backup: impl FnOnce(&Value) -> crate::Result<PathBuf>,
     mut send: impl AsyncFnMut(&Value) -> crate::Result<()>,
     delays: &[Duration],
 ) -> Result<Applied, Failure> {
-    let not_written = |error: crate::Error| Failure::NotWritten(error.to_string());
+    let not_written =
+        |error: crate::Error| Failure::NotWritten(super::conversion::config_detail(error));
     let managed = read_managed().await.map_err(not_written)?;
     let repo_ds = read_repo_ds().await.map_err(not_written)?;
     recheck(plan, &managed, &repo_ds).map_err(Failure::NotWritten)?;
@@ -461,6 +772,96 @@ mod tests {
             "managed/a": {"objectClasses": ["x"], "properties": a},
             "managed/b": {"properties": b},
         }}})
+    }
+
+    /// `a.live` <-> `b.back` after both ends were deleted from
+    /// `config/managed`: the same pair's mappings, now naming nothing.
+    fn managed_without_the_pair() -> Value {
+        json!({"objects": [
+            {"name": "a", "schema": {"properties": {
+                "name": {"type": "string"},
+                "kept": {"type": "relationship",
+                         "resourceCollection": [{"path": "managed/b"}]},
+            }}},
+            {"name": "b", "schema": {"properties": {"x": {"type": "string"}}}},
+        ]})
+    }
+
+    /// The order is the point: `b.back` reads through `a.live`, so `a.live`
+    /// alone is refused and must come out second, whichever order the ends
+    /// were named in. Unrelated mappings survive.
+    #[test]
+    fn a_sequence_removes_the_reader_first_and_leaves_the_rest() {
+        let before = repo(
+            json!({"kept": reference("b")}),
+            json!({"other": reverse("a", "kept")}),
+        );
+        let ends = |pairs: &[(&str, &str)]| -> Vec<(String, String)> {
+            pairs
+                .iter()
+                .map(|(o, k)| (o.to_string(), k.to_string()))
+                .collect()
+        };
+        assert!(plan(&managed_without_the_pair(), &before, "a", "live").is_err());
+        for order in [
+            [("a", "live"), ("b", "back")],
+            [("b", "back"), ("a", "live")],
+        ] {
+            let plans = plan_sequence(&managed_without_the_pair(), &before, &ends(&order)).unwrap();
+            let labels: Vec<_> = plans.iter().map(Plan::label).collect();
+            assert_eq!(labels, ["b.back", "a.live"]);
+            assert_eq!(plans[0].before(), &before);
+            assert_eq!(plans[1].before(), plans[0].after());
+            let expected = json!({"dbType": "DS", "resourceMapping": {"genericMapping": {
+                "managed/a": {"objectClasses": ["x"], "properties": {"kept": reference("b")}},
+                "managed/b": {"properties": {"other": reverse("a", "kept")}},
+            }}});
+            assert_eq!(plans[1].after(), &expected);
+        }
+    }
+
+    /// The client case: each end is the only mapping on its type. Both come
+    /// out, reader first, and both per-type entries stay with no properties.
+    #[test]
+    fn a_sequence_empties_a_pair_whose_ends_are_each_types_last_mapping() {
+        let before = repo(json!({}), json!({}));
+        let plans = plan_sequence(
+            &managed_without_the_pair(),
+            &before,
+            &[("a".into(), "live".into()), ("b".into(), "back".into())],
+        )
+        .unwrap();
+        let labels: Vec<_> = plans.iter().map(Plan::label).collect();
+        assert_eq!(labels, ["b.back", "a.live"]);
+        let expected = json!({"dbType": "DS", "resourceMapping": {"genericMapping": {
+            "managed/a": {"objectClasses": ["x"], "properties": {}},
+            "managed/b": {"properties": {}},
+        }}});
+        assert_eq!(plans[1].after(), &expected);
+    }
+
+    /// All or nothing: if one end cannot come out, no plan is returned — not
+    /// even for the end that could.
+    #[test]
+    fn a_sequence_with_a_blocked_end_plans_nothing() {
+        // `b.other` is declared and reads through `a.live`, so `a.live` is
+        // refused; `b.back` on its own would be removable.
+        let mut managed = managed_without_the_pair();
+        managed["objects"][1]["schema"]["properties"]["other"] = json!({
+            "type": "relationship", "reverseRelationship": true,
+            "reversePropertyName": "live", "resourceCollection": [{"path": "managed/a"}]});
+        let before = repo(json!({}), json!({"other": reverse("a", "live")}));
+        assert!(plan(&managed, &before, "b", "back").is_ok());
+        let error = plan_sequence(
+            &managed,
+            &before,
+            &[("a".into(), "live".into()), ("b".into(), "back".into())],
+        )
+        .unwrap_err();
+        assert!(
+            error.iter().any(|reason| reason.contains("a.live")),
+            "{error:?}"
+        );
     }
 
     #[test]
@@ -572,12 +973,16 @@ mod tests {
             json!({"managed/b": {"properties": {"gone": {"type": "string"}}}});
         let error = plan(&managed(), &before, "a", "old").unwrap_err();
         assert!(error.contains("b.gone (also stale, but repair refuses it too: it is mapped in more than one section)"), "{error}");
-        // It is its object's last mapping.
+        // Its object's last mapping is an ordinary stale dependent now:
+        // repair it first, which plan_sequence does.
         let mut before = repo(json!({"old": reference("b")}), json!({}));
         before["resourceMapping"]["genericMapping"]["managed/b"]["properties"] =
             json!({"gone": reverse("a", "old")});
         let error = plan(&managed(), &before, "a", "old").unwrap_err();
-        assert!(error.contains("its object's last mapping"), "{error}");
+        assert!(
+            error.contains("b.gone (also stale: repair it first)"),
+            "{error}"
+        );
     }
 
     #[test]
@@ -633,12 +1038,23 @@ mod tests {
         let error = plan(&managed(), &column, "a", "gone").unwrap_err();
         assert!(error.contains("is `string`"), "{error}");
 
-        // Last mapping on the object: `b` holds only the stale one.
+        // Last mapping on the object: `b` holds only the stale one. Allowed;
+        // the per-type entry stays, emptied, with its other members intact.
         let mut last = repo(json!({}), json!({}));
         last["resourceMapping"]["genericMapping"]["managed/b"]["properties"] =
             json!({"gone": reverse("a", "live")});
-        let error = plan(&managed(), &last, "b", "gone").unwrap_err();
-        assert!(error.contains("last mapped property"), "{error}");
+        let emptied = plan(&managed(), &last, "b", "gone").unwrap();
+        let mut expected = last.clone();
+        expected["resourceMapping"]["genericMapping"]["managed/b"]["properties"] = json!({});
+        assert_eq!(emptied.after(), &expected);
+        assert!(
+            emptied
+                .notes
+                .iter()
+                .any(|note| note.contains("last mapped property")),
+            "{:?}",
+            emptied.notes
+        );
     }
 
     #[test]
@@ -1001,5 +1417,228 @@ mod tests {
             *tenant.log.borrow(),
             ["read managed", "read repo.ds", "backup"]
         );
+    }
+    #[tokio::test]
+    async fn an_addition_uses_the_same_recheck_backup_send_readback_sequence() {
+        let before = json!({"resourceMapping": {"genericMapping": {}}});
+        let plan = plan_add(&managed(), &before, "a", "live").unwrap();
+        let tenant = Tenant::new(
+            managed(),
+            vec![Ok(before), Ok(plan.after().clone())],
+            Ok(()),
+        );
+        assert_eq!(
+            tenant.run(&plan, 0).await.unwrap().readback,
+            Readback::Confirmed
+        );
+        assert_eq!(
+            *tenant.log.borrow(),
+            [
+                "read managed",
+                "read repo.ds",
+                "backup",
+                "send",
+                "read repo.ds"
+            ]
+        );
+        assert!(verify::mapped(plan.after(), "a", "live").is_some());
+        assert!(verify::mapped(plan.after(), "b", "back").is_some());
+    }
+
+    #[tokio::test]
+    async fn addition_schema_or_repo_drift_cannot_send_a_partial_pair() {
+        let before = json!({"resourceMapping": {"genericMapping": {}}});
+        let plan = plan_add(&managed(), &before, "a", "live").unwrap();
+        let mut changed = managed();
+        let live = changed["objects"][0]["schema"]["properties"]["live"].take();
+        changed["objects"][0]["schema"]["properties"]["live"] =
+            json!({"type": "array", "items": live});
+        let tenant = Tenant::new(changed, vec![Ok(before.clone())], Ok(()));
+        assert!(matches!(
+            tenant.run(&plan, 0).await,
+            Err(Failure::NotWritten(_))
+        ));
+        assert_eq!(*tenant.log.borrow(), ["read managed", "read repo.ds"]);
+        let mut mixed = before;
+        mixed["resourceMapping"]["genericMapping"]["managed/a"] =
+            json!({"properties": {"live": reference("b")}});
+        let tenant = Tenant::new(managed(), vec![Ok(mixed)], Ok(()));
+        assert!(matches!(
+            tenant.run(&plan, 0).await,
+            Err(Failure::NotWritten(_))
+        ));
+        assert_eq!(*tenant.log.borrow(), ["read managed", "read repo.ds"]);
+    }
+
+    #[test]
+    fn addition_planning_never_authorizes_a_dry_run() {
+        let before = json!({"resourceMapping": {"genericMapping": {}}});
+        let plan = plan_add(&managed(), &before, "a", "live").unwrap();
+        assert!(plan.addition().is_some());
+        assert!(authorize(true, true).is_none());
+        assert!(authorize(true, false).is_none());
+        // apply_with and the HTTP wrapper both require the opaque permit.
+    }
+    /// `gone` is not declared in `config/managed`; its per-type entry is what
+    /// a deleted type leaves behind.
+    fn repo_with_empty_entry_for_gone() -> Value {
+        let mut doc = repo(json!({}), json!({}));
+        doc["resourceMapping"]["genericMapping"]["managed/gone"] =
+            super::super::storage::generated_entry("gone");
+        doc
+    }
+
+    #[test]
+    fn an_empty_entry_of_a_deleted_type_is_planned_for_removal_and_nothing_else_moves() {
+        let before = repo_with_empty_entry_for_gone();
+        let plan = plan_remove_entry(&managed(), &before, "gone").unwrap();
+        assert_eq!(plan.label(), "managed/gone");
+        assert!(plan.notes.is_empty());
+        let mut expected = before.clone();
+        expected["resourceMapping"]["genericMapping"]
+            .as_object_mut()
+            .unwrap()
+            .remove("managed/gone");
+        assert_eq!(plan.after(), &expected);
+        // The mapped pair on the live types is untouched.
+        assert!(verify::mapped(plan.after(), "a", "live").is_some());
+        // An entry with no `properties` member at all is just as empty.
+        let mut bare = before;
+        bare["resourceMapping"]["genericMapping"]["managed/gone"]
+            .as_object_mut()
+            .unwrap()
+            .remove("properties");
+        assert!(plan_remove_entry(&managed(), &bare, "gone").is_ok());
+    }
+
+    /// The discriminating cases: each is an entry a looser rule ("remove any
+    /// per-type entry that looks empty") would take.
+    #[test]
+    fn an_entry_is_refused_while_it_maps_a_property_or_is_named_by_a_mapping() {
+        // The type still exists and its entry is empty: allowed (measured
+        // 2026-11-10), with a note; the same entry still mapping is refused.
+        let mut with_c = managed();
+        with_c["objects"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"name": "c", "schema": {"properties": {}}}));
+        let mut existing = repo(json!({}), json!({}));
+        existing["resourceMapping"]["genericMapping"]["managed/c"] =
+            super::super::storage::generated_entry("c");
+        let plan = plan_remove_entry(&with_c, &existing, "c").unwrap();
+        assert!(plan.notes.iter().any(|n| n.contains("still declared")));
+        existing["resourceMapping"]["genericMapping"]["managed/c"]["properties"] =
+            json!({"p": reference("b")});
+        let error = plan_remove_entry(&with_c, &existing, "c").unwrap_err();
+        assert!(error.contains("still maps p"), "{error}");
+        // The entry still maps a property.
+        let mut mapped = repo_with_empty_entry_for_gone();
+        mapped["resourceMapping"]["genericMapping"]["managed/gone"]["properties"] =
+            json!({"p": reference("b")});
+        let error = plan_remove_entry(&managed(), &mapped, "gone").unwrap_err();
+        assert!(error.contains("still maps p"), "{error}");
+        // Another mapping names the gone type.
+        let mut read = repo_with_empty_entry_for_gone();
+        read["resourceMapping"]["genericMapping"]["managed/b"]["properties"]["gone"] =
+            reference("gone");
+        let error = plan_remove_entry(&managed(), &read, "gone").unwrap_err();
+        assert!(
+            error.contains("b") && error.contains("managed/gone"),
+            "{error}"
+        );
+        // No entry at all.
+        let error = plan_remove_entry(&managed(), &repo(json!({}), json!({})), "gone").unwrap_err();
+        assert!(error.contains("nothing to remove"), "{error}");
+    }
+
+    /// A custom storage layout under an otherwise empty entry: every field
+    /// name is one aic writes, but the values place records elsewhere. Each
+    /// difference is refused and named, by the planner and by the recheck.
+    #[tokio::test]
+    async fn a_custom_storage_layout_is_refused_by_value_not_by_field_name() {
+        let generated = super::super::storage::generated_entry("gone");
+        let mut with_c = managed();
+        with_c["objects"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"name": "custom_widget", "schema": {"properties": {}}}));
+        let custom = json!({
+            "dnTemplate": "ou=archive,dc=example,dc=com",
+            "jsonAttribute": "custom-json",
+            "objectClasses": ["customClass"],
+            "jsonQueryEqualityMatchingRule": "customMatch",
+            "properties": {}
+        });
+        let mut doc = repo(json!({}), json!({}));
+        doc["resourceMapping"]["genericMapping"]["managed/custom_widget"] = custom;
+        let error = plan_remove_entry(&with_c, &doc, "custom_widget").unwrap_err();
+        for field in [
+            "dnTemplate",
+            "jsonAttribute",
+            "objectClasses",
+            "jsonQueryEqualityMatchingRule",
+        ] {
+            assert!(error.contains(field), "{error}");
+        }
+        // An unknown extra field is refused too, and named alone.
+        let mut extra = repo_with_empty_entry_for_gone();
+        extra["resourceMapping"]["genericMapping"]["managed/gone"]["unusual"] = json!(1);
+        let error = plan_remove_entry(&managed(), &extra, "gone").unwrap_err();
+        assert!(error.contains("differs in unusual"), "{error}");
+        // One generated value changed.
+        let mut one = repo_with_empty_entry_for_gone();
+        one["resourceMapping"]["genericMapping"]["managed/gone"]["dnTemplate"] = json!("ou=x");
+        let error = plan_remove_entry(&managed(), &one, "gone").unwrap_err();
+        assert!(error.contains("differs in dnTemplate"), "{error}");
+        // The recheck re-plans: a plan made against the generated layout is
+        // refused once the entry at write time holds a custom one.
+        let good = repo_with_empty_entry_for_gone();
+        let plan = plan_remove_entry(&managed(), &good, "gone").unwrap();
+        let mut swapped = good.clone();
+        swapped["resourceMapping"]["genericMapping"]["managed/gone"] = json!({
+            "dnTemplate": "ou=archive,dc=example,dc=com", "properties": {}});
+        assert!(recheck(&plan, &managed(), &swapped).is_err());
+        // The generated layout itself passes the recheck.
+        assert!(recheck(&plan, &managed(), &good).is_ok());
+        assert_eq!(
+            good["resourceMapping"]["genericMapping"]["managed/gone"],
+            generated
+        );
+    }
+
+    #[tokio::test]
+    async fn an_entry_removal_uses_the_same_recheck_backup_send_readback_sequence() {
+        let before = repo_with_empty_entry_for_gone();
+        let plan = plan_remove_entry(&managed(), &before, "gone").unwrap();
+        let tenant = Tenant::new(
+            managed(),
+            vec![Ok(before.clone()), Ok(plan.after().clone())],
+            Ok(()),
+        );
+        assert_eq!(
+            tenant.run(&plan, 0).await.unwrap().readback,
+            Readback::Confirmed
+        );
+        assert_eq!(
+            *tenant.log.borrow(),
+            [
+                "read managed",
+                "read repo.ds",
+                "backup",
+                "send",
+                "read repo.ds"
+            ]
+        );
+        // A mapping started naming the type between plan and write: repo.ds
+        // differs from what was planned, so nothing is sent.
+        let mut drifted = before.clone();
+        drifted["resourceMapping"]["genericMapping"]["managed/b"]["properties"]["gone"] =
+            reference("gone");
+        let tenant = Tenant::new(managed(), vec![Ok(drifted)], Ok(()));
+        assert!(matches!(
+            tenant.run(&plan, 0).await,
+            Err(Failure::NotWritten(_))
+        ));
+        assert_eq!(*tenant.log.borrow(), ["read managed", "read repo.ds"]);
     }
 }

@@ -136,7 +136,7 @@ describe("ensureRhinoJar", { timeout: 60_000 }, () => {
   it("rejects wrong fetched bytes and leaves no jar behind", async () => {
     const cache = tempDir();
     await expect(ensureRhinoJar(cache, async () => new Uint8Array([1, 2, 3]))).rejects.toThrow(
-      "is not the Rhino AM ships"
+      "is not the Rhino this harness pins"
     );
     expect(() => readdirSync(join(cache, "jars"))).toThrow();
   });
@@ -157,7 +157,7 @@ describe("ensureRhinoJar", { timeout: 60_000 }, () => {
     writeFileSync(path, "not rhino");
     const fetcher = async (): Promise<Uint8Array> => new Uint8Array(goodJar);
     await expect(ensureRhinoJar(tempDir(), fetcher, { [RHINO_JAR_ENV]: path })).rejects.toThrow(
-      /AIC_SCRIPT_TESTER_RHINO_JAR=.* is not the Rhino AM ships/
+      /AIC_SCRIPT_TESTER_RHINO_JAR=.* is not the Rhino this harness pins/
     );
     await expect(
       ensureRhinoJar(tempDir(), fetcher, { [RHINO_JAR_ENV]: join(tempDir(), "absent.jar") })

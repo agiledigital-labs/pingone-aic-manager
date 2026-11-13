@@ -145,6 +145,16 @@ pub enum Command {
                     unless the cached one still has most of its life left)"
         )]
         token: bool,
+        #[arg(
+            long,
+            value_name = "URL-OR-HOST",
+            help = "Mint the token for the context whose host this URL names \
+                    (without --tenant), and refuse, printing no token, unless it \
+                    is the tenant's own host or one of its custom domains. Pass the \
+                    URL your request will go to: `curl -H \"Authorization: Bearer \
+                    $(aic whoami --token --host \"$URL\")\" \"$URL\"`"
+        )]
+        host: Option<String>,
     },
     /// ESV operations (variables, secrets).
     Esv {
@@ -423,7 +433,11 @@ pub(crate) async fn dispatch(
         Some(Command::Session { command }) => session(command).await,
         Some(Command::Ctx { command }) => ctx(command).await,
         Some(Command::Settings { command }) => settings(command).await,
-        Some(Command::Whoami { tenant, token }) => whoami(tenant, token).await,
+        Some(Command::Whoami {
+            tenant,
+            token,
+            host,
+        }) => whoami(tenant, token, host).await,
         Some(Command::Esv { command }) => crate::esv::cli::run(command).await,
         Some(Command::Managed { command }) => crate::managed::cli::run(command).await,
         Some(Command::Idm { command }) => crate::idmstore::cli::run(command).await,
@@ -681,18 +695,20 @@ fn resolve_project_root(
         return Ok(Some(cwd.to_path_buf())
             .and_then(|cwd| config::find_project_root(&cwd).map(|root| (root, cwd))));
     };
-    let start = PathBuf::from(explicit);
+    // Absolute, because it becomes the base relative path arguments resolve
+    // against once the process has moved to the root.
+    let start = cwd.join(explicit);
     if !start.is_dir() {
         return Err(Error::Config(format!(
             "{source}{} is not a directory",
-            start.display()
+            Path::new(explicit).display()
         )));
     }
     match config::find_project_root(&start) {
         Some(root) => Ok(Some((root, start))),
         None => Err(Error::Config(format!(
             "{source}{} is not inside a project: no .aic/ there or in any parent",
-            start.display()
+            Path::new(explicit).display()
         ))),
     }
 }
@@ -773,18 +789,23 @@ pub fn bootstrap_project_root() -> Result<()> {
         // carries that project's `--tenant` default, which is most of why it is
         // worth reading — and only the failure is dropped.
         Err(_) if wants_help_or_version(std::env::args_os()) => {
+            config::set_user_base(cwd.clone());
             config::set_project_root(cwd)?;
             return Ok(());
         }
         other => other?,
     };
     let Some((root, start)) = resolved else {
+        config::set_user_base(cwd.clone());
         config::set_project_root(cwd)?;
         return Ok(());
     };
     let explicit = explicit
         .filter(|value| !value.is_empty())
         .map(|_| source.trim_end_matches([' ', '=']));
+    // Relative path arguments resolve where the command behaves as if it
+    // started (config::UserPath), not at the root it is about to enter.
+    config::set_user_base(start.clone());
     config::set_workspace_context(choose_workspace_context(&root, &start, &cwd, explicit));
     config::set_project_root(root.clone())?;
     // Still load-bearing for relative user arguments and `workspace/` paths.
@@ -951,6 +972,15 @@ fn capture_invocation(
         resolution,
         takes_tenant,
     }
+}
+
+/// Whether this invocation's `--tenant` was typed rather than filled in from
+/// the parse-time default. With no capture (a library caller) a passed tenant
+/// counts as typed.
+fn tenant_flag_typed() -> bool {
+    INVOCATION_TENANT.get().is_none_or(|captured| {
+        matches!(&captured.resolution, Ok(Some(resolution)) if resolution.source == TenantSource::Flag)
+    })
 }
 
 /// Where the tenant a command targets came from.
@@ -1161,7 +1191,7 @@ async fn ensure_agent_unlocked_internal(password_stdin: bool, announce: bool) ->
         }
         auth::unlock_plain_agent().await?;
         if announce {
-            println!("unlocked (plain mode)");
+            eprintln!("unlocked (plain mode)");
         }
         return Ok(());
     }
@@ -1194,7 +1224,7 @@ async fn ensure_agent_unlocked_internal(password_stdin: bool, announce: bool) ->
     drop(dek);
     warn_unsettled();
     if announce {
-        println!("unlocked");
+        eprintln!("unlocked");
     }
     Ok(())
 }
@@ -1588,15 +1618,43 @@ async fn ctx(cmd: CtxCommand) -> Result<()> {
 /// more life, because a token is below its own issue TTL the instant it exists.
 const SCRIPTED_TOKEN_MIN_TTL: u32 = 840;
 
-async fn whoami(tenant_arg: Option<String>, token_only: bool) -> Result<()> {
+async fn whoami(
+    tenant_arg: Option<String>,
+    token_only: bool,
+    host_arg: Option<String>,
+) -> Result<()> {
     let cfg =
         ProjectConfig::load()?.ok_or_else(|| Error::Config("no .aic/config.toml here".into()))?;
+    let contexts: Vec<(&str, &str)> = cfg
+        .tenants
+        .iter()
+        .map(|config| (config.name.as_str(), config.base_url.as_str()))
+        .collect();
+    // Without `--tenant` the URL chooses the context, so the token is minted
+    // for the tenant the request goes to. A host no context's base URL names
+    // (a custom domain) falls through to the current context's check below.
+    // `tenant_arg` arrives holding the parse-time default, so ask whether the
+    // flag was actually typed.
+    let tenant_arg = match host_arg.as_deref() {
+        Some(requested) if !tenant_flag_typed() => identity::context_for_host(&contexts, requested)
+            .map(str::to_string)
+            .or(tenant_arg),
+        _ => tenant_arg,
+    };
     let tenant = resolve_tenant(tenant_arg, &cfg)?;
     let settings = config::Settings::load()?.unwrap_or_default();
     let tenant_config = cfg
         .tenants
         .iter()
         .find(|candidate| candidate.name == tenant);
+    // Checked before anything is minted, so a refusal never prints a token.
+    if let Some(requested) = host_arg.as_deref() {
+        let base_url = tenant_config.map_or("", |config| config.base_url.as_str());
+        identity::check_host(&tenant, base_url, requested, &contexts, || {
+            identity::custom_domains(&tenant)
+        })
+        .await?;
+    }
     let operator = operator::resolve(&settings, tenant_config, NetworkAccess::Skip).await;
 
     let client = AgentClient::connect_or_spawn().await?;
@@ -1924,6 +1982,94 @@ pub(crate) fn redact(token: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// Every path argument resolves against where the operator is, not the
+    /// project root the process moved into (`config::user_path`). Walks the
+    /// whole command tree and refuses any argument whose value is a plain
+    /// `PathBuf`, except `--project` itself, which is resolved before the move.
+    /// The `--project` hit is the positive control: it proves the walk can see a
+    /// `PathBuf` at all, so an empty violation list is not a blind walk.
+    #[test]
+    fn every_path_argument_resolves_against_the_start_directory() {
+        use clap::CommandFactory;
+        use std::path::PathBuf;
+
+        fn walk(cmd: &clap::Command, trail: &str, plain: &mut Vec<String>, user: &mut usize) {
+            let trail = format!("{trail} {}", cmd.get_name());
+            for arg in cmd.get_arguments() {
+                let ty = arg.get_value_parser().type_id();
+                if ty == std::any::TypeId::of::<PathBuf>() {
+                    plain.push(format!("{trail} --{}", arg.get_id()));
+                } else if ty == std::any::TypeId::of::<crate::config::UserPath>() {
+                    *user += 1;
+                }
+            }
+            for sub in cmd.get_subcommands() {
+                walk(sub, &trail, plain, user);
+            }
+        }
+
+        let (mut plain, mut user) = (Vec::new(), 0);
+        walk(&super::Cli::command(), "", &mut plain, &mut user);
+        assert_eq!(plain, vec![" aic --project".to_string()]);
+        assert!(user >= 20, "only {user} UserPath arguments found");
+    }
+
+    /// The base a path argument resolves against is the start directory that
+    /// rooting chose, through a real clap parse: from the working directory, a
+    /// relative `--project`, an absolute one, and `AIC_PROJECT` (which reaches
+    /// the same resolver; only the error wording differs).
+    #[test]
+    fn a_path_argument_parses_against_the_start_directory_rooting_chose() {
+        use clap::Parser;
+
+        let root = project_tree();
+        let nested = root.join("nested");
+        let cases: [(&str, Option<PathBuf>, &str, PathBuf); 4] = [
+            ("working directory", None, "--project ", nested.clone()),
+            (
+                "relative --project",
+                Some("nested".into()),
+                "--project ",
+                root.clone(),
+            ),
+            (
+                "absolute --project",
+                Some(nested.clone()),
+                "--project ",
+                bare_dir(),
+            ),
+            (
+                "AIC_PROJECT",
+                Some(nested.clone()),
+                "AIC_PROJECT=",
+                bare_dir(),
+            ),
+        ];
+        for (name, explicit, source, cwd) in cases {
+            let (_, start) =
+                resolve_project_root(explicit.as_deref().map(Path::as_os_str), source, &cwd)
+                    .unwrap()
+                    .unwrap();
+            assert_eq!(start, nested, "{name}");
+            crate::config::clear_user_base();
+            crate::config::set_user_base(start.clone());
+            for (typed, want) in [
+                ("rel/x.json", nested.join("rel/x.json")),
+                ("/abs/x.json", PathBuf::from("/abs/x.json")),
+            ] {
+                let cli = Cli::try_parse_from(["aic", "access", "get", "--out", typed]).unwrap();
+                let Some(Command::Access {
+                    command: crate::access::cli::AccessCommand::Get { out: Some(out), .. },
+                }) = cli.command
+                else {
+                    panic!("{name}: not access get --out");
+                };
+                assert_eq!(out.into_path_buf(), want, "{name}: {typed}");
+            }
+        }
+        crate::config::clear_user_base();
+    }
+
     /// `--token`'s floor sits strictly between the daemon's own floor and what
     /// the tenant issues. Above the issue TTL it would mint on every call while
     /// handing out no more life; at or below the daemon's floor it would be a
@@ -2404,6 +2550,36 @@ scopes = []
             cli.command,
             Some(Command::Workspace {
                 command: crate::scripts::cli::WorkspaceCommand::Init { .. }
+            })
+        ));
+    }
+
+    #[test]
+    fn workspace_update_accepts_dry_run_with_an_optional_tenant() {
+        for tenant in [None, Some("preview-tenant")] {
+            let mut args = vec!["aic", "workspace", "update", "--dry-run"];
+            if let Some(tenant) = tenant {
+                args.extend(["--tenant", tenant]);
+            }
+            let cli = Cli::try_parse_from(args).unwrap();
+            let Some(Command::Workspace {
+                command:
+                    crate::scripts::cli::WorkspaceCommand::Update {
+                        dry_run,
+                        tenant: parsed,
+                    },
+            }) = cli.command
+            else {
+                panic!("expected workspace update");
+            };
+            assert!(dry_run);
+            assert_eq!(parsed.as_deref(), tenant);
+        }
+        let cli = Cli::try_parse_from(["aic", "workspace", "update"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Workspace {
+                command: crate::scripts::cli::WorkspaceCommand::Update { dry_run: false, .. }
             })
         ));
     }

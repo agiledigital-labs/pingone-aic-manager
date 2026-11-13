@@ -83,6 +83,14 @@ final class ScriptCache {
    * {@code identity} must name the text uniquely (a hash plus any wrapper).
    */
   static Script compile(Context cx, String identity, Supplier<String> text, String name, int line) {
+    return compile(cx, identity, text, name, line, null);
+  }
+
+  /**
+   * As above; {@code kind}, when given, also counts the hit or miss under
+   * {@code <kind>CacheHits} / {@code <kind>CacheMisses}.
+   */
+  static Script compile(Context cx, String identity, Supplier<String> text, String name, int line, String kind) {
     // Everything that changes the icode Rhino emits, plus the name and line it bakes in.
     String key = identity + '\0' + name + '\0' + line + '\0' + cx.getLanguageVersion() + '\0'
         + cx.getOptimizationLevel() + '\0' + (cx.getInstructionObserverThreshold() > 0) + '\0'
@@ -92,10 +100,12 @@ final class ScriptCache {
       Script hit = COMPILED.get(key);
       if (hit != null) {
         Timing.count("cacheHits");
+        if (kind != null && Timing.active()) Timing.count(kind + "CacheHits");
         return hit;
       }
     }
     Timing.count("cacheMisses");
+    if (kind != null && Timing.active()) Timing.count(kind + "CacheMisses");
     Script script = cx.compileString(text.get(), name, line, null);
     if (cacheable(script)) {
       synchronized (COMPILED) {

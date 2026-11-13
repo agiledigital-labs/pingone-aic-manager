@@ -115,11 +115,54 @@ pub fn is_standard_object(object_def: &Value) -> bool {
     object_class(object_def) == ObjectClass::Standard
 }
 
-/// Ping-provided objects cannot be renamed or deleted. Keyed on the top-level
-/// `type` marker value, so it covers all ten realm objects — a wider set than
-/// [`object_class`], which keys on `meta` to decide field freedom.
+/// The object kinds Ping ships in each realm, as `<realm>_<kind>`. The sandbox
+/// carries ten of them (no `group`); `group` is included because tenants
+/// with groups enabled ship it.
+pub const PING_SHIPPED_KINDS: [&str; 6] = [
+    "user",
+    "role",
+    "group",
+    "organization",
+    "application",
+    "assignment",
+];
+
+/// How strongly an object is protected from rename and delete.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ObjectProtection {
+    /// One of Ping's realm objects, by name. Never renamed or deleted.
+    Shipped,
+    /// Carries Ping's top-level `"type": "Managed Object"` marker under a name
+    /// that is not a known Ping object. Console-created custom objects carry
+    /// the marker too (reported from a client tenant, 2026-11-05), so the
+    /// marker alone is not proof; the operator may override it.
+    Marked,
+    /// Neither: an ordinary custom object.
+    None,
+}
+
+/// Keyed on the name first, because the `type` marker is shared with
+/// console-created custom objects; the marker alone only asks for consent. A
+/// wider set than [`object_class`], which keys on `meta` to decide field
+/// freedom.
+pub fn object_protection(object_def: &Value) -> ObjectProtection {
+    let name = object_def.get("name").and_then(Value::as_str).unwrap_or("");
+    let shipped = name.split_once('_').is_some_and(|(realm, kind)| {
+        matches!(realm, "alpha" | "bravo") && PING_SHIPPED_KINDS.contains(&kind)
+    });
+    if shipped {
+        ObjectProtection::Shipped
+    } else if object_def.get("type").and_then(Value::as_str) == Some("Managed Object") {
+        ObjectProtection::Marked
+    } else {
+        ObjectProtection::None
+    }
+}
+
+/// Ping-provided objects cannot be renamed or deleted. True only for
+/// [`ObjectProtection::Shipped`]; see [`object_protection`].
 pub fn is_ping_shipped_object(object_def: &Value) -> bool {
-    object_def.get("type").and_then(Value::as_str) == Some("Managed Object")
+    object_protection(object_def) == ObjectProtection::Shipped
 }
 
 /// Validates the identity used as an IDM managed-object path component.
@@ -276,7 +319,7 @@ pub enum EditFieldFocus {
 }
 
 impl EditFieldFocus {
-    fn order(caps: FieldCaps, enum_eligible: bool) -> Vec<EditFieldFocus> {
+    fn order(caps: FieldCaps, enum_eligible: bool, default_eligible: bool) -> Vec<EditFieldFocus> {
         let mut order = Vec::new();
         if caps.rename_key {
             order.push(EditFieldFocus::Key);
@@ -290,7 +333,7 @@ impl EditFieldFocus {
         if enum_eligible && caps.can_edit_attr(FieldAttr::Enum) {
             order.push(EditFieldFocus::Enum);
         }
-        if caps.can_edit_attr(FieldAttr::Default) {
+        if default_eligible && caps.can_edit_attr(FieldAttr::Default) {
             order.push(EditFieldFocus::Default);
         }
         if caps.can_edit_attr(FieldAttr::Required) {
@@ -309,14 +352,14 @@ impl EditFieldFocus {
         order
     }
 
-    pub fn next(self, caps: FieldCaps, enum_eligible: bool) -> Self {
-        let order = Self::order(caps, enum_eligible);
+    pub fn next(self, caps: FieldCaps, enum_eligible: bool, default_eligible: bool) -> Self {
+        let order = Self::order(caps, enum_eligible, default_eligible);
         let i = order.iter().position(|field| *field == self).unwrap_or(0);
         order[(i + 1) % order.len()]
     }
 
-    pub fn prev(self, caps: FieldCaps, enum_eligible: bool) -> Self {
-        let order = Self::order(caps, enum_eligible);
+    pub fn prev(self, caps: FieldCaps, enum_eligible: bool, default_eligible: bool) -> Self {
+        let order = Self::order(caps, enum_eligible, default_eligible);
         let i = order.iter().position(|field| *field == self).unwrap_or(0);
         order[(i + order.len() - 1) % order.len()]
     }
@@ -680,22 +723,25 @@ impl AddFieldFocus {
         AddFieldFocus::Save,
     ];
 
-    pub fn next(self, enum_eligible: bool) -> Self {
-        let order = Self::order(enum_eligible);
+    pub fn next(self, enum_eligible: bool, default_eligible: bool) -> Self {
+        let order = Self::order(enum_eligible, default_eligible);
         let i = order.iter().position(|field| *field == self).unwrap_or(0);
         order[(i + 1) % order.len()]
     }
 
-    pub fn prev(self, enum_eligible: bool) -> Self {
-        let order = Self::order(enum_eligible);
+    pub fn prev(self, enum_eligible: bool, default_eligible: bool) -> Self {
+        let order = Self::order(enum_eligible, default_eligible);
         let i = order.iter().position(|field| *field == self).unwrap_or(0);
         order[(i + order.len() - 1) % order.len()]
     }
 
-    fn order(enum_eligible: bool) -> Vec<AddFieldFocus> {
+    fn order(enum_eligible: bool, default_eligible: bool) -> Vec<AddFieldFocus> {
         let mut order = Self::ORDER.to_vec();
         if !enum_eligible {
             order.retain(|focus| *focus != Self::Enum);
+        }
+        if !default_eligible {
+            order.retain(|focus| *focus != Self::Default);
         }
         order
     }
@@ -765,6 +811,14 @@ impl AddFieldState {
     pub fn set_field_type(&mut self, field_type: ScalarFieldType) {
         self.field_type = field_type;
         self.default_value.set_shape(field_type.shape());
+        if !self.default_eligible() {
+            // A hidden row must not carry a value into the save.
+            self.default_value = TypedValueField::new("Default", field_type.shape(), false);
+        }
+    }
+
+    pub fn default_eligible(&self) -> bool {
+        crate::managed::ops::scalar_type_supports_default(self.field_type)
     }
 
     pub fn enum_eligible(&self) -> bool {
@@ -780,6 +834,9 @@ impl AddFieldState {
     }
 
     pub fn parsed_default(&self) -> Option<String> {
+        if !self.default_eligible() {
+            return None;
+        }
         let value = self.default_value.trimmed();
         (!value.is_empty()).then(|| value.to_string())
     }
@@ -1337,6 +1394,12 @@ fn scalar_type_for_property(property: &Value) -> ScalarFieldType {
         && property.pointer("/items/type").and_then(Value::as_str) == Some("string")
     {
         ScalarFieldType::StringArray
+    } else if kinds.contains(&"array")
+        && property.pointer("/items/type").and_then(Value::as_str) == Some("object")
+    {
+        ScalarFieldType::ObjectArray
+    } else if kinds.contains(&"object") {
+        ScalarFieldType::Object
     } else {
         ScalarFieldType::String
     }
@@ -1660,11 +1723,33 @@ mod tests {
         assert!(validate_object_name("gamma_2", &names, "alpha").is_ok());
     }
 
+    /// The name decides; the marker alone only asks for consent, because
+    /// console-created custom objects carry it too. The discriminating rows
+    /// are a marked custom name (`Marked`, not `Shipped`) and an unmarked
+    /// Ping name (`Shipped` regardless).
     #[test]
-    fn ping_shipped_guard_uses_verified_type_value_without_meta() {
-        assert!(is_ping_shipped_object(&json!({"type": "Managed Object"})));
-        assert!(!is_ping_shipped_object(&json!({"type": "custom"})));
-        assert!(!is_ping_shipped_object(&json!({"name": "test_object"})));
+    fn ping_shipped_guard_keys_on_the_name_and_the_marker_only_asks() {
+        use ObjectProtection::*;
+        let marker = |name: &str| json!({"name": name, "type": "Managed Object"});
+        for realm in ["alpha", "bravo"] {
+            for kind in PING_SHIPPED_KINDS {
+                let name = format!("{realm}_{kind}");
+                assert_eq!(object_protection(&marker(&name)), Shipped, "{name}");
+                assert_eq!(object_protection(&json!({"name": name})), Shipped, "{name}");
+            }
+        }
+        for (def, want) in [
+            (marker("console_widget"), Marked),
+            (marker("alpha_widget"), Marked),
+            (marker("gamma_user"), Marked),
+            (marker("alpha_user_extra"), Marked),
+            (json!({"type": "Managed Object"}), Marked),
+            (json!({"name": "test_object"}), None),
+            (json!({"name": "alpha_lock", "type": "custom"}), None),
+        ] {
+            assert_eq!(object_protection(&def), want, "{def}");
+        }
+        assert!(!is_ping_shipped_object(&marker("console_widget")));
     }
 
     #[test]
@@ -1882,6 +1967,21 @@ mod tests {
         assert_eq!(draft.default_value.error(), None);
     }
 
+    /// An object type hides the default row, so a value typed under another
+    /// type must not ride along into the save.
+    #[test]
+    fn retyping_to_an_object_drops_the_hidden_default() {
+        let mut draft = AddFieldState::new("sandbox".into(), "thing".into(), json!({}));
+        draft.set_field_type(ScalarFieldType::StringArray);
+        draft.default_value.set("[\"a\"]");
+        assert_eq!(draft.parsed_default().as_deref(), Some("[\"a\"]"));
+        draft.set_field_type(ScalarFieldType::ObjectArray);
+        assert!(!draft.default_eligible());
+        assert_eq!(draft.parsed_default(), None);
+        draft.set_field_type(ScalarFieldType::String);
+        assert_eq!(draft.parsed_default(), None);
+    }
+
     #[test]
     fn untouched_default_survives_an_edit_form_save() {
         let object = json!({
@@ -1922,23 +2022,35 @@ mod tests {
             delete: true,
         };
         assert_eq!(
-            EditFieldFocus::Description.next(caps, true),
+            EditFieldFocus::Description.next(caps, true, true),
             EditFieldFocus::Enum
         );
         assert_eq!(
-            EditFieldFocus::Enum.prev(caps, true),
+            EditFieldFocus::Enum.prev(caps, true, true),
             EditFieldFocus::Description
         );
         assert_eq!(
-            EditFieldFocus::Enum.next(caps, true),
+            EditFieldFocus::Enum.next(caps, true, true),
             EditFieldFocus::Default
         );
         // On the add form the type is still being chosen, and choosing a
         // boolean removes this row — so it follows Type rather than preceding
         // it.
-        assert_eq!(AddFieldFocus::Type.next(true), AddFieldFocus::Enum);
-        assert_eq!(AddFieldFocus::Enum.prev(true), AddFieldFocus::Type);
-        assert_eq!(AddFieldFocus::Enum.next(true), AddFieldFocus::Default);
-        assert_eq!(AddFieldFocus::Type.next(false), AddFieldFocus::Default);
+        assert_eq!(AddFieldFocus::Type.next(true, true), AddFieldFocus::Enum);
+        assert_eq!(AddFieldFocus::Enum.prev(true, true), AddFieldFocus::Type);
+        assert_eq!(AddFieldFocus::Enum.next(true, true), AddFieldFocus::Default);
+        assert_eq!(
+            AddFieldFocus::Type.next(false, true),
+            AddFieldFocus::Default
+        );
+        // An object type has neither row, so focus skips both.
+        assert_eq!(
+            AddFieldFocus::Type.next(false, false),
+            AddFieldFocus::Searchable
+        );
+        assert_eq!(
+            EditFieldFocus::Description.next(caps, false, false),
+            EditFieldFocus::Required
+        );
     }
 }

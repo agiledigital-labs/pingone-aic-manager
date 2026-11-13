@@ -67,6 +67,8 @@ interface OwnerState {
 interface Entry extends RecordedEmulationFailure { journal: number }
 interface Work { journal: EmulationFailureJournal; owner: EmulationOwner | undefined; context: string; file: string | undefined; reported?: boolean }
 interface Registry {
+  /** Entries recorded, or whose causes may have changed, since the last delta (added after v1; may be absent). */
+  dirty?: Set<Entry>;
   ownership: AsyncLocalStorage<EmulationOwner | undefined>;
   location: AsyncLocalStorage<string | undefined>;
   file: string | undefined;
@@ -87,6 +89,7 @@ const registry = processGlobal[registryKey] ??= {
   history: [], outstanding: new Set(), nextJournal: 0,
 };
 const { ownership, owners, history, outstanding } = registry;
+const dirty = registry.dirty ??= new Set<Entry>();
 
 export function currentEmulationOwner(): EmulationOwner | undefined { return ownership.getStore(); }
 export function createEmulationOwner(name: string, kind: EmulationOwner["kind"], taskId?: string): EmulationOwner {
@@ -120,8 +123,15 @@ function coverage(owner: EmulationOwner | undefined): Map<string, string> {
   }
   return covered;
 }
-function unexpected(entry: RecordedEmulationFailure): string[] {
-  const covered = entry.failure.message.startsWith("outstanding work at ") ? new Map<string, string>() : coverage(entry.owner);
+/** `memo`, within one audit build, reuses each owner's coverage (it scans the whole history). */
+function unexpected(entry: RecordedEmulationFailure, memo?: Map<string | undefined, Map<string, string>>): string[] {
+  let covered: Map<string, string>;
+  if (entry.failure.message.startsWith("outstanding work at ")) covered = new Map<string, string>();
+  else if (memo === undefined) covered = coverage(entry.owner);
+  else {
+    covered = memo.get(entry.owner?.id) ?? coverage(entry.owner);
+    memo.set(entry.owner?.id, covered);
+  }
   return causes(entry.failure).filter((cause) => !covered.has(cause));
 }
 function snapshot(entry: Entry): RecordedEmulationFailure {
@@ -144,6 +154,8 @@ export function expectOwnedEmulationFailure(name: string | RegExp): void {
     return result?.index === 0 && result[0].length === cause.length;
   };
   state.expectations.push({ name: String(name), match });
+  // A declaration can cover causes this owner already recorded.
+  for (const entry of history) if (entry.owner?.id === owner.id) dirty.add(entry);
   changed();
 }
 
@@ -155,6 +167,7 @@ export class EmulationFailureJournal {
     const entry: Entry = { sequence: history.length + 1, journal: this.#id, context, failure: structuredClone(failure),
       ...(owner ? { owner } : {}), ...(file ? { file } : {}) };
     history.push(entry);
+    dirty.add(entry);
     const state = owner && owners.get(owner.id);
     if (state?.closed) state.late.push(snapshot(entry));
     changed();
@@ -214,14 +227,81 @@ function changed(): void {
   registry.revision++;
   registry.transport?.();
 }
+type AuditFailure = EmulationAudit["failures"][number];
+function auditFailures(entries: Entry[]): AuditFailure[] {
+  const memo = new Map<string | undefined, Map<string, string>>();
+  return entries.map((entry) => auditFailure(entry, memo));
+}
+function auditFailure(entry: Entry, memo: Map<string | undefined, Map<string, string>>): AuditFailure {
+  return { sequence: entry.sequence, context: entry.context,
+    ...(entry.owner ? { owner: entry.owner } : {}), ...(entry.file ? { file: entry.file } : {}), causes: unexpected(entry, memo),
+    kind: entry.failure.kind, observed: causes(entry.failure), ...(entry.failure.faults?.length ? { faults: structuredClone(entry.failure.faults) } : {}) };
+}
+function auditOutstanding(): EmulationAudit["outstanding"] {
+  return [...outstanding].map((work) => ({ context: work.context,
+    ...(work.owner ? { owner: work.owner } : {}), ...(work.file ? { file: work.file } : {}) }));
+}
+/** The whole audit: every entry ever recorded in this process. */
 export function emulationAudit(): EmulationAudit {
-  return { id: registry.id, revision: registry.revision,
-    failures: history.map((entry) => ({ sequence: entry.sequence, context: entry.context,
-      ...(entry.owner ? { owner: entry.owner } : {}), ...(entry.file ? { file: entry.file } : {}), causes: unexpected(entry),
-      kind: entry.failure.kind, observed: causes(entry.failure), ...(entry.failure.faults?.length ? { faults: structuredClone(entry.failure.faults) } : {}) })),
-    outstanding: [...outstanding].map((work) => ({ context: work.context,
-      ...(work.owner ? { owner: work.owner } : {}), ...(work.file ? { file: work.file } : {}) })),
-  };
+  return { id: registry.id, revision: registry.revision, failures: auditFailures(history), outstanding: auditOutstanding() };
+}
+/**
+ * The audit's entries matching `where`, in the full audit's shape: what a
+ * file or test boundary needs, without building every other entry.
+ */
+export function emulationAuditWhere(where: (entry: RecordedEmulationFailure) => boolean): EmulationAudit {
+  return { id: registry.id, revision: registry.revision, failures: auditFailures(history.filter(where)), outstanding: auditOutstanding() };
+}
+/**
+ * What changed since the last delta: entries recorded since, entries whose
+ * causes a later declaration may have covered, and the whole outstanding list
+ * (small, and replaced wholesale). Same shape as {@link emulationAudit}, so a
+ * ledger merges a full audit and a delta alike ({@link EmulationAuditLedger}).
+ * Taking it clears the changes: the caller owns resending what it took until
+ * the receiver acknowledges it.
+ */
+export function emulationAuditDelta(): EmulationAudit {
+  const failures = auditFailures([...dirty].sort((a, b) => a.sequence - b.sequence));
+  dirty.clear();
+  return { id: registry.id, revision: registry.revision, failures, outstanding: auditOutstanding() };
+}
+
+/**
+ * The main process's copy of every worker's audit, rebuilt from full audits
+ * or deltas in any order and any number of times: an entry is replaced only
+ * by one from a revision at least as new, and so is the outstanding list. An
+ * entry is never removed (the history it mirrors only grows), so a delta that
+ * arrives late or twice changes nothing, and what a worker sent before it
+ * died stays.
+ */
+export class EmulationAuditLedger {
+  readonly #audits = new Map<string, { revision: number; outstandingRevision: number; outstanding: EmulationAudit["outstanding"];
+    failures: Map<number, { revision: number; failure: AuditFailure }> }>();
+
+  accept(audit: EmulationAudit): void {
+    let held = this.#audits.get(audit.id);
+    if (held === undefined) {
+      held = { revision: -1, outstandingRevision: -1, outstanding: [], failures: new Map() };
+      this.#audits.set(audit.id, held);
+    }
+    held.revision = Math.max(held.revision, audit.revision);
+    if (audit.revision >= held.outstandingRevision) {
+      held.outstandingRevision = audit.revision;
+      held.outstanding = audit.outstanding;
+    }
+    for (const failure of audit.failures) {
+      const prior = held.failures.get(failure.sequence);
+      if (prior === undefined || audit.revision >= prior.revision) held.failures.set(failure.sequence, { revision: audit.revision, failure });
+    }
+  }
+
+  /** Each worker's audit as {@link emulationAudit} would have built it at the newest revision received. */
+  audits(): EmulationAudit[] {
+    return [...this.#audits.entries()].map(([id, held]) => ({ id, revision: held.revision, outstanding: held.outstanding,
+      failures: [...held.failures.values()].map((entry) => entry.failure).sort((a, b) => a.sequence - b.sequence) }));
+  }
+
+  clear(): void { this.#audits.clear(); }
 }
 export function hasEmulationAuditTransport(): boolean { return registry.transport !== undefined; }
 /** The current worker runner replaces the previous transport. The shared history

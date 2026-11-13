@@ -4,7 +4,22 @@ import type { Given } from "../case/types.ts";
 import { checkProfileObjects } from "../profile/normalise.ts";
 import type { EnvProfile } from "../profile/types.ts";
 import { managedInvalidDefault, managedPolicy, managedWriteFaults } from "../profile/write-guard.ts";
-import { bindingsCrestFilterPath, bindingsIdentityPolicyPath, bindingsRuntimePath, generatedJsPath } from "../paths.ts";
+import {
+  bindingsAccessTokenPath,
+  bindingsConfigProviderPath,
+  bindingsContextCommonPath,
+  bindingsCrestFilterPath,
+  bindingsIdentityPolicyPath,
+  bindingsOidcClaimsPath,
+  bindingsRuntimePath,
+  bindingsSocialIdpPath,
+  bindingsValidateScopePath,
+  bindingsMayActPath,
+  bindingsLibraryPath,
+  generatedJsPath,
+} from "../paths.ts";
+import type { ScriptContext } from "../case/types.ts";
+import { CONTEXT_ONLY_GIVEN } from "../case/context.ts";
 
 export interface MockPreambleOptions {
   /**
@@ -21,7 +36,80 @@ export interface MockPreambleOptions {
    * one implementation of each rather than an AM-safe copy.
    */
   profile?: EnvProfile;
+  /**
+   * The script context (`case.context`). Absent or the decision node: the
+   * preamble is exactly what it was before contexts existed.
+   */
+  context?: ScriptContext;
 }
+
+/**
+ * Each non-decision context's overlays (in load order, after runtime.cjs),
+ * seed call and harvest call. Every context loads context-common.cjs first.
+ * The decision node does not.
+ */
+const CONTEXT_RUNTIME: {
+  readonly [K in ScriptContext]?: {
+    overlays: readonly string[];
+    seed: string;
+    harvest: string;
+    /**
+     * The harvest takes the script's completion value (the runner job's
+     * `completionHarvest`) rather than being appended to the source.
+     */
+    completion?: boolean;
+  };
+} = {
+  OAUTH2_ACCESS_TOKEN_MODIFICATION: {
+    overlays: [bindingsContextCommonPath, bindingsAccessTokenPath],
+    seed: "__rhinoLocalSeedAccessToken",
+    harvest: "__rhinoLocalHarvestAccessToken",
+  },
+  // The script's result is the value it evaluates to, so nothing is appended.
+  OIDC_CLAIMS: {
+    overlays: [bindingsContextCommonPath, bindingsOidcClaimsPath],
+    seed: "__rhinoLocalSeedOidcClaims",
+    harvest: "__rhinoLocalHarvestOidcClaims",
+    completion: true,
+  },
+  // The transformed profile is the value the script evaluates to.
+  SOCIAL_IDP_PROFILE_TRANSFORMATION: {
+    overlays: [bindingsContextCommonPath, bindingsSocialIdpPath],
+    seed: "__rhinoLocalSeedSocialIdp",
+    harvest: "__rhinoLocalHarvestSocialIdp",
+    completion: true,
+  },
+  // AM reads the `config` global after the script, not its completion value
+  // (measured: a script that only evaluates to a map is refused), so the
+  // harvest is appended like the access-token context's.
+  CONFIG_PROVIDER_NODE: {
+    overlays: [bindingsContextCommonPath, bindingsConfigProviderPath],
+    seed: "__rhinoLocalSeedConfigProvider",
+    harvest: "__rhinoLocalHarvestConfigProvider",
+  },
+  // AM runs the body, then calls validateAccessTokenScope() and grants what
+  // it returns (measured), so the appended harvest makes that call.
+  OAUTH2_VALIDATE_SCOPE: {
+    overlays: [bindingsContextCommonPath, bindingsValidateScopePath],
+    seed: "__rhinoLocalSeedValidateScope",
+    harvest: "__rhinoLocalHarvestValidateScope",
+  },
+  // AM runs the body and, if it did not throw, stamps may_act and act. The
+  // completion value is ignored, so the harvest is appended.
+  OAUTH2_MAY_ACT: {
+    overlays: [bindingsContextCommonPath, bindingsMayActPath],
+    seed: "__rhinoLocalSeedMayAct",
+    harvest: "__rhinoLocalHarvestMayAct",
+  },
+  // The case script is the library body, injected as a require() target.
+  // The source the runner executes is empty; this harvest loads it and calls
+  // the named export.
+  LIBRARY: {
+    overlays: [bindingsContextCommonPath, bindingsLibraryPath],
+    seed: "__rhinoLocalSeedLibrary",
+    harvest: "__rhinoLocalHarvestLibrary",
+  },
+};
 
 /**
  * Generated stubs + behaviour overlay + seed. Eval'd as the runner `preamble`
@@ -36,7 +124,7 @@ export function mockPreamble(
   options: MockPreambleOptions = {}
 ): string {
   const { seed, overrides } = seedAndOverrides(given, options);
-  return `${prelude()}__rhinoLocalSeed(${seedLiteral(serializeSeed(seed))});\n${overrides}\n`;
+  return `${prelude(options.context)}${seedCall(options.context, seedLiteral(serializeSeed(seed)))}\n${overrides}\n`;
 }
 
 /**
@@ -74,11 +162,26 @@ export function casePreamble(
   const { seed, overrides } = seedAndOverrides(given, options);
   const { libraries, ...data } = seed;
   return {
-    prelude: prelude(),
-    preamble: `__rhinoLocalSeed(JSON.parse(__rhinoLocalPreambleData));\n${overrides}\n`,
+    prelude: prelude(options.context),
+    preamble: `${seedCall(options.context, "JSON.parse(__rhinoLocalPreambleData)")}\n${overrides}\n`,
     preambleData: serializeSeed(data),
     ...(libraries === undefined ? {} : { libraries: libraries as Record<string, string> }),
   };
+}
+
+/** One statement, so the preamble's line count does not depend on the context. */
+function seedCall(context: ScriptContext | undefined, data: string): string {
+  const runtime = context === undefined ? undefined : CONTEXT_RUNTIME[context];
+  if (runtime === undefined) {
+    return `__rhinoLocalSeed(${data}); __rhinoLocalGuardServices();`;
+  }
+  return `(function (g) { __rhinoLocalSeed(g); __rhinoLocalGuardServices(); ${runtime.seed}(g); })(${data});`;
+}
+
+/** The harvest call a context's script ends with. */
+export function harvestCall(context: ScriptContext | undefined): string {
+  const runtime = context === undefined ? undefined : CONTEXT_RUNTIME[context];
+  return runtime === undefined ? "__rhinoLocalHarvest" : runtime.harvest;
 }
 
 function seedAndOverrides(
@@ -86,6 +189,19 @@ function seedAndOverrides(
   options: MockPreambleOptions
 ): { seed: Record<string, unknown>; overrides: string } {
   const seed: Record<string, unknown> = { ...normaliseIdentitySeeds(given) };
+  if (options.context === undefined || CONTEXT_RUNTIME[options.context] === undefined) {
+    // A decision-node seed never carries a context's fixtures (validation
+    // refuses them there; a direct caller's are dropped, not half-applied).
+    for (const key of CONTEXT_ONLY_GIVEN) delete seed[key];
+  } else if (options.context === "OAUTH2_ACCESS_TOKEN_MODIFICATION") {
+    // The token's default auth time is "now", resolved here rather than in the
+    // JVM so the seed is data: AIC_SCRIPT_TESTER_JVM=both sends both lanes the
+    // same request, and a clock read in each would make them disagree.
+    const token = (seed.accessToken ?? {}) as Record<string, unknown>;
+    if (token.authTimeSeconds === undefined) {
+      seed.accessToken = { ...token, authTimeSeconds: Math.floor(Date.now() / 1000) };
+    }
+  }
   if (options.libraries !== undefined) {
     seed.libraries = options.libraries;
   }
@@ -109,30 +225,48 @@ function seedAndOverrides(
   return { seed, overrides };
 }
 
-let preludeMemo: { stamp: string; text: string } | undefined;
+const preludeMemo = new Map<string, { stamp: string; text: string }>();
 
 /**
- * The four package files, read once per process. Their size and mtime are
- * checked each call, so an edit during a watch run is still picked up.
+ * The four package files, plus the context's overlay when the case names a
+ * context, read once per process. Their size and mtime are checked each call,
+ * so an edit during a watch run is still picked up. The decision node's text
+ * is unchanged by contexts existing, so its runner cache key is too.
  */
-function prelude(): string {
+function prelude(context?: ScriptContext): string {
+  const overlays = context === undefined ? undefined : CONTEXT_RUNTIME[context]?.overlays;
   const files = [generatedJsPath, bindingsIdentityPolicyPath, bindingsCrestFilterPath, bindingsRuntimePath];
+  if (overlays !== undefined) files.push(...overlays);
   const stamp = files
     .map((file) => {
       const stat = statSync(file);
       return `${stat.size}:${stat.mtimeMs}`;
     })
     .join("|");
-  if (preludeMemo?.stamp !== stamp) {
-    const [generated, policy, filter, runtime] = files.map((file) => readFileSync(file, "utf8"));
-    preludeMemo = { stamp, text: `${generated}\n${policy}\n${filter}\n${runtime}\n` };
-  }
-  return preludeMemo.text;
+  const key = overlays?.join("|") ?? "";
+  const memo = preludeMemo.get(key);
+  if (memo?.stamp === stamp) return memo.text;
+  const text = files.map((file) => `${readFileSync(file, "utf8")}\n`).join("");
+  preludeMemo.set(key, { stamp, text });
+  return text;
 }
 
 /** Append a harvest call without shifting author line numbers. */
-export function withHarvest(script: string): string {
-  return `${script}\n;__rhinoLocalHarvest();\n`;
+export function withHarvest(script: string, context?: ScriptContext): string {
+  return `${script}\n;${harvestCall(context)}();\n`;
+}
+
+/**
+ * The runner job fields that run a case's script and harvest it: the source
+ * with the harvest call appended, or, for a context whose result is the
+ * script's completion value, the source untouched and `completionHarvest`.
+ */
+export function harvestJob(script: string, context?: ScriptContext): { source: string; completionHarvest?: string } {
+  const runtime = context === undefined ? undefined : CONTEXT_RUNTIME[context];
+  if (runtime?.completion === true) {
+    return { source: script, completionHarvest: runtime.harvest };
+  }
+  return { source: withHarvest(script, context) };
 }
 
 function serializeSeed(seed: unknown): string {

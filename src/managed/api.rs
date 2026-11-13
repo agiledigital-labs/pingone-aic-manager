@@ -1,4 +1,6 @@
 //! Verified HTTP wrappers for the IDM `managed` config document.
+//! Journaled conversion writes bypass router retries and forward their saved
+//! transaction id through ApiCall; relink_call assembles the tested wire shape.
 //! All HTTP goes through `aic::api` → agent. See `docs/api/10-managed-objects.md`.
 
 use crate::{Error, Result};
@@ -96,20 +98,20 @@ pub async fn get_repo_ds(tenant: &str) -> Result<Value> {
     crate::aic::api::get(tenant, "/openidm/config/repo.ds").await
 }
 
-/// `PUT /openidm/config/repo.ds` — the whole document. Its one caller is
-/// `relationship repair`, which removes a stale mapping and holds a
-/// [`RepairPermit`](crate::managed::repair::RepairPermit) to get here. A JSON
+/// `PUT /openidm/config/repo.ds?waitForCompletion=true` — the whole document.
+/// The single workflow is `repair::apply_with`, for removals and additions; a
+/// [`WritePermit`](crate::managed::repair::WritePermit) is required to get here. A JSON
 /// `PATCH` on this document was measured to return 200 and change nothing,
 /// which is why there is no patch wrapper.
 pub async fn put_repo_ds(
     tenant: &str,
-    _permit: &crate::managed::repair::RepairPermit,
+    _permit: &crate::managed::repair::WritePermit,
     document: &Value,
     confirmed_prod: bool,
 ) -> Result<()> {
     crate::aic::api::put(
         tenant,
-        "/openidm/config/repo.ds",
+        "/openidm/config/repo.ds?waitForCompletion=true",
         document.clone(),
         confirmed_prod,
     )
@@ -257,6 +259,65 @@ pub async fn ref_filter_finds(
     Ok(result
         .iter()
         .any(|entry| entry.get("_ref").and_then(Value::as_str) == Some(reference)))
+}
+
+/// Whether `managed/<object>?_queryFilter=_id eq "<id>" and <key> pr` finds
+/// record `id` — on a record holding a link through `key`, true only when the
+/// running IDM stores `key` mapped ([`crate::managed::verify::Runtime`]).
+pub async fn present_filter_finds(tenant: &str, object: &str, id: &str, key: &str) -> Result<bool> {
+    let mut query = url::form_urlencoded::Serializer::new(String::new());
+    query
+        .append_pair(
+            "_queryFilter",
+            &format!("_id eq \"{}\" and {key} pr", id.replace('"', "\\\"")),
+        )
+        .append_pair("_fields", "_id");
+    let path = format!(
+        "/openidm/managed/{}?{}",
+        crate::idmstore::api::path_segment(object),
+        query.finish()
+    );
+    let body = get_settled(tenant, object, &path).await?;
+    let result = body
+        .get("result")
+        .and_then(Value::as_array)
+        .ok_or_else(|| Error::Api {
+            status: 0,
+            body: format!("{path} returned no `result` array: {body}"),
+        })?;
+    Ok(result
+        .iter()
+        .any(|entry| entry.get("_id").and_then(Value::as_str) == Some(id)))
+}
+
+/// Finds evidence of orphaned values after assigning a reference column.
+/// A single match is enough to fail: this is not a generic-link census.
+pub async fn present_records(tenant: &str, object: &str, key: &str) -> Result<Vec<String>> {
+    let mut query = url::form_urlencoded::Serializer::new(String::new());
+    query
+        .append_pair("_queryFilter", &format!("/{key} pr"))
+        .append_pair("_fields", "_id")
+        .append_pair("_pageSize", "1");
+    let path = format!(
+        "/openidm/managed/{}?{}",
+        crate::idmstore::api::path_segment(object),
+        query.finish()
+    );
+    let body = get_settled(tenant, object, &path).await?;
+    let records = body
+        .get("result")
+        .and_then(Value::as_array)
+        .ok_or_else(|| Error::Config(format!("orphan query returned no result array: {body}")))?;
+    records
+        .iter()
+        .map(|record| {
+            record
+                .get("_id")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .ok_or_else(|| Error::Config("orphan query returned a record without _id".into()))
+        })
+        .collect()
 }
 
 /// One activation probe of `object.key` through record `id`:
@@ -453,24 +514,40 @@ pub async fn send_relink(
     write: &crate::managed::relink::Write,
     confirmed_prod: bool,
 ) -> Result<Value> {
+    // A journaled id denotes one attempt. Reusing it across router retries
+    // would make an earlier terminal log ambiguous about the latest dispatch.
+    if write.transaction_id.is_some() {
+        return relink_call(tenant, write, confirmed_prod)?.send().await;
+    }
+    settled(object, || async {
+        relink_call(tenant, write, confirmed_prod)?.send().await
+    })
+    .await
+}
+
+fn relink_call<'a>(
+    tenant: &'a str,
+    write: &'a crate::managed::relink::Write,
+    confirmed_prod: bool,
+) -> Result<crate::aic::api::ApiCall<'a>> {
     if !matches!(write.method, "DELETE" | "POST" | "PATCH") {
         return Err(Error::Config(format!(
             "relink has no {} write",
             write.method
         )));
     }
-    settled(object, || {
-        let mut call = crate::aic::api::ApiCall::new(tenant, write.method, &write.path)
-            .confirmed_prod(confirmed_prod);
-        if let Some(body) = &write.body {
-            call = call.body(body.clone());
-        }
-        if let Some(revision) = &write.if_match {
-            call = call.if_match(revision);
-        }
-        call.send()
-    })
-    .await
+    let mut call = crate::aic::api::ApiCall::new(tenant, write.method, &write.path)
+        .confirmed_prod(confirmed_prod);
+    if let Some(id) = &write.transaction_id {
+        call = call.transaction_id(id);
+    }
+    if let Some(body) = &write.body {
+        call = call.body(body.clone());
+    }
+    if let Some(revision) = &write.if_match {
+        call = call.if_match(revision);
+    }
+    Ok(call)
 }
 
 /// Unconfirmed `PUT /openidm/config/managed` with the complete managed config
@@ -553,7 +630,9 @@ where
     const ATTEMPTS: u32 = 6;
     let mut failed = None;
     for attempt in 0..ATTEMPTS {
-        put(doc.clone()).await?;
+        if let Err(error) = put(doc.clone()).await {
+            return settle_failed_put(error, expect, (&baselines, &doc), get().await, tenant);
+        }
         let fetched = get().await?;
         failed = expect.iter().find(|condition| !condition.holds(&fetched));
         if failed.is_none() {
@@ -572,6 +651,87 @@ where
         "managed config write for tenant '{tenant}' was accepted but not persisted: expected {failed}; \
          see scripts/experiment-managed-lost-updates.sh and docs/api/99-quirks-and-open-questions.md Q14"
     )))
+}
+
+/// A `PUT` that errored has not necessarily failed. A server error or a lost
+/// response says nothing about whether the document landed, and AIC has
+/// answered a `relationship set` with a bare 500 that a retry cleared — so
+/// re-read once. Only a read showing **every** change the write made — each
+/// object it changed or added, as sent, and each it removed, gone — plus the
+/// caller's conditions counts as landed. Anything less is *unknown*, never
+/// "not landed": a write can complete after its error, a read can lag it
+/// (Q14), and a concurrent writer can make a weaker predicate hold. "Every
+/// change" is counted from **both** baselines, the caller's and the preflight
+/// read: a preflight that already matched the proposal (a concurrent writer,
+/// or a lagging read) must not exempt an object the caller meant to change.
+/// A 4xx is the server's own refusal and is returned as it came.
+fn settle_failed_put(
+    error: Error,
+    expect: &[ConfigConfirm],
+    (baselines, proposed): (&[&Value], &Value),
+    reread: Result<Value>,
+    tenant: &str,
+) -> Result<()> {
+    let ambiguous = match &error {
+        Error::Api { status, .. } => *status >= 500,
+        Error::Http(_) | Error::Transport(_) => true,
+        _ => false,
+    };
+    if !ambiguous {
+        return Err(error);
+    }
+    Err(Error::Config(match reread {
+        Ok(fetched)
+            if expect.iter().all(|condition| condition.holds(&fetched))
+                && baselines
+                    .iter()
+                    .all(|before| intended_changes_visible(before, proposed, &fetched)) =>
+        {
+            eprintln!(
+                "note: the managed config write answered {error}, but a re-read shows every \
+                 change it made"
+            );
+            return Ok(());
+        }
+        Ok(_) => format!(
+            "managed config write for tenant '{tenant}' failed ({error}). A re-read does not \
+             show every change it made, which does not prove it did not land: a write can \
+             complete after its error and a read can lag it (Q14). Whether it landed is \
+             unknown; check with `aic managed get` before retrying"
+        ),
+        Err(read) => format!(
+            "managed config write for tenant '{tenant}' failed ({error}), and the re-read failed \
+             too ({read}), so whether it landed is unknown. Check with `aic managed get` before \
+             retrying"
+        ),
+    }))
+}
+
+/// Whether `fetched` holds every change from `before` to `proposed`, object by
+/// object (keyed by `name`): each object `proposed` changed or added is in
+/// `fetched` exactly as sent, and each it removed is absent. Objects the write
+/// did not touch may differ, since another writer may own them.
+fn intended_changes_visible(before: &Value, proposed: &Value, fetched: &Value) -> bool {
+    fn by_name(doc: &Value) -> Option<std::collections::BTreeMap<&str, &Value>> {
+        objects(doc)
+            .ok()?
+            .iter()
+            .map(|object| Some((object.get("name")?.as_str()?, object)))
+            .collect()
+    }
+    let (Some(before), Some(proposed), Some(fetched)) =
+        (by_name(before), by_name(proposed), by_name(fetched))
+    else {
+        return false;
+    };
+    proposed
+        .iter()
+        .filter(|(name, object)| before.get(*name) != Some(*object))
+        .all(|(name, object)| fetched.get(name) == Some(object))
+        && before
+            .keys()
+            .filter(|name| !proposed.contains_key(*name))
+            .all(|name| !fetched.contains_key(name))
 }
 
 /// The `objects` array of a managed document.
@@ -709,6 +869,35 @@ pub fn summarize(doc: &Value) -> Result<Vec<ObjectSummary>> {
 
 #[cfg(test)]
 mod tests {
+
+    // Regression: the id persisted by conversion must survive call assembly
+    // and the actual serialized client/agent envelope.
+    #[test]
+    fn conversion_transaction_id_reaches_agent_wire_for_every_record_method() {
+        use crate::managed::{conversion::tests::captured, relink};
+        let (capture, census) = captured(true);
+        let permit = relink::authorize(false, true).unwrap();
+        for array in [false, true] {
+            let mut writes =
+                relink::writes(&permit, "a", "link", array, &census.edges[0], Some("r1")).unwrap();
+            for write in &mut writes {
+                let id = crate::http::transaction_id();
+                write.transaction_id = Some(id.clone());
+                let envelope = relink_call(&capture.tenant, write, true)
+                    .unwrap()
+                    .envelope();
+                let wire =
+                    serde_json::to_value(crate::agent::protocol::WireRequest::current(envelope))
+                        .unwrap();
+                assert_eq!(wire["transaction_id"], id);
+                assert_eq!(wire["method"], write.method);
+                assert_eq!(
+                    wire["if_match"],
+                    serde_json::to_value(&write.if_match).unwrap()
+                );
+            }
+        }
+    }
 
     /// The control the first version lacked: a permanently missing property
     /// answers the same router 404, so it is retried only just after a
@@ -1011,6 +1200,134 @@ mod tests {
             assert_eq!(result.is_err(), refused, "{result:?}");
             assert_eq!(puts.get(), usize::from(!refused));
         }
+    }
+
+    /// A 5xx or a transport failure is settled by a re-read showing every
+    /// change; anything less is unknown, never "not landed"; a 4xx or a local
+    /// error is returned as it came.
+    #[tokio::test]
+    async fn a_failed_put_lands_only_when_a_reread_shows_every_change() {
+        let widget =
+            |props: Value| json!({"name": "custom_widget", "schema": {"properties": props}});
+        let other = json!({"name": "other", "schema": {"properties": {}}});
+        let before = json!({"objects": [widget(json!({})), other.clone()]});
+        let after = json!({"objects": [widget(json!({"x": {}})), other.clone()]});
+        let server = |status| Error::Api {
+            status,
+            body: String::new(),
+        };
+        // (label, error, what the tenant holds once the PUT has failed, want)
+        let cases: Vec<(&str, Error, Value, std::result::Result<(), &str>)> = vec![
+            ("500, landed", server(500), after.clone(), Ok(())),
+            (
+                "transport, landed",
+                Error::Transport("reset".into()),
+                after.clone(),
+                Ok(()),
+            ),
+            // A landed write behind a stale read looks exactly like this.
+            (
+                "500, not visible",
+                server(500),
+                before.clone(),
+                Err("unknown"),
+            ),
+            (
+                "transport, not visible",
+                Error::Transport("reset".into()),
+                before.clone(),
+                Err("unknown"),
+            ),
+            (
+                "500, another writer changed an untouched object",
+                server(502),
+                json!({"objects": [widget(json!({"x": {}})), {"name": "other", "schema": {"properties": {"y": {}}}}]}),
+                Ok(()),
+            ),
+            ("409", server(409), after.clone(), Err("AIC API error: 409")),
+            (
+                "a local error",
+                Error::Config("refused here".into()),
+                after.clone(),
+                Err("refused here"),
+            ),
+        ];
+        for (label, error, holds, want) in cases {
+            let stored = std::cell::RefCell::new(before.clone());
+            let error = std::cell::RefCell::new(Some(error));
+            let result = replace_managed_confirmed_with(
+                &before,
+                after.clone(),
+                &[ConfigConfirm::ObjectPresent {
+                    name: "custom_widget".into(),
+                }],
+                || std::future::ready(Ok(stored.borrow().clone())),
+                || std::future::ready(Ok(json!({}))),
+                |_| {
+                    *stored.borrow_mut() = holds.clone();
+                    std::future::ready(Err(error.borrow_mut().take().expect("one PUT")))
+                },
+                "t",
+            )
+            .await;
+            match (want, result) {
+                (Ok(()), Ok(())) => {}
+                (Err(text), Err(error)) => {
+                    let error = error.to_string();
+                    assert!(error.contains(text), "{label}: {error}");
+                    assert!(!error.contains("retrying is safe"), "{label}: {error}");
+                }
+                (want, got) => panic!("{label}: want {want:?}, got {got:?}"),
+            }
+        }
+
+        // Sol r2: the preflight read already shows the proposal (a concurrent
+        // writer, or a lagging read), the PUT fails, and the re-read shows a
+        // different `custom_widget`. The caller's own baseline still counts.
+        let theirs = json!({"objects": [widget(json!({"y": {}})), other.clone()]});
+        let reads = std::cell::RefCell::new(vec![theirs, after.clone()]);
+        let result = replace_managed_confirmed_with(
+            &before,
+            after.clone(),
+            &[ConfigConfirm::ObjectPresent {
+                name: "custom_widget".into(),
+            }],
+            || std::future::ready(Ok(reads.borrow_mut().pop().expect("two reads"))),
+            || std::future::ready(Ok(json!({}))),
+            |_| std::future::ready(Err(server(500))),
+            "t",
+        )
+        .await;
+        assert!(
+            matches!(&result, Err(error) if error.to_string().contains("unknown")),
+            "a matching preflight exempted the change: {result:?}"
+        );
+    }
+
+    /// The caller's predicate alone is not enough: a concurrent create of the
+    /// same name with other content satisfies `ObjectPresent`, and a delete's
+    /// cleanup of another object must show too.
+    #[tokio::test]
+    async fn a_weak_predicate_does_not_turn_a_failed_put_into_success() {
+        let before = json!({"objects": [{"name": "keep", "schema": {"properties": {"ref": {}}}}]});
+        let mine = json!({"name": "custom_widget", "schema": {"properties": {"a": {}}}});
+        let theirs = json!({"name": "custom_widget", "schema": {"properties": {"b": {}}}});
+        let proposed = json!({"objects": [before["objects"][0].clone(), mine]});
+        let raced = json!({"objects": [before["objects"][0].clone(), theirs]});
+        assert!(!intended_changes_visible(&before, &proposed, &raced));
+        assert!(intended_changes_visible(&before, &proposed, &proposed));
+
+        // Delete `gone`, clearing `keep`'s reference to it: absence alone is
+        // not the whole change.
+        let before = json!({"objects": [
+            {"name": "keep", "schema": {"properties": {"ref": {}}}},
+            {"name": "gone", "schema": {"properties": {}}},
+        ]});
+        let proposed = json!({"objects": [{"name": "keep", "schema": {"properties": {}}}]});
+        let half = json!({"objects": [{"name": "keep", "schema": {"properties": {"ref": {}}}}]});
+        assert!(!intended_changes_visible(&before, &proposed, &half));
+        assert!(intended_changes_visible(&before, &proposed, &proposed));
+        assert!(!intended_changes_visible(&before, &proposed, &before));
     }
 
     #[tokio::test]

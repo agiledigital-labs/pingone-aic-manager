@@ -99,7 +99,7 @@ describe("implicitPolicy decides from the real schema", () => {
       { creating: false, patchedFrom: { text: "a", count: 1 }, operations: [{ operation: "remove", field: "/text" }] }, "pass"],
     ["patch removes an untyped property", gadget([]), { count: 1 },
       { creating: false, patchedFrom: { loose: "x", count: 1 }, operations: [{ operation: "remove", field: "/loose" }] }, "pass"],
-    // Fix round 2, P3-1: stock adds an implicit required for any default; unmeasured without schema.required.
+    // Fix round 2, P3-1: AIC's 403 REQUIRED was measured only with schema.required; unmeasured without it.
     ["patch removes a defaulted property", gadget([]), { text: "a" },
       { creating: false, patchedFrom: { text: "a", count: 1 }, operations: [{ operation: "remove", field: "/count" }] }, "fault", "idm-policy/required"],
     ["patch removes a null-defaulted property", gadget([]), { text: "a" },

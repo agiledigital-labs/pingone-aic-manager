@@ -1,13 +1,14 @@
 /** Main-process verdict: task inversion/retry/skip cannot change this exit status. */
 import type { Reporter, Vitest, TestModule, RunnerTaskResultPack } from "vitest/node";
-import { emulationAuditDiagnostics, type EmulationAudit } from "../emulation.ts";
+import { EmulationAuditLedger, emulationAuditDiagnostics, type EmulationAudit } from "../emulation.ts";
 
 import { EMULATION_REPORTER_CONTEXT, EMULATION_REPORTER_VERSION } from "./vitest-context.ts";
 import { JVM_POOL_CONTEXT, JvmPool, poolEnabled } from "../pool.ts";
 import { formatFaultTally, tallyFaults, writeFaultTally } from "./fault-tally.ts";
 
 export default class EmulationReporter implements Reporter {
-  #audits = new Map<string, EmulationAudit>();
+  /** Every worker's audit, merged from the deltas they send (and any full audit). */
+  #ledger = new EmulationAuditLedger();
   #ended = false;
   #printed = new Set<string>();
 
@@ -32,10 +33,10 @@ export default class EmulationReporter implements Reporter {
     if (pool !== undefined) vitest.provide(JVM_POOL_CONTEXT, pool.address);
   }
 
-  onTestRunStart(): void { this.#audits.clear(); this.#printed.clear(); this.#ended = false; }
+  onTestRunStart(): void { this.#ledger.clear(); this.#printed.clear(); this.#ended = false; }
   #accept(meta: object): void {
     const audit = (meta as { rhinoEmulationAudit?: EmulationAudit }).rhinoEmulationAudit;
-    if (audit && audit.revision >= (this.#audits.get(audit.id)?.revision ?? -1)) this.#audits.set(audit.id, audit);
+    if (audit) this.#ledger.accept(audit);
   }
   // Vitest 5 still dispatches the task-update reporter hook, including after a
   // file's completion event. Never infer an audit verdict from task.result.
@@ -55,7 +56,7 @@ export default class EmulationReporter implements Reporter {
   // pooled JVMs. A tally that cannot be written is a warning, not a verdict:
   // the faults themselves already failed their cases.
   #tally(): void {
-    const tally = tallyFaults(this.#audits.values(), this.#root);
+    const tally = tallyFaults(this.#ledger.audits(), this.#root);
     try {
       const path = writeFaultTally(tally);
       const summary = formatFaultTally(tally, path);
@@ -66,7 +67,7 @@ export default class EmulationReporter implements Reporter {
     }
   }
   #enforce(): void {
-    for (const audit of this.#audits.values()) for (const message of emulationAuditDiagnostics(audit)) {
+    for (const audit of this.#ledger.audits()) for (const message of emulationAuditDiagnostics(audit)) {
       process.exitCode = 1;
       if (!this.#printed.has(message)) {
         this.#printed.add(message);

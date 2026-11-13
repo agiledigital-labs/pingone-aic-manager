@@ -272,7 +272,7 @@ read-back, and remains so.
 | Shape                   | Accepted / observed                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Minimal custom object   | `{ "name": "...", "schema": { "type": "object", "title": "...", "properties": {}, "required": [], "order": [] } }`. Objects carry no `_id`/`$id`; the document's `_id: "managed"` is the only id.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
-| Standard object marker  | **Two markers, governing two different things — do not collapse them.** (a) Top-level `"type": "Managed Object"` marks a Ping-shipped _object_: all ten realm objects carry it, custom objects carry no `type` at all, and no other value of `type` occurs (verified 2026-08-07). This is the "cannot rename or delete the object" test — `crate::managed::state::is_ping_shipped_object`. (b) Top-level `meta` marks the objects whose _fields_ Ping constrains: **only `alpha_user` and `bravo_user`** carry it (verified 2026-07-27, re-confirmed 2026-08-07). This is the "additions need a `custom_` prefix, shipped fields are read-only" test — `object_class`. `role`/`organization`/`assignment`/`application` have `type` but no `meta`, and **accept ordinary un-prefixed properties** (confirmed by the maintainer against `alpha_organization`, 2026-08-07 — not independently re-run here), so they get full field freedom while the object stays protected. Keying field capability on `type` (2026-07-31 to 2026-08-07) forced `custom_` names the server never required. |
+| Standard object marker  | **Two markers, governing two different things — do not collapse them.** (a) Top-level `"type": "Managed Object"` marks a Ping-shipped _object_: all ten realm objects carry it, custom objects carry no `type` at all, and no other value of `type` occurs (verified 2026-08-07). **Reported from a client tenant 2026-11-05, not reproduced here:** console-created custom objects carry `"type": "Managed Object"` too (objects created through REST, as on the sandbox, carry no `type`). So the marker is not proof: `crate::managed::state::object_protection` refuses rename/delete by **name** (`alpha_`/`bravo_` × `user`, `role`, `group`, `organization`, `application`, `assignment`) and treats the marker under any other name as needing `--force`. (b) Top-level `meta` marks the objects whose _fields_ Ping constrains: **only `alpha_user` and `bravo_user`** carry it (verified 2026-07-27, re-confirmed 2026-08-07). This is the "additions need a `custom_` prefix, shipped fields are read-only" test — `object_class`. `role`/`organization`/`assignment`/`application` have `type` but no `meta`, and **accept ordinary un-prefixed properties** (confirmed by the maintainer against `alpha_organization`, 2026-08-07 — not independently re-run here), so they get full field freedom while the object stays protected. Keying field capability on `type` (2026-07-31 to 2026-08-07) forced `custom_` names the server never required. |
 | Scalar property         | `{ "title": "...", "description": "...", "type": "string", "searchable": true, "viewable": true, "userEditable": true }` round-trips.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | Enum-constrained scalar | `{ "type": "string", "title": "...", "enum": ["new", "done"], "options": { "enum_titles": ["Brand new", "All done"] }, "searchable": …, "viewable": …, "userEditable": … }`. **`enum` is a constraint on a scalar, not a distinct property type** — the property keeps its `type` and gains a sibling `enum` array. Round-trips verbatim, including optional `options.enum_titles` display labels. Also works on `"type": "number"` (`enum: [1,2,3]`) and on an array's items (`{"type":"array","items":{"type":"string","enum":[…]}}`). **Enforced on record write**, not just UI metadata — see "Enum constraints" below. Verified 2026-07-31.                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | Single relationship     | `{ "type": "relationship", "resourceCollection": [{ "path": "managed/<target>" }] }`. `reversePropertyName`, `validate`, and explicit `_ref`/`_refProperties` are optional at config-write time.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
@@ -621,9 +621,8 @@ Three consequences worth carrying:
   default already applies on create. It does not make an explicit `null`
   acceptable. Whether it also loses the `PATCH remove` guard is **unmeasured**
   (inference, 2026-11-08): the 403 `REQUIRED` above was taken with the property
-  still in `schema.required`, and stock `policy.js` adds an implicit `required`
-  for any `default`, `null` included, which predicts the remove is still
-  refused. See Q18 in `99-quirks-and-open-questions.md`.
+  still in `schema.required`; without it, whether the remove is refused has
+  not been measured. See Q18 in `99-quirks-and-open-questions.md`.
 - **`null` is never a substitute for "unset".** A caller that sends `null` for
   an untouched field gets a 403 that reads like "you must supply a value", when
   the fix is to _omit_ the key and let the default land. Strip null-valued keys
@@ -777,11 +776,29 @@ A relationship property was observed in one of two modes, and both can work:
 - **Generic.** No mapping, and `_refProperties._id` is a plain UUID. Where
   those links are stored is inference — presumably IDM's generic relationships
   table, but `/openidm/repo/relationships` is 403 to the service account.
+  E21 on 2026-11-05 got the same 403, body `Access denied`. What a
+  console-created pair writes was not measured.
 
 Either way, the forward and reverse sides report the **same**
 `_refProperties._id` for a link. The id shape matched the mapping mode on every
 link probed, but that is an observed association over a handful of links, not a
 documented allocation rule; treat it as a hint, never as a classifier.
+
+A custom attribute declared on one side only is one value on that shared edge
+(verified 2026-11-05, E21). `status` was declared on the parent end of
+`children` / `gchildren` and not on the child's reverse. Both sides'
+relationship reads returned `_refProperties` keys `_id`, `_rev` and `status`.
+A patch of the child's has-one subresource changed the status the parent
+read, and a patch through the parent changed the status the child read,
+mapped and generic. The write moved the mapped parent's `_rev` and not the
+generic parent's, and not the child's, from either side. `GET` of the object
+omits relationship fields unless `returnByDefault` is true. `GET` with
+`_fields=<rel>` returns the edge either way. With `returnByDefault` false, a
+plain-field `onUpdate` on either object saw no relationship field in
+`object` or `oldObject`. With it true, both sides' plain-field hooks saw the
+edge, including `status`. The schema note above still holds: the declaration
+is per side. The stored value is not. Detail:
+`pocs/managed-aggregate-cas/RESULTS.md`, "E21".
 
 **`PUT config/managed` did not write `repo.ds` in either operation tried** —
 creating a pair, and renaming a mapped property (below). A has-many ↔ has-one
@@ -799,6 +816,129 @@ service-account bearer. It serves the object's schema on `GET`, but
 `If-Match: *` is 501, and `PUT`/`PATCH` on the object and `POST ?_action=…` are
 501. Those five forms are all that was tried; a write route needing another
 shape, version or credential is not ruled out.
+
+**Superseded 2026-11-01** for the route itself, not for the service account:
+the console maps a pair through `PUT …/properties/<p>` with
+`Accept-API-Version: resource=2.0` and a quoted `If-Match: "*"`, and the
+service account is refused that form too. See "Converting a pair between
+storage modes" below.
+
+#### Converting a pair between storage modes (measured 2026-11-01)
+
+Measured on the sandbox's test objects, from an operator's console HAR, and
+with one dry-run promotion on a dev → UAT pair (undone; see "Verified
+against").
+
+**The console's route.** Saving an existing relationship in the console sent
+one request: `PUT /openidm/schema/managed/<obj>/properties/<key>` with
+`Accept-API-Version: resource=2.0` and `If-Match: "*"`, a body equal to the
+property as `GET` returns it plus `"notifySelf": false`, and the operator's
+user session. It returned 200. Comparing the console's own `repo.ds` reads
+before and after, it added exactly two entries: the forward end as a
+`reference` on `fr-idm-reference-8`, and the reverse as a `reverseReference`.
+**The server chose the column**; the request named none. A second console save,
+of another pair, took `-9`. The console's source (`platform-ui`,
+`SchemaApi.saveSchemaProperty`) adds `?waitForCompletion=true`, which the same
+source describes elsewhere as waiting "for the config change to propagate
+before resolving"; the console build captured did not send it.
+
+**The service account cannot use that route.** The same `PUT`, with or without
+`waitForCompletion=true`, is `403 "Access denied"` — including a byte-for-byte
+`PUT` of an already-mapped property's own `GET` body. Nothing changed on a 403:
+`repo.ds` was byte-identical and existing links still resolved. IDM's
+`/openidm/info/login` names the service account's roles as
+`internal/role/openidm-svcacct` and `internal/role/openidm-authorized`, and no
+`config/access` rule grants either `update` on `schema/*` (the account's
+`config/*` writes are evidently authorised outside `config/access`). An empty
+body is `400 Invalid relationship schema`, so validation runs before the access
+check. fr-config-manager v1.9.0 `fr-config-push` replays pulled schemas through
+this same route with a service account's `fr:idm:*` scope; from its source it
+should meet the same 403 — not run.
+
+**The service account can write the mapping into `repo.ds` itself.** A
+whole-document `PUT config/repo.ds?waitForCompletion=true` adding the same two
+entries (forward `{"type": "reference", "ldapAttribute":
+"fr-idm-reference-<n>", "primaryKey": "uid", "resourcePath":
+"managed/<target>", "isMultiValued": <bool>}`, reverse `{"type":
+"reverseReference", "resourcePath": "managed/<source>", "propertyName":
+"<forward>", "isMultiValued": <bool>}`) was 200, re-read identical, and a link
+written afterwards resolved from both ends; `aic managed relationship verify`
+confirmed both ends mapped at runtime. Ping's own page says to manage
+relationships "only [with] the admin console or the Schema API" and that
+"other methods might cause your data to de-sync"; nothing measured here showed
+a de-sync, but this is the "other method".
+
+**Converting a pair hides its existing links; it does not delete them.**
+Measured both ways round on generic pairs with links:
+
+| Step | Existing generic link | Link written while mapped |
+| ---- | --------------------- | ------------------------- |
+| Console save (pair becomes mapped)           | `null` on the forward end, absent from the reverse collection | — |
+| `aic`-style `repo.ds` write (becomes mapped) | `null` forward, absent reverse                                  | resolves from both ends |
+| Mapping removed again (back to generic)      | **back**, resolving from both ends                              | `null` — now the hidden one |
+
+So each store keeps its own links and `repo.ds` only chooses which one IDM
+reads. A hidden generic link cannot be read back (`/openidm/repo/relationships`
+is 403 to the service account), so anything that converts a pair with links
+must read them **before** the switch and write them again after it. This is
+the operator-reported "re-saving a relationship in the console breaks its
+existing links". A JSON-patch `replace` with `"value": null` is
+`400 … not a valid JSON patch`; `remove` unlinks a has-one end.
+
+**Columns are `fr-idm-reference-1` to `-10`, numbered per object.** A
+`repo.ds` naming `fr-idm-reference-11` was accepted (200) and the first link
+write through it was `400 … objectClassViolation … prohibitedAttribute
+fr-idm-reference-11`, which matches Ping's "objects are limited to 10 custom
+relationships". `managed/test_obj2` and `managed/test_from` each hold a
+`fr-idm-reference-1`, so the column is per object, not per tenant. Ping's page
+also warns that a deleted relationship's attribute can be reused and its
+orphaned values "unpredictably reappear"; reusing a freed column was not
+measured.
+
+**A new object type has no `repo.ds` entry of its own.** Creating two types and
+a pair between them through `config/managed` left `repo.ds` unchanged; such a
+type falls under `genericMapping."managed/*"` (`dnTemplate
+"ou=managed,dc=openidm,dc=example,dc=com"`). Adding a per-type entry
+(`dnTemplate "ou=<obj>,ou=managed,dc=openidm,dc=example,dc=com"`,
+`objectClasses ["uidObject", "fr-idm-generic-obj"]`, `jsonAttribute
+"fr-idm-json"`, `jsonQueryEqualityMatchingRule "caseIgnoreJsonQueryMatch"`,
+`properties {}`) left an existing record and its generic link readable and new
+records creatable; mapping the pair then behaved as in the table.
+
+**Reported from a client tenant (2026-11-03), not reproduced here:** a record
+created *immediately* after a new per-type entry went in landed in the old
+generic store; once the entry activated the record could no longer be read, and
+reverting the entry exposed it again. Waiting before creating records avoided
+it. How long activation takes is unmeasured, so `relationship set`/`map` print a
+warning after any write that adds a per-type entry
+(`storage::activation_warning`) rather than wait a guessed interval.
+
+**Not reproduced on the sandbox (2026-11-09).** Two throwaway pairs, plain
+`{}` creates, every record read back by id and counted by `_queryFilter=true`
+60 s or more after the last create. Run 1 created a record every ~1.1 s from
+0.8 s to 52 s after `relationship set` returned (45 records). Run 2 created one
+every ~0.4 s from 3 s *before* `set` started, through the 4 s it ran, to 25 s
+after it returned (76 records). Every record in both runs read back `200` and
+both query counts were complete, including those created before the per-type
+entry existed and during its write, and the run-2 records again several minutes
+later. So no activation lag was observable here at any timing, and there is no
+measured interval to wait for; the warning stays. What differs on the reporting
+tenant is unknown.
+
+**Promotion (measured 2026-11-02, three real dev → UAT promotions of
+throwaway types).** `repo.ds` is promoted as a **whole document**: after each
+promotion UAT's `repo.ds` was byte-equal to dev's, including when the
+promotion *removed* a mapping and two per-type entries that by then existed
+only in UAT. So a mapping present only in the upper environment is deleted,
+not merged. Links are records and are not promoted: UAT's three generic links
+on the converted pair were hidden from the record field and the reverse end
+immediately after the mapping landed, exactly as in the table.
+
+The report is not a reliable signal for `repo.ds`. A promotion whose only
+change was the mapping listed `IDMConfig / Uncategorized — 1 modified:
+repo.ds`; one that also deleted the two probe types listed only `Managed
+Objects — 2 deleted`, and the 2026-11-01 dry run that added types and a
+mapping listed only `Managed Objects — 2 added`.
 
 **Renaming a mapped relationship through `config/managed` breaks it.** Measured
 by renaming `test_from.hasOnehOne` (mapped, reverse `test_to.hasOneHasOne`) to
@@ -927,10 +1067,33 @@ repaired first — the order the second row above used) — looked for in every
 section of `resourceMapping` and on every resource, because the sandbox's
 `explicitMapping."internal/role".authzMembers` and
 `genericMapping."internal/notification".target` are `reverseReference`s
-reading through `managed/alpha_user` — the last mapped
-property of an object, and an object `config/managed` does not declare.
+reading through `managed/alpha_user` — and an object `config/managed` does
+not declare. An object's last mapped property is removed and its per-type
+entry kept with `properties: {}` (since 2026-11-09): that is the state a newly
+added per-type entry starts in, measured above to keep records readable and
+creatable. `relationship repair <object> --empty-entry` removes the empty entry,
+for a deleted type or a type that still exists, **only when it is the layout
+`aic` generates** (`storage::generated_entry`; any other value or extra field is
+refused by name), by the same recheck/backup/
+whole-document `PUT`/read-back path. Measured 2026-11-10 for an existing type
+(below, "Empty per-type entry removal"); for a deleted type on 2026-11-09 (the
+dated entry at the end of this file).
+Measured 2026-11-09 on a throwaway pair whose ends were each their type's only
+mapping, one end holding 45 records: `delete --remove-mapping --force` removed
+both mappings reverse end first, each confirmed by re-read, leaving both
+per-type entries with `properties: {}`. After 30 s all 45 records still counted
+by query, and a new record on each type created and read back `200`.
 Whether links written while a key was mapped reappear if the key is
 recreated after a repair was not measured.
+
+`aic managed relationship delete <object>.<key> --remove-mapping` chains the
+two (measured 2026-11-01 on `test_from.hasOnehOne` ↔ `test_to.hasOneHasOne`,
+both mapped): one `config/managed` write removing both ends, then
+`test_to.hasOneHasOne`'s `reverseReference` and `test_from.hasOnehOne`'s
+`reference` removed in that order, each confirmed by re-read. The resulting
+`repo.ds` equalled the document before it minus exactly those two entries.
+Both documents were restored from copies taken first, and four re-reads over
+a minute matched them.
 
 #### Checking a pair (`aic managed relationship verify`, measured 2026-10-26)
 
@@ -955,6 +1118,30 @@ reported **untested**, not healthy. Measured shapes it relies on:
 
 So links are found by paging records with `_fields=_id,<key>`, never by `pr`,
 and a singular far end is read with `_fields` on the record.
+
+**The `pr` asymmetry is how `verify` tells the stored config from the running
+one** (measured 2026-11-01, sandbox). `repo.ds` is stored configuration, and
+nothing else says whether IDM has loaded it. With a link in place,
+`managed/<obj>?_queryFilter=_id eq "<id>" and <key> pr` found the record on
+every mapped end tried — `test_from.hasOnehOne`, `test_from.hasOneHasMany`,
+`test_from.hasOneHasNone` (references) and `test_to.hasManyHasOne` (a
+`reverseReference`) — and found nothing on the generic pair `test_from.aicRel` ↔
+`test_to.revAicRel` with a link present on both ends. `verify` runs that query
+for one resolved link per direction and for both ends of a `--probe` link, and
+reports a stored mapping the query does not see (or the reverse) as a finding.
+Only the agreeing cases have been observed; the two disagreements are
+reported, not explained.
+
+**A required has-one cannot be emptied from its own side** (measured
+2026-11-01, sandbox). `test_from.aicRel` is listed in `schema.required`. A
+`--probe` through it wrote its test link, and the cleanup `PATCH` removing the
+property was refused `403 Failed policy validation` (`REQUIRED`), stranding the
+link. `DELETE managed/test_to/<id>/revAicRel/<edgeId>` — the same edge through
+the generic has-many reverse collection — returned 200 and emptied
+`test_from.aicRel` with no policy complaint, and was used to clean up. So the
+policy check runs on a write to the record holding the required property, not
+on the edge. `verify --probe` now refuses to probe a pair with a required end
+rather than rely on that.
 
 Positive and negative control, sandbox: with one link on each of the mapped
 pairs `hasOnehOne` ↔ `hasOneHasOne` and `hasManyHasMany` ↔ `hasManyhasMany`,
@@ -1100,15 +1287,21 @@ remove were sent with the now-stale `_rev`:
 | generic          | **no**                                | **`200`, the write lands**           |
 
 A link written from the **far** record moved the near record's `_rev` on the
-mapped pair as well. So `If-Match` on a record `PATCH` protects a link only on
-a mapped end; on a generic end it is accepted and ignored, because nothing a
-link write changes is in the `_rev`. `aic managed relationship relink` and
-`verify --probe` send `If-Match` on every has-one write and re-read the
-property immediately before it, which closes the window on a mapped end and
-only narrows it on a generic one.
+mapped pair as well. Measured again on 2026-11-05 from the child side of a
+has-many / has-one pair (`pocs/managed-aggregate-cas`, E21): an edge
+`_refProperties` patch through the child, and a replace of the child's reverse
+link, each moved the mapped parent's `_rev` and did not move the generic
+parent's, and did not move the child's own `_rev` even when the child's
+`onUpdate` ran. The reverse-link replace moved both mapped parents, the one the
+child left and the one it joined. So `If-Match` on a record `PATCH` protects a
+link only on a mapped end; on a generic end it is accepted and ignored, because
+nothing a link write changes is in the `_rev`. `aic managed relationship relink`
+and `verify --probe` send `If-Match` on every has-one write and re-read the
+property immediately before it, which closes the window on a mapped end and only
+narrows it on a generic one.
 
-**A link into an occupied has-one is refused, not displacing.** Measured the
-same day, writing from the near end to a far record whose has-one reverse
+**A link into an occupied has-one is refused, not displacing.** Measured
+2026-10-31, writing from the near end to a far record whose has-one reverse
 already held another link:
 
 | Pair                                      | Write                              | Result                                                                                       |
@@ -1140,6 +1333,16 @@ with an **empty** result — the same answer as an existing record with no
 links. An empty collection is therefore not evidence the record exists; `aic`
 reads the record itself before treating an empty far end as "does not list
 it".
+
+### Nullable, object and array-of-object property declarations (verified 2026-11-09)
+
+A whole-document `PUT config/managed` that added, to a fresh custom object,
+`{"type": ["string", "null"]}`, `{"type": "object"}` and
+`{"type": "array", "items": {"type": "object"}}` was accepted, and the re-read
+returned each declaration verbatim, with `schema.order` in the order written
+(a key inserted mid-order stayed there). This is what `aic managed field add
+--nullable`, `--type object`, `--type object[]` and `--after` write. Record
+writes against those declarations were **not** exercised.
 
 ### Object-type rename orphans records (verified 2026-07-27)
 
@@ -1227,6 +1430,32 @@ on the same tenant:
 Sync tooling should detect hooks **by value shape** (any object property with
 `type` + `source`/`file`), not by a hardcoded key list — which event keys beyond
 the six observed are accepted/fired remains an open question.
+
+**Hook bindings — there is no event variable (verified 2026-11-02).** A
+throwaway type (`alpha_hook_probe`, since deleted) carried `onCreate`,
+`onUpdate`, `postCreate` and `postUpdate` hooks that dumped their scope into a
+second type's records; one `PUT` create and one `PATCH` update fired them.
+
+- **In scope in all four:** `object`, `newObject`, `oldObject`, `request`,
+  `context`, `resourceName`, `openidm`, `logger`. **Absent:** `hook`, `event`,
+  `trigger`, `method`, `action`, `id`, `state`. The hook a script is attached to
+  _is_ the event; to share one body across hooks, pass a literal from a
+  one-line wrapper per hook.
+- `resourceName` is a string, `managed/<type>/<id>`.
+- `request` and `context` are **plain script objects, not Java objects**:
+  `request.getClass()` throws `Cannot find function getClass`. A create shows
+  `method: "create"`, `resourcePath`, `newResourceId`; a patch shows
+  `patchOperations` (whether `method` is also present on a patch was lost to
+  truncation — unmeasured).
+- **Unmeasured:** `onDelete` / `postDelete` (`aic script list` does not surface
+  them, so they could not be probed).
+- **Do not dump `context`.** It includes the HTTP context's request headers, so
+  a hook that logs or stores it writes the caller's `Authorization` bearer
+  token. The probe's sink records held one and were deleted at once.
+- A custom type created only via config (here `Terraform_lifecycle_probe`) has
+  no storage entry: `PUT` create answers **500** and `PATCH` answers `404 No
+  Such Entry … ou=<type>,ou=managed`. `aic managed object create` produces a
+  type that works.
 
 **A custom type can carry the same hook shapes as the Ping-shipped objects.**
 Verified 2026-08-15: a throwaway custom type `Terraform_lifecycle_probe` was
@@ -1384,6 +1613,340 @@ The “post” distinction means after the corresponding repository operation, n
 “after either kind of write.” Both post-hooks run before any further implicit
 synchronization of targets. Reproduce with
 `scripts/experiment-managed-post-hook-routing.sh`.
+
+### Concurrent `PATCH` and hooks (verified 2026-11-05)
+
+A revision-less `PATCH` of a managed record is a compare-and-swap. IDM applies
+the operations, runs `onUpdate`, and writes conditional on the revision it read.
+A conflict re-reads and repeats the attempt, including `onUpdate`. A `PATCH`
+with `If-Match` does not retry. The pattern this supports — facts on the
+parent's own fields, derivation in a pure `onUpdate` — is written up in
+[managed-object aggregates](../managed-object-aggregates.md). Per-run rows and
+the driver are in `pocs/managed-aggregate-cas/`.
+
+Storage: the parent and the side-effect sink are generic custom objects (a
+per-type `genericMapping`, no property mappings). Relationship rows below name
+the pair. "trace" means `onUpdate` also created one sink record per run, which
+is how runs are counted; that write is inside the attempt and lengthens it.
+
+#### Revision-less `PATCH` retries `onUpdate` and commits once
+
+N concurrent `PATCH add /inbox/-`, no `If-Match`. Fold mode, trace on,
+`postUpdate` creating one sink per commit. Three runs at each N. Every response
+was `200`, every entry was stored, `derived` matched a recomputation from the
+stored entries, and no retry saw the same `oldObject._rev` twice.
+
+| N   | p50 ms (three runs) | max ms | `onUpdate` runs | `postUpdate` runs | requests retried | max runs / request |
+| --- | ------------------- | ------ | --------------- | ----------------- | ---------------- | ------------------ |
+| 2   | 238–352             | 352    | 3               | 2                 | 1                | 2                  |
+| 10  | 628–1060            | 1315   | 36–55           | 10                | 7–9              | 8–10               |
+| 50  | 3281–6225           | 8888   | 667–836         | 50                | 47–49            | 33–40              |
+
+`postUpdate`'s distinct `_rev`s equalled the commits, so it ran once per commit.
+`onUpdate` ran once per attempt: 836 sink records for 50 commits at the high
+end. A side effect in `onUpdate` is repeated by every retry.
+
+The same appends from a custom endpoint's `openidm.patch(path, null, ops)`
+(`POST /openidm/endpoint/pocagg?_action=append`, config `PUT` returned `201`)
+matched that. N = 10 and N = 50, three runs, all `200`, all entries present,
+`derived` consistent, `postUpdate` once per commit, no retry on the same base. N
+= 50 p50 was 2831–2908 ms, with 743–807 `onUpdate` runs. One uncontended pair,
+fetched with `aic logs tx`: the endpoint call and a direct `PATCH` recorded the
+same `userId` and the same `runAs` on the parent `PATCH` and on the sink
+`CREATE`. The access event is the outer call. The script's `openidm.patch` has
+no access event of its own.
+
+A stale `If-Match` does not retry. The first `PATCH` with the read `_rev` was
+`200`. The second with the same `_rev` was `412` and stored nothing further.
+
+#### `PUT` and a client-computed array lose updates
+
+Both of these return `200`. `onUpdate` recomputes from what was stored, so
+`derived` stays consistent with the surviving entries and cannot restore what
+the caller dropped.
+
+| Call                                                           | N   | entries kept (three runs) | lost  |
+| -------------------------------------------------------------- | --- | ------------------------- | ----- |
+| revision-less `PUT` of a full record built from a prior read   | 5   | 1                         | 4     |
+| revision-less `PUT`                                            | 20  | 1–2                       | 18–19 |
+| `PATCH replace /entries` with an array built from a prior read | 5   | 1                         | 4     |
+| `PATCH replace /entries`                                       | 20  | 1                         | 19    |
+
+`PUT` carrying a revision was not measured.
+
+#### `postUpdate` throwing, and `onUpdate` throwing
+
+`throw { code: 500, message: "POC_POST_THROW" }` in `postUpdate`: the caller
+received `500` "POC_POST_THROW", and the parent change was stored. A client that
+treats that 500 as "not written" and retries appends twice.
+
+`throw { code: 409, message: "POC_TERMINAL: …" }` in `onUpdate`, once the
+derived outcome is terminal: the caller received `409` and nothing was stored.
+Concurrently, threshold 5, N = 20, three runs: `5 × 200` and `15 × 409`, five
+entries, outcome `closed`, `derived` consistent. The guard runs inside the swap,
+on the state the write would commit.
+
+#### A hook patching its own parent
+
+Guarded, one request each, 90 s client timeout. Neither hung.
+
+| Caller                                            | HTTP | ms  | `onUpdate` runs | stored result         |
+| ------------------------------------------------- | ---- | --- | --------------- | --------------------- |
+| `onUpdate` calls `openidm.patch` on this record   | 200  | 294 | 3               | counter 1001, 1 entry |
+| `postUpdate` calls `openidm.patch` on this record | 200  | 77  | 2               | counter 2000, 1 entry |
+
+From `postUpdate` the nested patch is an ordinary second `PATCH` after the
+commit, and the guard stops a loop. From `onUpdate` the nested patch races the
+attempt that called it: the two first runs shared a base revision, the nested
+run committed `derived.count == 0` with the counter already moved, and the outer
+attempt retried into the final entry. An unguarded loop was not measured.
+
+#### A no-op patch
+
+`PATCH replace /name` with the value already stored, fold mode and plain mode:
+`200`, `_rev` unchanged, `onUpdate` did not run. Fold mode's hook would have
+incremented `derived.runs` had it run, so the short-circuit is before the hook.
+A no-op does not force a recompute. Whether a `304` is ever returned was not
+measured; these two were `200`.
+
+#### Heavy contention
+
+`postUpdate` still created one sink per commit. With the trace sink off, retry
+counts are invisible (that counter is the sink). The runner stops at the first
+non-200. Nothing stopped it.
+
+| trace | N   | HTTP      | p50 / max ms | entries | `postUpdate` | `onUpdate` runs | requests retried     |
+| ----- | --- | --------- | ------------ | ------- | ------------ | --------------- | -------------------- |
+| off   | 50  | 50 × 200  | 1392 / 2093  | 50      | 50           | —               | —                    |
+| off   | 100 | 100 × 200 | 2454 / 3842  | 100     | 100          | —               | —                    |
+| off   | 200 | 200 × 200 | 5019 / 9348  | 200     | 200          | —               | —                    |
+| on    | 100 | 100 × 200 | 5194 / 9236  | 100     | 100          | 1670            | 96, max 50 / request |
+
+All entries present, `derived` consistent, `postUpdate` once per commit. No 412,
+no 5xx, no timeout, through 200 writers with the trace off and 100 with it on.
+No retry bound appeared in this range. The untraced N = 50 p50 (1392 ms) sits
+next to the traced N = 50 p50 above (3281–6225 ms): the sink create inside
+`onUpdate` is a large part of the traced latency. N above 200 was not measured.
+On the untraced rows `derived.runs` equalled N, which counts committed folds
+only.
+
+#### Array size
+
+One parent created already holding N entries (id, number, 40-character note),
+then five sequential appends and ten concurrent ones. Trace off. The first
+failing create would have stopped the series. None failed.
+
+| entries at create | JSON bytes | create ms | sequential p50 / max ms | concurrent 10 p50 / max ms | final entries |
+| ----------------- | ---------- | --------- | ----------------------- | -------------------------- | ------------- |
+| 10                | 721        | 142       | 39 / 188                | 391 / 430                  | 25            |
+| 100               | 7381       | 40        | 43 / 45                 | 160 / 228                  | 115           |
+| 1000              | 74791      | 90        | 89 / 99                 | 792 / 1131                 | 1015          |
+| 5000              | 378391     | 256       | 315 / 395               | 4017 / 5028                | 5015          |
+
+Every patch was `200` and `derived` matched a recomputation. Create stayed cheap
+through ~370 KB. The fold's rewrite of the whole array is what gets expensive,
+and one run per size means the size-10 concurrent row being slower than size 100
+is noise. The point at which create or patch fails was not reached.
+
+#### The audit trail written in `onUpdate`
+
+`onUpdate` diffs `oldObject` → `object` and appends one entry per changed leaf
+to `object.audit` in memory, in the same write. k sequential changes to nested
+data, one writer:
+
+| k   | data `PATCH` + audit `PATCH` per change | one `PATCH` per change, hook audits | one `PATCH` with k operations, hook audits |
+| --- | --------------------------------------- | ----------------------------------- | ------------------------------------------ |
+| 1   | 2 calls, 237 ms                         | 1 call, 41 ms                       | 1 call, 41 ms                              |
+| 10  | 20 calls, 819 ms                        | 10 calls, 443 ms                    | 1 call, 40 ms                              |
+| 50  | 100 calls, 4245 ms                      | 50 calls, 2188 ms                   | 1 call, 49 ms                              |
+
+All three shapes produced k audit entries. The batched `PATCH` is flat in k.
+
+N writers at once, each `PATCH` carrying three operations (a shared leaf, a leaf
+of its own, an append). Three runs. Every response was `200`.
+
+| N   | p50 / max ms     | audit entries | shared-leaf chain breaks | `onUpdate` runs |
+| --- | ---------------- | ------------- | ------------------------ | --------------- |
+| 10  | 307–474 / 660    | 30 / 30       | 0                        | 34–53           |
+| 50  | 3280–4571 / 7328 | 150 / 150     | 0                        | 747–814         |
+
+Exactly one run id per commit in the trail. Sequence numbers were distinct and
+contiguous. A retried attempt's entries were discarded with the attempt. A write
+that sets a leaf to its current value leaves no diff entry;
+`request.patchOperations` is the source for intent rather than effect.
+
+### `PATCH` array operations (verified 2026-11-05)
+
+Single-parent measurements on a generic object. Concurrent `increment /counter`
+by 1: N = 10 left the counter at 10, N = 50 left it at 50 (p50 1040 ms), every
+response `200`.
+
+| Operation                                                   | Result                                                                       |
+| ----------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| `add /items/-` on an absent array                           | `200`, the array is created                                                  |
+| `add /items/0` while `items` is absent, ten concurrent      | `403` "Failed policy validation": the index produced an object, not an array |
+| `add /items/0` on an existing array                         | `400` "Position-based operation is not allowed: /items/0"                    |
+| `remove /items/0`                                           | `400`, the same message                                                      |
+| `remove /items` with `value`                                | `200`, removes every element equal to the value                              |
+| `replace /items/0/w`                                        | `200`                                                                        |
+| `replace /items/5/w` past the end                           | `500`, empty body                                                            |
+| `increment /data/n` while `data.n` is absent                | `200`, creates it as the increment                                           |
+| one `PATCH` with `add /-`, `replace`, and a new nested path | `200`, all applied                                                           |
+
+`/-` and `increment` are the position-free operations. An index names whichever
+element sits there when the attempt runs, so a retry can apply it to a different
+element than the client read. A multi-operation patch whose net effect is empty
+was not measured.
+
+### Relationship writes sit outside the parent swap (verified 2026-11-05)
+
+Each writer created a child and linked it with `PATCH add /<rel>/-`. `onUpdate`
+queried the relationship and stored a count and a sum. No notification flags.
+Three runs. Every link landed, in both storage modes, and `derived` was wrong on
+every run: the hook runs before the request's own link is persisted, so the last
+writer's link is never counted, and which of the others are counted depends on
+the interleaving.
+
+| pair    | N   | links | `derived.count` across runs | `derived.sum` / want      |
+| ------- | --- | ----- | --------------------------- | ------------------------- |
+| mapped  | 5   | 5     | 0, 4, 4                     | 0/15, 11/15, 10/15        |
+| mapped  | 20  | 20    | 19, 19, 19                  | 194/210, 207/210, 193/210 |
+| generic | 5   | 5     | 4, 4, 4                     | 10/15, 14/15, 11/15       |
+| generic | 20  | 20    | 19, 19, 19                  | 203/210, 208/210, 194/210 |
+
+The mapped N = 5 run that counted nothing was the first write through a pair
+just mapped; a fresh pair needs a few seconds before it is live. Not
+investigated further. The retries in this table come from `derived` itself, a
+plain field the hook changes, which moves `_rev`. They are not evidence that the
+link write is inside the swap.
+
+An edge `PATCH` replacing `/_refProperties/status`:
+
+| pair    | HTTP | edge changed | parent `_rev` moved | parent `onUpdate` ran |
+| ------- | ---- | ------------ | ------------------- | --------------------- |
+| mapped  | 200  | yes          | yes                 | no                    |
+| generic | 200  | yes          | no                  | no                    |
+
+Patching the linked child's own `value` from 5 to 50 did not run the parent
+hook, did not move the parent's `_rev`, and left `derived.sum` at 5, in both
+modes.
+
+#### Notification flags (verified 2026-11-05)
+
+`notifySelf: true` on the parent's relationship node and `notify: true` on the
+child's reverse node (`NOTIFY=1`). `NOTIFY=2` swaps the ends. This table puts
+both flags on the relationship node. Ping's page puts `notify` on
+`resourceCollection`; that placement is the next table. The child counted
+`onUpdate`, `postUpdate` and `onDelete`; the parent counted both of its hooks.
+One write each, settled for 6 s. Two rows were read again at 30 s and had not
+moved. A direct `PATCH` of each record fired that record's hooks in every flag
+mode, so a "neither" cell is a hook that the same run could see. The same in
+both storage modes.
+
+| Write                                          | default          | `NOTIFY=1`                         | `NOTIFY=2`       |
+| ---------------------------------------------- | ---------------- | ---------------------------------- | ---------------- |
+| child created with its reverse link set        | neither          | neither                            | neither          |
+| child `PATCH` of its reverse link              | child update     | child update; neither parent       | child update     |
+| child `PATCH` of a plain field                 | child update     | child update                       | child update     |
+| child record `DELETE`                          | child `onDelete` | child `onDelete` only              | child `onDelete` |
+| edge `PATCH` through the parent's relationship | neither          | parent `onUpdate` and `postUpdate` | neither          |
+| edge `PATCH` through the child's relationship  | neither          | neither                            | child update     |
+| parent `PATCH add /<rel>/-`                    | parent, once     | parent, once                       | parent, once     |
+| parent `PATCH` of a plain field                | parent, once     | parent, once                       | parent, once     |
+| parent record `DELETE`                         | neither          | neither                            | neither          |
+
+The child's has-one reverse accepted `PATCH <child>/<rel>` of
+`/_refProperties/status` (200, first attempt) on both pairs.
+
+Round 1, same node placement, reported a parent hook when the child was
+deleted under `NOTIFY=1`. This run does not: not at 6 s, not at 30 s, not with
+the child's scripts removed. The edge patch through the parent under the same
+flags did run the parent hooks, so the flags were live. With the flag on the
+node, the rounds otherwise agree. The notified edge run is inside the caller's
+response (one sample went from 48 ms to 94 ms mapped, 44 ms to 73 ms generic).
+It does not add a second post-persist run to the parent's own link add, so
+`derived` on that write stays one link behind, as round 1 measured. A link or
+a field change made from the child does not reach the parent. A parent field
+patch does not reach the child. `NOTIFY=2` runs the child's own hooks for an
+edge patch made through the child, and does not move the child's `_rev`.
+
+| Write | `NOTIFY=1` on `resourceCollection` | `NOTIFY=2` on `resourceCollection` |
+| ----- | ---------------------------------- | ---------------------------------- |
+| child `PATCH` of its reverse link | parent and child update | child update; no parent |
+| child `PATCH` of a plain field | child update; no parent | child update; no parent |
+| child record `DELETE` | parent update and child `onDelete` | child `onDelete`; no parent |
+| edge `PATCH` through the parent | parent update | child update; no parent |
+| edge `PATCH` through the child | parent update; no child | child update; no parent |
+| parent `PATCH add /<rel>/-` | parent, once; no child | parent, once, and child update |
+
+`notify` on `resourceCollection` notifies the referenced object, which is
+where Ping's page says to put it. That includes `DELETE` of the child record.
+Round 1's parent-hook-on-delete result matches this placement, not the node
+placement its script wrote. A plain field change still does not cross. Where
+the parent hooks ran, the generic parent's `_rev` moved, because the
+notification commits a parent update.
+
+An edge or membership change on the mapped pair moves the parent's `_rev`
+whether or not a hook runs. On the generic pair it does not, unless that
+notification commits a parent update. Replacing the child's reverse link with
+the flag on the node moves `_rev` on both mapped parents and on neither
+generic parent.
+
+`notifyRelationships` on the object is stored and does not notify anyone
+(verified 2026-11-05). On the field that changes, it does, with no `notify`
+flag: a child `value` change that names `parent` and `gparent` ran the
+parent's hooks, both storage modes, and moved the generic parent's `_rev`.
+A parent `name` change that names `children` and `gchildren` ran the child's
+hooks, and the child's `_rev` stayed put. The child script does not assign
+to `object`. A change to a different field did not propagate. The tenant
+puts this on the field (`alpha_role.temporalConstraints` names `members`).
+`alpha_user` declares none.
+
+On the relationship property, naming that same relationship 404'd the
+managed resource (`Resource 'managed/<type>' not found`) for about 24 s
+while `config/managed` still listed the type. The other POC type stayed
+200. Clearing the property brought it back. Naming the other relationship,
+which is what `alpha_organization.parent` does, did not notify that other
+relationship's objects. The referenced object was notified only when
+`notify` was also on `resourceCollection`.
+
+A has-many / has-many generic pair (`peers` / `peerOf`) matched the
+node-placement table above, including no parent hook on child `DELETE`
+under `NOTIFY=1`. `notify` on a has-one forward's relationship node changed
+nothing. On that forward's `resourceCollection` it notified the referenced
+parent for a create-with-link, a reverse-link replace, a child-side edge
+patch and a child `DELETE`, and not for a plain field. `notifySelf` on the
+forward notified the child for a child-side edge patch.
+
+The notified hook's transaction id was the id the client sent plus `/0`.
+The sink creates were in the one `idm-activity` transaction that
+`aic logs tx` returned for the sent id, along with `relationshipUpdated`
+on the parent and no separate parent `UPDATE`. The client waited: three
+samples went from 46–48 ms with the flags off to 72–85 ms with `NOTIFY=1`
+on the node, and the sink was already in the response. Ten concurrent
+notified edge patches ran `onUpdate` 38 times and `postUpdate` 9 (mapped)
+or 10 (generic), with a repeated `oldRev`. The generic final `derived`
+matched the ten edges. The mapped pair returned one 404, finished with
+nine edges, and its `derived.sum` was 50 rather than 55.
+
+Repeated the same day, five fresh bursts of those ten patches lost mapped
+edges every time (two to six of the ten). The same loss happened with the
+flags off and with `notify` on `resourceCollection`. The generic pair kept
+all ten edges in five bursts with the flag and five without. The ten mapped
+patches sent one at a time kept every edge, and two concurrent mapped
+patches kept both, five times each. The 404 body was `Resource '<id>' not
+found` for an edge both sides had listed immediately before the burst. The
+child record stayed. The edge was gone from the parent and from the child,
+and a read about 30 s later did not bring it back. The 404's transaction had
+an access event and no activity: no `DELETE`, no relationship-removed event.
+`idm-core` in that window had no `ERROR` line. Where the notification ran,
+`derived` matched the edges still stored. Where it did not, `derived` stayed
+at the value the link-adds had left. (verified 2026-11-05)
+
+`DELETE` of the relationship URL, as distinct from `DELETE` of the child
+record, was not its own row. A notification received through one
+relationship and propagated out along another was not isolated. Tables:
+`pocs/managed-aggregate-cas/RESULTS.md`, "E21" and "E21 `cas` repeated".
 
 ## Examples
 
@@ -2003,6 +2566,49 @@ on create, or when actually rotating it.
 
 ## Verified against
 
+- Date: 2026-11-10 — removing the empty per-type `repo.ds` entry of an
+  **existing** type, sandbox, throwaway `zzemuA_thing` and `zzemuA_owner`
+  (`object create`, a `label` string each, `relationship set thing.owner
+  --forward one --reverse many`). Five `zzemuA_thing` records written while
+  mapped, each linked to one owner; the owner showed 5 links. Reads, each of
+  by id (5), `_queryFilter=true`, `label eq "zz"` and a fresh `POST` create
+  read back by id, taken at four points: (1) mapped (positive control: 5/5 by
+  id, 201 create); (2) after `relationship delete --remove-mapping --force`,
+  which left `genericMapping."managed/zzemuA_thing"` with `properties: {}`
+  (5/5, 201); (3) immediately after a whole-document `PUT` of `config/repo.ds`
+  minus that entry (backed up; `PUT` 200, re-read equal to the document sent,
+  entry absent): 5/5, queries 200 with the expected counts, create 201 and
+  read back 200; (4) the same at ~30 s and ~65 s: unchanged. Records created
+  in states (2) and (3) also read back by id afterwards (5 of 5). So removing
+  the empty entry of an existing type did not make its records unreadable or
+  uncreatable in this run. The entry was the one `aic` generates; a custom
+  `dnTemplate`, `jsonAttribute`, object classes or matching rule was not
+  measured, and `--empty-entry` refuses it. Not measured: a type with links *still stored*
+  through a mapping (the mapping was removed first, so links through it
+  were not read after), a restart of IDM, or a larger collection. All records
+  and both types were then deleted.
+
+- Date: 2026-11-10 — console-marker delete guard, sandbox, throwaway
+  `zzemuA_mark` (`object create`, no relationships). The whole `config/managed`
+  document was backed up, then re-sent with `"type": "Managed Object"` added to
+  that one object (`PUT` 200; re-read equal to the document sent). `aic managed
+  object delete zzemuA_mark --yes` refused, exit 1, naming the marker and
+  `--force`, and the object stayed in the config. With `--force --yes` it was
+  deleted, and the rest of `config/managed` equalled the backup minus that
+  object, key for key. The marker write went by `curl` rather than an `aic`
+  verb, since no `aic` verb sets it.
+
+- Date: 2026-11-09 — mapping activation and last-mapping removal, sandbox,
+  throwaway `zzemu_act_a`–`zzemu_act_d` built with `aic managed object create`
+  and `relationship set --forward one --reverse one`. Creates spanning
+  `relationship set` (3 s before to 52 s after) all read back by id and query;
+  no activation loss reproduced. `relationship delete --remove-mapping` of each
+  type's only mapping kept 45 records readable and new records creatable. All
+  records deleted, the four types deleted, and the four empty per-type entries
+  then removed from `config/repo.ds` by a backed-up whole-document `PUT`
+  confirmed by re-read (`object delete` leaves them, as recorded in
+  `99-quirks-and-open-questions.md`).
+
 - Date: 2026-11-08 — `default: null` on non-string types and `integer`
   defaults (orchestrator probe note `probe-nd/note.md` with its driver,
   scripts and redacted log; sandbox tenant, REST and IDM-script lanes; run by
@@ -2086,6 +2692,31 @@ on create, or when actually rotating it.
   `frUnindexedMultivalued1` and `roles` written as `[]` (absent);
   `POST /openidm/managed/<generic type>?_action=create` ×3 and `count` with
   `7`, `"7"`, `7.0`, `"7.0"`, `7.5`, `"7.5"`, `gt 6.5`, `gt "6"`, `lt "10"`.
+
+- Date: 2026-11-05 — concurrent `PATCH` and managed hooks, sandbox, throwaway
+  `alpha_poc_agg` / `alpha_poc_child` / `alpha_poc_sink`. Parent and sink
+  generic; one `repo.ds`-mapped relationship pair (`children`) and one generic
+  pair (`gchildren`). The runs are E1–E16 and E18–E20 in
+  `pocs/managed-aggregate-cas/RESULTS.md`: revision-less `PATCH` retries
+  `onUpdate` and commits every append through N = 200; `If-Match` conflicts are
+  `412`; revision-less `PUT` and client-computed `replace` lose updates; a throw
+  in `onUpdate` stores nothing and a throw in `postUpdate` stores the change;
+  relationship and edge writes are outside the swap, with and without `notify` /
+  `notifySelf`. E21 the same day counted hooks on both ends. `notify` on the
+  relationship node did not run the parent hooks on `DELETE` of the child
+  record; `notify` on the child's `resourceCollection` did, and that
+  notification moves a generic parent's `_rev`. Field-level
+  `notifyRelationships` notified the other side on a change of that field;
+  the same key on the object did not. A relationship property that named
+  itself 404'd that managed type until the property was cleared. Concurrent
+  notified edge patches retried `onUpdate` several times per commit. A repeat
+  lost mapped edges on every burst of ten, with the node flags, with `notify`
+  on `resourceCollection`, and with the flags off; the generic pair did not,
+  and the same ten mapped patches sent one at a time did not. An in-memory
+  audit trail stays exact under contention;
+  `idm-activity` shows the committed parent write once and every retried hook
+  side effect. See "Concurrent `PATCH` and hooks".
+
 - Date: 2026-10-31 — `config/repo.ds` repair, sandbox `test_from` / `test_to`
   with throwaway records, both config documents restored byte-identical
   afterwards: `PATCH /openidm/config/repo.ds` with one `remove` (200, document
@@ -2335,6 +2966,40 @@ on create, or when actually rotating it.
   `GET …?_queryFilter=/_id ne "asdf"&_pageSize=1` (400);
   `GET …?_queryFilter=/_id in ["asdf"]&_pageSize=1` (400);
   `GET …?_queryFilter=/_id eq ["asdf"]&_pageSize=1` (400).
+
+- Date: 2026-11-01 — relationship storage conversion. Sandbox, test objects
+  only (`test_from`/`test_to` and throwaway types): read an operator's console
+  HAR of one relationship save; replayed its schema `PUT` with the service
+  account (403, `repo.ds` and links re-read unchanged), with and without
+  `waitForCompletion=true`, and on two already-mapped properties; read
+  `/openidm/info/login` and `config/access`. Created generic pairs with
+  `aic managed relationship set`, linked them, then switched them to mapped by
+  console save and by `PUT config/repo.ds`, reading every link from both ends
+  and through `verify` after each step; removed the mapping again and re-read.
+  Mapped a pair on `fr-idm-reference-11` and wrote a link (400). Created two
+  types, added per-type entries, then a mapping, with records and links read
+  after each step. Every document was restored from backups taken first and
+  compared equal; links were removed from both stores first. Dev → UAT: backed
+  up both tenants' `config/managed` and `repo.ds` (identical), created two
+  probe types and a pair on dev, wrote a mapped entry into dev's `repo.ds`,
+  locked UAT, ran one dry run (report read with `aic promotion report`),
+  unlocked, restored dev's `repo.ds` from the backup and deleted the probe
+  types; both dev documents then compared equal to the backups. Nothing was
+  promoted.
+
+- Date: 2026-11-02 — relationship mappings through real promotions, dev →
+  UAT, throwaway types `aicprobe_from`/`aicprobe_to` only (operator's
+  go-ahead). Backed up both tenants' `config/managed` and `repo.ds` (equal).
+  Promotion 1 carried the types with a generic pair; three links with a
+  custom `_refProperties.note` were created on UAT. The pair was mapped on dev
+  with `aic managed relationship map`, UAT captured with `capture-links`,
+  dry run (report read), promotion 2, with `relationship verify` and direct
+  reads on both tenants and a fresh link on each tenant as the control. All
+  records were deleted on both tenants, dev's `repo.ds` restored from the
+  backup and the types deleted; promotion 3 carried that. Each promotion's
+  report was read and both tenants' documents compared after each; after
+  promotion 3 all four equalled the backups. Promotion 1 also carried one
+  pending ESV secret-store mapping from dev.
 
 ## Source citations
 

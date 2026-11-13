@@ -110,7 +110,7 @@ export class RhinoRunnerExitError extends Error {
 }
 
 /**
- * The host JVM and the AM image's JVM answered one job differently. This is
+ * The host JVM and the reference JVM image's JVM answered one job differently. This is
  * the whole reason the `both` lane exists, so it fails the test rather than
  * picking a winner.
  */
@@ -165,6 +165,16 @@ type RunnerChild = Pick<ChildProcessWithoutNullStreams, "stdin" | "kill"> & {
 };
 
 /** One JVM speaking the line protocol. {@link RhinoRunner} holds one or two. */
+/**
+ * A timing row's fault flag: `outcome` is the script's own, so a run whose
+ * script caught a harness refusal says "ok" though the run failed.
+ */
+function faultFlag(response: JobResponse): { emulationFault: boolean; faultIds?: string[] } {
+  const failure = responseFailure(response);
+  const ids = [...new Set((failure?.faults ?? []).map((fault) => fault.id))].sort();
+  return { emulationFault: failure !== undefined, ...(ids.length > 0 ? { faultIds: ids } : {}) };
+}
+
 class JvmProcess {
   readonly lane: "host" | "container";
   readonly containerName: string | undefined;
@@ -382,6 +392,7 @@ class JvmProcess {
       ...(typeof payload.sourceName === "string" ? { sourceName: payload.sourceName } : {}),
       engine: typeof payload.engine === "string" ? payload.engine : "am",
       outcome: response.outcome,
+      ...faultFlag(response),
       ...sizes,
       roundTripMs,
       ...(typeof jvm?.totalMs === "number" ? { transportMs: Math.round((roundTripMs - jvm.totalMs) * 1000) / 1000 } : {}),
@@ -810,6 +821,7 @@ export class RhinoRunner {
     if (job.resultGlobal !== undefined) {
       payload.resultGlobal = job.resultGlobal;
     }
+    if (job.completionHarvest !== undefined) payload.completionHarvest = job.completionHarvest;
     const transcript: Array<{ call: HostCall; reply: HostReply | undefined }> = [];
     let transcriptFrozen = false;
     const primaryCall = bindEmulationOwner((call: HostCall): Promise<HostReply> => this.#failures.run(

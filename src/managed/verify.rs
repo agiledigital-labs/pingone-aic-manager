@@ -686,12 +686,15 @@ pub fn storage_lines(report: &Report) -> Vec<String> {
                 (None, Some(reverse)) if reverse.mapping.is_none() => "generic".to_string(),
                 (_, Some(reverse)) => {
                     format!(
-                        "mapped ({} / {})",
+                        "stored mapping ({} / {}), runtime unconfirmed",
                         mapped_kind(&pair.forward),
                         mapped_kind(reverse)
                     )
                 }
-                (Some(_), None) => format!("mapped ({})", mapped_kind(&pair.forward)),
+                (Some(_), None) => format!(
+                    "stored mapping ({}), runtime unconfirmed",
+                    mapped_kind(&pair.forward)
+                ),
             }
         };
         let hint = if pair.problems.is_empty() {
@@ -752,6 +755,61 @@ impl RefFilter {
             Self::MappedMiss => format!(
                 "query: `/_ref eq` on {end} returns nothing for a link it lists, although the \
                  end is mapped"
+            ),
+        }
+    }
+}
+
+/// Whether the running IDM stores an end the way `repo.ds` says, judged from
+/// `managed/<obj>?_queryFilter=_id eq "<id>" and <key> pr` on a record known
+/// to hold a link through it. Measured 2026-11-01 on the sandbox: with one
+/// link each, a mapped `reference` end, a mapped `reverseReference` end and an
+/// end mapped as a has-one each found the record; a generic end found nothing.
+/// So the query separates the stores, and a stored mapping the runtime does
+/// not use is visible — the gap between `repo.ds` and what IDM has loaded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Runtime {
+    /// Stored mapped, and `pr` found the link: the mapping is live.
+    MappedConfirmed,
+    /// Stored generic, and `pr` found nothing — the generic store's answer.
+    GenericConfirmed,
+    /// Stored mapped, but `pr` found nothing: IDM is not reading this end
+    /// through the stored mapping (not loaded yet, or not honoured).
+    MappedNotLive,
+    /// No stored mapping, but `pr` found the link: never observed; reported
+    /// rather than explained.
+    LiveNotStored,
+}
+
+impl Runtime {
+    pub fn judge(end: &End, found: bool) -> Self {
+        match (end.mapping.is_some(), found) {
+            (true, true) => Self::MappedConfirmed,
+            (false, false) => Self::GenericConfirmed,
+            (true, false) => Self::MappedNotLive,
+            (false, true) => Self::LiveNotStored,
+        }
+    }
+
+    pub fn is_failure(self) -> bool {
+        matches!(self, Self::MappedNotLive | Self::LiveNotStored)
+    }
+
+    pub fn message(self, end: &End) -> String {
+        let end = label(end);
+        match self {
+            Self::MappedConfirmed => {
+                format!("runtime: {end} is mapped, confirmed (a `pr` query found a linked record)")
+            }
+            Self::GenericConfirmed => format!("runtime: {end} is generic, as stored"),
+            Self::MappedNotLive => format!(
+                "runtime: {end} has a stored mapping, but a `pr` query does not find a record \
+                 that holds a link through it — the running IDM is not using the mapping"
+            ),
+            Self::LiveNotStored => format!(
+                "runtime: {end} has no stored mapping, but a `pr` query finds a linked record \
+                 — the running IDM stores it mapped (never observed before)"
             ),
         }
     }
@@ -846,12 +904,35 @@ fn describe_ends(ends: &[String]) -> String {
 }
 
 /// The facts about a property that its `repo.ds` mapping depends on.
-#[derive(Debug, PartialEq, Eq)]
-struct Shape {
-    relationship: bool,
-    targets: Vec<String>,
-    reverse: Option<String>,
-    array: bool,
+#[derive(Debug, PartialEq, Eq, serde::Serialize)]
+pub(super) struct Shape {
+    pub relationship: bool,
+    pub targets: Vec<String>,
+    pub reverse: Option<String>,
+    pub array: bool,
+}
+
+fn shape(property: &Value) -> Shape {
+    Shape {
+        relationship: crate::managed::state::is_relationship_property(property),
+        targets: crate::managed::ops::relationship_targets(property)
+            .into_iter()
+            .map(str::to_string)
+            .collect(),
+        reverse: declared_reverse_key(property).map(str::to_string),
+        array: property.get("type").and_then(Value::as_str) == Some("array"),
+    }
+}
+
+/// Permissive shape/presence for promotion comparison, including multi-target
+/// and internal targets. Undeclared platform ends have no managed footprint.
+/// Target order has no meaning for this comparison.
+pub(super) fn declaration_shape(doc: &Value, resource: &str, key: &str) -> Option<Shape> {
+    let property = properties(doc, resource.strip_prefix("managed/")?)?.get(key)?;
+    let mut shape = shape(property);
+    shape.targets.sort();
+    shape.targets.dedup();
+    Some(shape)
 }
 
 fn shapes(doc: &Value) -> Vec<((String, String), Shape)> {
@@ -867,24 +948,7 @@ fn shapes(doc: &Value) -> Vec<((String, String), Shape)> {
             .into_iter()
             .flatten()
         {
-            let relationship = crate::managed::state::is_relationship_property(property);
-            let node = property.get("items").unwrap_or(property);
-            out.push((
-                (name.to_string(), key.clone()),
-                Shape {
-                    relationship,
-                    targets: node
-                        .get("resourceCollection")
-                        .and_then(Value::as_array)
-                        .into_iter()
-                        .flatten()
-                        .filter_map(|entry| entry.get("path").and_then(Value::as_str))
-                        .map(str::to_string)
-                        .collect(),
-                    reverse: declared_reverse_key(property).map(str::to_string),
-                    array: property.get("type").and_then(Value::as_str) == Some("array"),
-                },
-            ));
+            out.push(((name.to_string(), key.clone()), shape(property)));
         }
     }
     out
@@ -1273,7 +1337,9 @@ mod tests {
         assert_eq!(storage(&repo(None, None)), ["a.owner <-> b.owned: generic"]);
         assert_eq!(
             storage(&repo(Some(reference()), Some(reverse_reference()))),
-            ["a.owner <-> b.owned: mapped (reference / reverseReference)"]
+            [
+                "a.owner <-> b.owned: stored mapping (reference / reverseReference), runtime unconfirmed"
+            ]
         );
         // The measured broken state: never "mapped" for a half-mapped pair.
         let mixed = storage(&repo(Some(reference()), None));
@@ -1285,6 +1351,23 @@ mod tests {
         );
         let swapped = storage(&repo(None, Some(reverse_reference())));
         assert!(swapped[0].contains("MIXED"), "{swapped:?}");
+    }
+
+    /// Each stored mode against each runtime answer: the two disagreements
+    /// are findings, the two agreements are not.
+    #[test]
+    fn runtime_is_judged_against_the_stored_mapping() {
+        let report = report(&managed(), &repo(Some(reference()), None), "a", None).unwrap();
+        let mapped = &report.pairs[0].forward;
+        let generic = report.pairs[0].reverse.as_ref().unwrap();
+        assert_eq!(Runtime::judge(mapped, true), Runtime::MappedConfirmed);
+        assert_eq!(Runtime::judge(generic, false), Runtime::GenericConfirmed);
+        assert_eq!(Runtime::judge(mapped, false), Runtime::MappedNotLive);
+        assert_eq!(Runtime::judge(generic, true), Runtime::LiveNotStored);
+        assert!(!Runtime::MappedConfirmed.is_failure());
+        assert!(!Runtime::GenericConfirmed.is_failure());
+        assert!(Runtime::MappedNotLive.is_failure());
+        assert!(Runtime::LiveNotStored.is_failure());
     }
 
     #[test]

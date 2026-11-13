@@ -58,6 +58,65 @@ export const sourceBindingsJsonPath = join(
 
 export const generatedDir = join(packageRoot, "generated");
 
+/** The access-token-modification context's captured descriptor. Repo-only; read by `generate`. */
+export const sourceAccessTokenBindingsJsonPath = join(repoRoot, "docs", "api", "bindings", "oauth2-atm-next.json");
+
+/** `generate`'s verbatim copy of {@link sourceAccessTokenBindingsJsonPath}: the context's class allow-list. */
+export const accessTokenBindingsJsonPath = join(generatedDir, "oauth2-atm-next.json");
+
+/** The OIDC claims context's captured descriptor. Repo-only; read by `generate`. */
+export const sourceOidcClaimsBindingsJsonPath = join(repoRoot, "docs", "api", "bindings", "oidc-claims-next.json");
+
+/** `generate`'s verbatim copy of {@link sourceOidcClaimsBindingsJsonPath}: the context's class allow-list. */
+export const oidcClaimsBindingsJsonPath = join(generatedDir, "oidc-claims-next.json");
+
+
+/** The view helpers every non-decision context overlay builds on, appended before it. */
+export const bindingsContextCommonPath = join(packageRoot, "src", "bindings", "rhino", "context-common.cjs");
+/** The access-token-modification context's binding overlay, appended to the prelude for that context only. */
+export const bindingsAccessTokenPath = join(packageRoot, "src", "bindings", "rhino", "context-oauth2-access-token.cjs");
+/** The social IdP profile transformation context's captured descriptor. Repo-only; read by `generate`. */
+export const sourceSocialIdpBindingsJsonPath = join(repoRoot, "docs", "api", "bindings", "social-idp-profile-transformation-next.json");
+
+/** `generate`'s verbatim copy of {@link sourceSocialIdpBindingsJsonPath}: the context's class allow-list. */
+export const socialIdpBindingsJsonPath = join(generatedDir, "social-idp-profile-transformation-next.json");
+
+/** The social IdP profile transformation context's binding overlay, appended to the prelude for that context only. */
+export const bindingsSocialIdpPath = join(packageRoot, "src", "bindings", "rhino", "context-social-idp.cjs");
+
+/** The config provider node context's captured descriptor. Repo-only; read by `generate`. */
+export const sourceConfigProviderBindingsJsonPath = join(repoRoot, "docs", "api", "bindings", "config-provider-node-next.json");
+
+/** `generate`'s verbatim copy of {@link sourceConfigProviderBindingsJsonPath}: the context's class allow-list. */
+export const configProviderBindingsJsonPath = join(generatedDir, "config-provider-node-next.json");
+
+/** The config provider node context's binding overlay, appended to the prelude for that context only. */
+export const bindingsConfigProviderPath = join(packageRoot, "src", "bindings", "rhino", "context-config-provider.cjs");
+
+/** The validate scope context's captured next-gen descriptor. Repo-only; read by `generate`. */
+export const sourceValidateScopeBindingsJsonPath = join(repoRoot, "docs", "api", "bindings", "oauth2-validate-scope-next.json");
+
+/** `generate`'s verbatim copy of {@link sourceValidateScopeBindingsJsonPath}: the context's class allow-list. */
+export const validateScopeBindingsJsonPath = join(generatedDir, "oauth2-validate-scope-next.json");
+
+/** The validate scope context's binding overlay, appended to the prelude for that context only. */
+export const bindingsValidateScopePath = join(packageRoot, "src", "bindings", "rhino", "context-oauth2-validate-scope.cjs");
+
+/** The may-act context's captured next-gen descriptor. Repo-only; read by `generate`. */
+export const sourceMayActBindingsJsonPath = join(repoRoot, "docs", "api", "bindings", "oauth2-may-act-next.json");
+
+/** `generate`'s verbatim copy of {@link sourceMayActBindingsJsonPath}: the context's class allow-list. */
+export const mayActBindingsJsonPath = join(generatedDir, "oauth2-may-act-next.json");
+
+/** The may-act context's binding overlay, appended to the prelude for that context only. */
+export const bindingsMayActPath = join(packageRoot, "src", "bindings", "rhino", "context-oauth2-may-act.cjs");
+
+/** The library context's binding overlay, appended to the prelude for that context only. */
+export const bindingsLibraryPath = join(packageRoot, "src", "bindings", "rhino", "context-library.cjs");
+
+/** The OIDC claims context's binding overlay, appended to the prelude for that context only. */
+export const bindingsOidcClaimsPath = join(packageRoot, "src", "bindings", "rhino", "context-oidc-claims.cjs");
+
 /** `generate`'s verbatim copy of {@link sourceBindingsJsonPath}, shipped with the package. */
 export const bindingsJsonPath = join(generatedDir, "scripted-decision-next.json");
 

@@ -18,7 +18,8 @@
 //!   ends and keeps its custom `_refProperties`.
 //!
 //! Tenant-free: the decisions live here so tests drive the real ones, and
-//! `cli.rs` does the reads and writes.
+//! `cli.rs` does the reads and writes. `create_link` is also the creation
+//! half used by conversion, so has-one/has-many write shapes stay shared.
 
 use serde::Serialize;
 use serde_json::{Map, Value, json};
@@ -247,6 +248,8 @@ pub fn authorize(dry_run: bool, consented: bool) -> Option<RelinkPermit> {
 /// One request a relink sends.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Write {
+    /// Set by durable conversion intent before dispatch; absent for ordinary relink.
+    pub transaction_id: Option<String>,
     pub method: &'static str,
     pub path: String,
     pub body: Option<Value>,
@@ -315,10 +318,7 @@ pub fn writes(
     rev: Option<&str>,
 ) -> Result<[Write; 2], String> {
     let record = record_path(near_object, &edge.link.from_id);
-    let reference = json!({
-        "_ref": format!("{}/{}", edge.link.to_collection, edge.link.to_id),
-        "_refProperties": Value::Object(edge.properties.clone()),
-    });
+    let create = create_link(_permit, near_object, near_key, near_array, edge, None);
     if near_array {
         let edge_id = edge
             .link
@@ -328,6 +328,7 @@ pub fn writes(
         let collection = format!("{record}/{}", crate::idmstore::api::path_segment(near_key));
         Ok([
             Write {
+                transaction_id: None,
                 method: "DELETE",
                 path: format!(
                     "{collection}/{}",
@@ -336,12 +337,7 @@ pub fn writes(
                 body: None,
                 if_match: None,
             },
-            Write {
-                method: "POST",
-                path: format!("{collection}?_action=create"),
-                body: Some(reference),
-                if_match: None,
-            },
+            create,
         ])
     } else {
         // `replace` with null is a 400 ("not a valid JSON patch"), so the
@@ -349,20 +345,51 @@ pub fn writes(
         let pointer = format!("/{near_key}");
         Ok([
             Write {
+                transaction_id: None,
                 method: "PATCH",
                 path: record.clone(),
                 body: Some(json!([{ "operation": "remove", "field": pointer }])),
                 if_match: rev.map(str::to_string),
             },
-            Write {
-                method: "PATCH",
-                path: format!("{record}?_fields={}", fields_query(near_key)),
-                body: Some(
-                    json!([{ "operation": "replace", "field": pointer, "value": reference }]),
-                ),
-                if_match: None,
-            },
+            create,
         ])
+    }
+}
+
+/// The creation half shared by relink and storage conversion. An absent
+/// has-one property is assigned by replace; it is never assigned null.
+pub fn create_link(
+    _permit: &RelinkPermit,
+    object: &str,
+    key: &str,
+    array: bool,
+    edge: &Edge,
+    rev: Option<&str>,
+) -> Write {
+    let record = record_path(object, &edge.link.from_id);
+    let reference = json!({"_ref": format!("{}/{}", edge.link.to_collection, edge.link.to_id),
+        "_refProperties": edge.properties});
+    if array {
+        Write {
+            transaction_id: None,
+            method: "POST",
+            path: format!(
+                "{record}/{}?_action=create",
+                crate::idmstore::api::path_segment(key)
+            ),
+            body: Some(reference),
+            if_match: None,
+        }
+    } else {
+        Write {
+            transaction_id: None,
+            method: "PATCH",
+            path: format!("{record}?_fields={}", fields_query(key)),
+            body: Some(
+                json!([{"operation":"replace","field":format!("/{key}"),"value":reference}]),
+            ),
+            if_match: rev.map(str::to_string),
+        }
     }
 }
 
@@ -412,6 +439,7 @@ pub fn probe_link(
     let reference = json!({ "_ref": format!("managed/{far_object}/{far_id}") });
     if near_array {
         Write {
+            transaction_id: None,
             method: "POST",
             path: format!(
                 "{record}/{}?_action=create",
@@ -422,6 +450,7 @@ pub fn probe_link(
         }
     } else {
         Write {
+            transaction_id: None,
             method: "PATCH",
             path: format!("{record}?_fields={}", fields_query(near_key)),
             body: Some(
@@ -443,6 +472,7 @@ pub fn probe_unlink(
     let record = record_path(near_object, near_id);
     if near_array {
         Write {
+            transaction_id: None,
             method: "DELETE",
             path: format!(
                 "{record}/{}/{}",
@@ -454,6 +484,7 @@ pub fn probe_unlink(
         }
     } else {
         Write {
+            transaction_id: None,
             method: "PATCH",
             path: record,
             body: Some(json!([{ "operation": "remove", "field": format!("/{near_key}") }])),
@@ -775,5 +806,20 @@ mod tests {
         // The record's own `_id` is not the edge's.
         assert_eq!(written_edge(&json!({"_id": "a1"}), "owner", false), None);
         assert_eq!(written_edge(&json!({}), "owner", true), None);
+    }
+    #[test]
+    fn conversion_creation_uses_the_shared_one_and_many_write_mechanics() {
+        let permit = authorize(false, true).unwrap();
+        let edge = &edges_of(&record(), "owner").unwrap()[0];
+        let many = create_link(&permit, "a", "owner", true, edge, None);
+        assert_eq!(many.method, "POST");
+        assert_eq!(many.body.unwrap()["_refProperties"]["note"], "keep");
+        let one = create_link(&permit, "a", "owner", false, edge, Some("r1"));
+        assert_eq!(one.method, "PATCH");
+        assert_eq!(one.if_match.as_deref(), Some("r1"));
+        assert_eq!(
+            one.body.unwrap()[0]["value"]["_refProperties"]["note"],
+            "keep"
+        );
     }
 }

@@ -1,0 +1,783 @@
+{
+ "body": {
+  "error": "invalid_scope",
+  "error_description": "<probe record>"
+ },
+ "captured": "2026-11-10, sandbox alpha, client_credentials, stateless client (rhino-local ctx5); no scope parameter",
+ "http": 400,
+ "probe": {
+  "fn": {
+   "allowed": {
+    "ok": {
+     "isArray": false,
+     "len": "3",
+     "size": "3",
+     "str": "[zzemuc5-a, zzemuc5-b, zzemuc5-c]",
+     "t": "object",
+     "tag": "[object JavaList]"
+    }
+   },
+   "allowedList": {
+    "add": {
+     "ok": {
+      "isArray": false,
+      "len": "undefined",
+      "size": "n/a",
+      "str": "true",
+      "t": "boolean",
+      "tag": "[object Boolean]"
+     }
+    },
+    "afterAdd": {
+     "ok": {
+      "isArray": false,
+      "len": "46",
+      "size": "n/a",
+      "str": "[zzemuc5-a, zzemuc5-b, zzemuc5-c, zzemuc5-x]|4",
+      "t": "string",
+      "tag": "[object String]"
+     }
+    },
+    "concat": {
+     "ok": {
+      "isArray": false,
+      "len": "undefined",
+      "size": "n/a",
+      "str": "4",
+      "t": "number",
+      "tag": "[object Number]"
+     }
+    },
+    "contains": {
+     "ok": {
+      "isArray": false,
+      "len": "undefined",
+      "size": "n/a",
+      "str": "true",
+      "t": "boolean",
+      "tag": "[object Boolean]"
+     }
+    },
+    "eq0": {
+     "ok": {
+      "isArray": false,
+      "len": "undefined",
+      "size": "n/a",
+      "str": "true",
+      "t": "boolean",
+      "tag": "[object Boolean]"
+     }
+    },
+    "forEach": {
+     "ok": {
+      "isArray": false,
+      "len": "50",
+      "size": "n/a",
+      "str": "string:zzemuc5-a,string:zzemuc5-b,string:zzemuc5-c",
+      "t": "string",
+      "tag": "[object String]"
+     }
+    },
+    "forIn": {
+     "ok": {
+      "isArray": false,
+      "len": "5",
+      "size": "n/a",
+      "str": "0,1,2",
+      "t": "string",
+      "tag": "[object String]"
+     }
+    },
+    "i0": {
+     "ok": {
+      "isArray": false,
+      "len": "9",
+      "size": "n/a",
+      "str": "zzemuc5-a",
+      "t": "string",
+      "tag": "[object String]"
+     }
+    },
+    "indexOf": {
+     "ok": {
+      "isArray": false,
+      "len": "undefined",
+      "size": "n/a",
+      "str": "0",
+      "t": "number",
+      "tag": "[object Number]"
+     }
+    },
+    "isEmpty": {
+     "ok": {
+      "isArray": false,
+      "len": "undefined",
+      "size": "n/a",
+      "str": "false",
+      "t": "boolean",
+      "tag": "[object Boolean]"
+     }
+    },
+    "iterator": {
+     "err": "InternalError: Access to Java class \"java.util.ArrayList$Itr\" is prohibited. (zzemuC5-vs-ng#43)"
+    },
+    "join": {
+     "err": "TypeError: Cannot find function join"
+    },
+    "json": {
+     "ok": {
+      "isArray": false,
+      "len": "37",
+      "size": "n/a",
+      "str": "[\"zzemuc5-a\",\"zzemuc5-b\",\"zzemuc5-c\"]",
+      "t": "string",
+      "tag": "[object String]"
+     }
+    },
+    "shape": {
+     "ok": {
+      "isArray": false,
+      "len": "3",
+      "size": "3",
+      "str": "[zzemuc5-a, zzemuc5-b, zzemuc5-c]",
+      "t": "object",
+      "tag": "[object JavaList]"
+     }
+    },
+    "slice": {
+     "ok": {
+      "isArray": false,
+      "len": "13",
+      "size": "n/a",
+      "str": "true|3|string",
+      "t": "string",
+      "tag": "[object String]"
+     }
+    },
+    "t0": {
+     "ok": {
+      "isArray": false,
+      "len": "6",
+      "size": "n/a",
+      "str": "string",
+      "t": "string",
+      "tag": "[object String]"
+     }
+    },
+    "toArray": {
+     "ok": {
+      "isArray": false,
+      "len": "21",
+      "size": "n/a",
+      "str": "object|false|3|string",
+      "t": "string",
+      "tag": "[object String]"
+     }
+    }
+   },
+   "args": 0,
+   "avail0": {
+    "ok": {
+     "isArray": false,
+     "len": "6",
+     "size": "n/a",
+     "str": "string",
+     "t": "string",
+     "tag": "[object String]"
+    }
+   },
+   "available": {
+    "ok": {
+     "isArray": false,
+     "len": "3",
+     "size": "3",
+     "str": "[zzemuc5-a, zzemuc5-b, zzemuc5-c]",
+     "t": "object",
+     "tag": "[object JavaList]"
+    }
+   },
+   "availableSorted": {
+    "ok": {
+     "isArray": false,
+     "len": "29",
+     "size": "n/a",
+     "str": "zzemuc5-a,zzemuc5-b,zzemuc5-c",
+     "t": "string",
+     "tag": "[object String]"
+    }
+   },
+   "cookieNameT": {
+    "ok": {
+     "isArray": false,
+     "len": "6",
+     "size": "n/a",
+     "str": "string",
+     "t": "string",
+     "tag": "[object String]"
+    }
+   },
+   "cp": {
+    "ok": {
+     "isArray": false,
+     "len": "25",
+     "size": "n/a",
+     "str": "object|[object JavaMap]|6",
+     "t": "string",
+     "tag": "[object String]"
+    }
+   },
+   "cpCustom": {
+    "ok": {
+     "isArray": false,
+     "len": "undefined",
+     "size": "0",
+     "str": "{  }",
+     "t": "object",
+     "tag": "[object JavaMap]"
+    }
+   },
+   "cpGrants": {
+    "err": "InternalError: Access to Java class \"java.util.HashSet\" is prohibited. (zzemuC5-vs-ng#99)"
+   },
+   "cpId": {
+    "ok": {
+     "isArray": false,
+     "len": "17",
+     "size": "n/a",
+     "str": "string|zzemuC5-vs",
+     "t": "string",
+     "tag": "[object String]"
+    }
+   },
+   "cpKeys": {
+    "ok": {
+     "isArray": false,
+     "len": "91",
+     "size": "n/a",
+     "str": "allowedGrantTypes,allowedResponseTypes,allowedScopes,clientId,customProperties,redirectUris",
+     "t": "string",
+     "tag": "[object String]"
+    }
+   },
+   "cpRedirect": {
+    "ok": {
+     "isArray": false,
+     "len": "0",
+     "size": "0",
+     "str": "[]",
+     "t": "object",
+     "tag": "[object JavaList]"
+    }
+   },
+   "cpResp": {
+    "err": "InternalError: Access to Java class \"java.util.LinkedHashSet\" is prohibited. (zzemuC5-vs-ng#101)"
+   },
+   "cpScopes": {
+    "err": "InternalError: Access to Java class \"java.util.TreeSet\" is prohibited. (zzemuC5-vs-ng#100)"
+   },
+   "defaults": {
+    "ok": {
+     "isArray": false,
+     "len": "1",
+     "size": "1",
+     "str": "[zzemuc5-c]",
+     "t": "object",
+     "tag": "[object JavaList]"
+    }
+   },
+   "defaults0": {
+    "ok": {
+     "isArray": false,
+     "len": "6",
+     "size": "n/a",
+     "str": "string",
+     "t": "string",
+     "tag": "[object String]"
+    }
+   },
+   "helper": {
+    "ok": {
+     "isArray": false,
+     "len": "undefined",
+     "size": "n/a",
+     "str": "org.forgerock.oauth2.core.plugins.scripted.ScopeValidatorScriptHelper@26ed8790",
+     "t": "object",
+     "tag": "[object JavaObject]"
+    }
+   },
+   "helperInherit0": {
+    "ok": "undefined"
+   },
+   "helperMembers": {
+    "ok": {
+     "isArray": false,
+     "len": "211",
+     "size": "n/a",
+     "str": "class:undefined,equals:undefined,getClass:undefined,hashCode:undefined,inheritAccessTokenScopesOnRef\u2026",
+     "t": "string",
+     "tag": "[object String]"
+    }
+   },
+   "helperToString": {
+    "err": "TypeError: Cannot find function toString"
+   },
+   "idExists": {
+    "ok": {
+     "isArray": false,
+     "len": "undefined",
+     "size": "n/a",
+     "str": "false",
+     "t": "boolean",
+     "tag": "[object Boolean]"
+    }
+   },
+   "idName": {
+    "err": "InternalError: Cannot invoke \"com.sun.identity.idm.AMIdentity.getName()\" because \"this.amIdentity\" is null"
+   },
+   "identity": {
+    "ok": {
+     "isArray": false,
+     "len": "undefined",
+     "size": "n/a",
+     "str": "org.forgerock.openam.scripting.api.identity.ScriptedIdentityScriptWrapper@5edb8f5f",
+     "t": "object",
+     "tag": "[object JavaObject]"
+    }
+   },
+   "loggerName": {
+    "ok": {
+     "isArray": false,
+     "len": "91",
+     "size": "n/a",
+     "str": "scripts.OAUTH2_VALIDATE_SCOPE_NEXT_GEN.937673ec-a232-4984-a35a-e6e84a08c0ed.(zzemuC5-vs-ng)",
+     "t": "string",
+     "tag": "[object String]"
+    }
+   },
+   "realm": {
+    "ok": {
+     "isArray": false,
+     "len": "6",
+     "size": "n/a",
+     "str": "/alpha",
+     "t": "string",
+     "tag": "[object String]"
+    }
+   },
+   "realmEq": {
+    "ok": {
+     "isArray": false,
+     "len": "undefined",
+     "size": "n/a",
+     "str": "true",
+     "t": "boolean",
+     "tag": "[object Boolean]"
+    }
+   },
+   "requested": {
+    "add": {
+     "ok": {
+      "isArray": false,
+      "len": "undefined",
+      "size": "n/a",
+      "str": "true",
+      "t": "boolean",
+      "tag": "[object Boolean]"
+     }
+    },
+    "afterAdd": {
+     "ok": {
+      "isArray": false,
+      "len": "13",
+      "size": "n/a",
+      "str": "[zzemuc5-x]|1",
+      "t": "string",
+      "tag": "[object String]"
+     }
+    },
+    "concat": {
+     "ok": {
+      "isArray": false,
+      "len": "undefined",
+      "size": "n/a",
+      "str": "1",
+      "t": "number",
+      "tag": "[object Number]"
+     }
+    },
+    "contains": {
+     "ok": {
+      "isArray": false,
+      "len": "undefined",
+      "size": "n/a",
+      "str": "false",
+      "t": "boolean",
+      "tag": "[object Boolean]"
+     }
+    },
+    "eq0": {
+     "ok": {
+      "isArray": false,
+      "len": "undefined",
+      "size": "n/a",
+      "str": "false",
+      "t": "boolean",
+      "tag": "[object Boolean]"
+     }
+    },
+    "forEach": {
+     "ok": {
+      "isArray": false,
+      "len": "0",
+      "size": "n/a",
+      "str": "",
+      "t": "string",
+      "tag": "[object String]"
+     }
+    },
+    "forIn": {
+     "ok": {
+      "isArray": false,
+      "len": "0",
+      "size": "n/a",
+      "str": "",
+      "t": "string",
+      "tag": "[object String]"
+     }
+    },
+    "i0": {
+     "ok": "undefined"
+    },
+    "indexOf": {
+     "ok": {
+      "isArray": false,
+      "len": "undefined",
+      "size": "n/a",
+      "str": "-1",
+      "t": "number",
+      "tag": "[object Number]"
+     }
+    },
+    "isEmpty": {
+     "ok": {
+      "isArray": false,
+      "len": "undefined",
+      "size": "n/a",
+      "str": "true",
+      "t": "boolean",
+      "tag": "[object Boolean]"
+     }
+    },
+    "iterator": {
+     "err": "InternalError: Access to Java class \"java.util.ArrayList$Itr\" is prohibited. (zzemuC5-vs-ng#43)"
+    },
+    "join": {
+     "err": "TypeError: Cannot find function join"
+    },
+    "json": {
+     "ok": {
+      "isArray": false,
+      "len": "2",
+      "size": "n/a",
+      "str": "[]",
+      "t": "string",
+      "tag": "[object String]"
+     }
+    },
+    "shape": {
+     "ok": {
+      "isArray": false,
+      "len": "0",
+      "size": "0",
+      "str": "[]",
+      "t": "object",
+      "tag": "[object JavaList]"
+     }
+    },
+    "slice": {
+     "ok": {
+      "isArray": false,
+      "len": "16",
+      "size": "n/a",
+      "str": "true|0|undefined",
+      "t": "string",
+      "tag": "[object String]"
+     }
+    },
+    "t0": {
+     "ok": {
+      "isArray": false,
+      "len": "9",
+      "size": "n/a",
+      "str": "undefined",
+      "t": "string",
+      "tag": "[object String]"
+     }
+    },
+    "toArray": {
+     "ok": {
+      "isArray": false,
+      "len": "24",
+      "size": "n/a",
+      "str": "object|false|0|undefined",
+      "t": "string",
+      "tag": "[object String]"
+     }
+    }
+   },
+   "rp": {
+    "ok": {
+     "isArray": false,
+     "len": "25",
+     "size": "n/a",
+     "str": "object|[object JavaMap]|4",
+     "t": "string",
+     "tag": "[object String]"
+    }
+   },
+   "rpGetMissing": {
+    "ok": "null"
+   },
+   "rpGrant": {
+    "ok": {
+     "isArray": false,
+     "len": "1",
+     "size": "1",
+     "str": "[client_credentials]",
+     "t": "object",
+     "tag": "[object JavaList]"
+    }
+   },
+   "rpGrant0": {
+    "ok": {
+     "isArray": false,
+     "len": "30",
+     "size": "n/a",
+     "str": "string|client_credentials|true",
+     "t": "string",
+     "tag": "[object String]"
+    }
+   },
+   "rpGrantGet": {
+    "ok": {
+     "isArray": false,
+     "len": "1",
+     "size": "1",
+     "str": "[client_credentials]",
+     "t": "object",
+     "tag": "[object JavaList]"
+    }
+   },
+   "rpHeaderCount": {
+    "ok": {
+     "isArray": false,
+     "len": "undefined",
+     "size": "n/a",
+     "str": "19",
+     "t": "number",
+     "tag": "[object Number]"
+    }
+   },
+   "rpHeaderCt": {
+    "ok": {
+     "isArray": false,
+     "len": "1",
+     "size": "1",
+     "str": "[application/x-www-form-urlencoded]",
+     "t": "object",
+     "tag": "[object JavaList]"
+    }
+   },
+   "rpHeaderCtUpper": {
+    "ok": {
+     "isArray": false,
+     "len": "1",
+     "size": "1",
+     "str": "[application/x-www-form-urlencoded]",
+     "t": "object",
+     "tag": "[object JavaList]"
+    }
+   },
+   "rpKeys": {
+    "ok": {
+     "isArray": false,
+     "len": "45",
+     "size": "n/a",
+     "str": "realm,requestHeaders,requestParams,requestUri",
+     "t": "string",
+     "tag": "[object String]"
+    }
+   },
+   "rpMissing": {
+    "ok": "undefined"
+   },
+   "rpParamKeys": {
+    "ok": {
+     "isArray": false,
+     "len": "20",
+     "size": "n/a",
+     "str": "client_id,grant_type",
+     "t": "string",
+     "tag": "[object String]"
+    }
+   },
+   "rpRealm": {
+    "ok": {
+     "isArray": false,
+     "len": "6",
+     "size": "n/a",
+     "str": "/alpha",
+     "t": "string",
+     "tag": "[object String]"
+    }
+   },
+   "rpRealmT": {
+    "ok": {
+     "isArray": false,
+     "len": "11",
+     "size": "n/a",
+     "str": "string|true",
+     "t": "string",
+     "tag": "[object String]"
+    }
+   },
+   "rpScope": {
+    "ok": "undefined"
+   },
+   "rpUriT": {
+    "ok": {
+     "isArray": false,
+     "len": "61",
+     "size": "n/a",
+     "str": "string|<host>/am/oauth2/realms/root/realms/alpha/access_token",
+     "t": "string",
+     "tag": "[object String]"
+    }
+   },
+   "scriptName": {
+    "ok": {
+     "isArray": false,
+     "len": "13",
+     "size": "n/a",
+     "str": "zzemuC5-vs-ng",
+     "t": "string",
+     "tag": "[object String]"
+    }
+   },
+   "thisT": {
+    "ok": {
+     "isArray": false,
+     "len": "6",
+     "size": "n/a",
+     "str": "object",
+     "t": "string",
+     "tag": "[object String]"
+    }
+   },
+   "typeof": {
+    "JavaImporter": "function",
+    "Packages": "object",
+    "accessToken": "undefined",
+    "action": "undefined",
+    "allowedScopes": "object",
+    "availableScopes": "object",
+    "cacheManager": "undefined",
+    "callbacks": "undefined",
+    "claims": "undefined",
+    "clientProperties": "object",
+    "cookieName": "string",
+    "defaultScopes": "object",
+    "emailService": "object",
+    "existingSession": "undefined",
+    "httpClient": "object",
+    "idRepository": "undefined",
+    "identity": "object",
+    "java": "object",
+    "jwtAssertion": "object",
+    "jwtValidator": "object",
+    "logger": "object",
+    "nodeState": "undefined",
+    "openidm": "object",
+    "outcome": "undefined",
+    "policy": "object",
+    "realm": "string",
+    "requestHeaders": "undefined",
+    "requestParameters": "undefined",
+    "requestProperties": "object",
+    "requestedScopes": "object",
+    "require": "function",
+    "scopeValidatorHelper": "object",
+    "scopes": "undefined",
+    "scriptName": "string",
+    "secrets": "object",
+    "session": "undefined",
+    "sharedState": "undefined",
+    "systemEnv": "object",
+    "token": "undefined",
+    "transientState": "undefined",
+    "utils": "object",
+    "validateAccessTokenScope": "function",
+    "validateAuthorizationScope": "undefined",
+    "validateRefreshTokenScope": "undefined"
+   }
+  },
+  "top": {
+   "reqStr": {
+    "ok": {
+     "isArray": false,
+     "len": "2",
+     "size": "n/a",
+     "str": "[]",
+     "t": "string",
+     "tag": "[object String]"
+    }
+   },
+   "typeof": {
+    "JavaImporter": "function",
+    "Packages": "object",
+    "accessToken": "undefined",
+    "action": "undefined",
+    "allowedScopes": "object",
+    "availableScopes": "object",
+    "cacheManager": "undefined",
+    "callbacks": "undefined",
+    "claims": "undefined",
+    "clientProperties": "object",
+    "cookieName": "string",
+    "defaultScopes": "object",
+    "emailService": "object",
+    "existingSession": "undefined",
+    "httpClient": "object",
+    "idRepository": "undefined",
+    "identity": "object",
+    "java": "object",
+    "jwtAssertion": "object",
+    "jwtValidator": "object",
+    "logger": "object",
+    "nodeState": "undefined",
+    "openidm": "object",
+    "outcome": "undefined",
+    "policy": "object",
+    "realm": "string",
+    "requestHeaders": "undefined",
+    "requestParameters": "undefined",
+    "requestProperties": "object",
+    "requestedScopes": "object",
+    "require": "function",
+    "scopeValidatorHelper": "object",
+    "scopes": "undefined",
+    "scriptName": "string",
+    "secrets": "object",
+    "session": "undefined",
+    "sharedState": "undefined",
+    "systemEnv": "object",
+    "token": "undefined",
+    "transientState": "undefined",
+    "utils": "object",
+    "validateAccessTokenScope": "function",
+    "validateAuthorizationScope": "undefined",
+    "validateRefreshTokenScope": "undefined"
+   }
+  }
+ }
+}

@@ -56,6 +56,12 @@ pub enum Error {
     #[error("HTTP error: {0}")]
     Http(#[from] reqwest::Error),
 
+    /// A transport failure the agent met on the caller's behalf: the request
+    /// may or may not have reached the tenant. `Http` cannot cross the agent
+    /// protocol (a `reqwest::Error` is not serialisable), so it arrives as this.
+    #[error("HTTP error: {0}")]
+    Transport(String),
+
     #[error("URL parse error: {0}")]
     Url(#[from] url::ParseError),
 
