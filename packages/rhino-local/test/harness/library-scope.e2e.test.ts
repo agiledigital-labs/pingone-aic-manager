@@ -65,6 +65,15 @@ describe("library scope when required from a decision node", () => {
     ).rejects.toThrow(/ReferenceError: "nodeState" is not defined\./);
   });
 
+  it("leaves context unbound inside the library", async () => {
+    await expect(
+      run('require("lib"); action.goTo("done");', { lib: "exports.c = typeof context === 'undefined' ? null : context.toString();" }, {})
+    ).resolves.toBeDefined();
+    await expect(
+      run('require("lib"); action.goTo("done");', { lib: "exports.c = context;" }, {})
+    ).rejects.toThrow(/ReferenceError: "context" is not defined\./);
+  });
+
   it("passes when the caller hands the library nodeState as an argument (the control)", async () => {
     const result = await run(
       'var mine = 1; require("lib").go(nodeState, mine); action.goTo("done");',
