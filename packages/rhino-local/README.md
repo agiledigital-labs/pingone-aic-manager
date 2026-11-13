@@ -321,9 +321,10 @@ cases from earlier runs; read the tally from a plain `vitest run`.
 `harness` is the version of this package and the commit of the packed tree:
 `<version> (<commit>)`, or `<version> (<commit>-dirty)` when that tree was
 dirty. A checkout that has not been packed prints `<version> (commit unknown)`
-and does not ask git. The summary's heading names the same string, so a pasted
-tally says which build produced it. The timing summary and the benchmark print
-it too.
+and does not ask git. A pack whose tree has no git metadata (no `.git`, or git
+absent) still finishes, and that build prints `(commit unknown)`. The summary's
+heading names the same string, so a pasted tally says which build produced it.
+The timing summary and the benchmark print it too.
 `failed` is the number of cases the fault failed. The rest declared it on
 purpose with `expectHarnessFault(id)`, which is how a test that exercises the
 refusal itself asserts it:
