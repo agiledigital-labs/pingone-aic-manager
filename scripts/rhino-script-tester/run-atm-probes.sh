@@ -14,6 +14,13 @@
 #
 # Usage:
 #   SECRET_FILE=/path/to/secret scripts/rhino-script-tester/run-atm-probes.sh [fixture.js ...]
+#
+# The script and client are env overrides (SCRIPT_REF, WORKSPACE_CJS, CLIENT_ID).
+# The defaults stay the legacy probe. A next-gen run points them at its own
+# throwaway script and client. GRANT_TYPE=password also needs USERNAME and
+# PASSWORD_FILE (a resource-owner grant, so `identity` is that user).
+# The result records the `aud` and `zzemuR3Mctl` claim shapes. It never stores
+# the access token.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -26,6 +33,9 @@ CLIENT_ID="${CLIENT_ID:-aicatm-probe2}"
 SCRIPT_REF="${SCRIPT_REF:-$REALM/AIC ATM Legacy Probe}"
 WORKSPACE_CJS="${WORKSPACE_CJS:-$ROOT/workspace/$TENANT/am/$REALM/oauth2-access-token/AIC ATM Legacy Probe.cjs}"
 SCOPE="${SCOPE:-aicedit-probe}"
+GRANT_TYPE="${GRANT_TYPE:-client_credentials}"
+USERNAME="${USERNAME:-}"
+PASSWORD_FILE="${PASSWORD_FILE:-}"
 FIXTURES_DIR="${FIXTURES_DIR:-$SCRIPT_DIR/fixtures-atm}"
 OUT_DIR="${OUT_DIR:-$ROOT/tmp/rhino-script-tester}"
 
@@ -62,43 +72,109 @@ for fixture in "${fixtures[@]}"; do
   # The script body is read per token request, but give AM a moment to settle.
   sleep 2
 
+  if [[ "$GRANT_TYPE" != "client_credentials" && "$GRANT_TYPE" != "password" ]]; then
+    echo "  unsupported GRANT_TYPE=$GRANT_TYPE" >&2
+    continue
+  fi
+  if [[ "$GRANT_TYPE" == "password" ]]; then
+    if [[ -z "$USERNAME" || ! -r "$PASSWORD_FILE" ]]; then
+      echo "  password grant needs USERNAME and PASSWORD_FILE" >&2
+      continue
+    fi
+  fi
+
+  grant_args=(
+    --data-urlencode "grant_type=$GRANT_TYPE"
+    --data-urlencode "client_id=$CLIENT_ID"
+    --data-urlencode "client_secret=$(cat "$SECRET_FILE")"
+    --data-urlencode "scope=$SCOPE"
+  )
+  if [[ "$GRANT_TYPE" == "password" ]]; then
+    grant_args+=(--data-urlencode "username=$USERNAME")
+    grant_args+=(--data-urlencode "password=$(cat "$PASSWORD_FILE")")
+  fi
+
   status="$(curl -sS -o "$tmp/tok.json" -w '%{http_code}' \
     -X POST "$BASE/am/oauth2/realms/root/realms/$REALM/access_token" \
-    --data-urlencode "grant_type=client_credentials" \
-    --data-urlencode "client_id=$CLIENT_ID" \
-    --data-urlencode "client_secret=$(cat "$SECRET_FILE")" \
-    --data-urlencode "scope=$SCOPE")"
+    "${grant_args[@]}")"
 
   # The claim is the result. A 200 with no `aicprobe` means the script threw
   # before setField — AM issues the token anyway, so the status alone lies.
+  # `aud` and the control claim are recorded as shapes. The access token is not.
   python3 - "$tmp/tok.json" "$RESULTS" "$name" "$status" <<'PY'
 import base64, json, sys
 tok_path, results_path, name, status = sys.argv[1:5]
+KNOWN = {
+    "zzemuR3M-aud", "zzemuR3M-a", "zzemuR3M-b",
+    "zzemuR3M-ctl", "ctl-ok",
+    "zzemuR3M-nostore", "zzemuR3M-stored", "zzemuR3M-baseline",
+}
+
+def shape(v, ids):
+    if v is None:
+        return "null"
+    if isinstance(v, bool):
+        return "bool:" + ("true" if v else "false")
+    if isinstance(v, (int, float)):
+        return "number"
+    if isinstance(v, str):
+        if v in KNOWN:
+            return "string:" + v
+        if v in ids:
+            return "string:equals-client-id"
+        if "://" in v:
+            return "string:url:len=%d" % len(v)
+        return "string:other:len=%d" % len(v)
+    if isinstance(v, list):
+        return "array[" + ",".join(shape(x, ids) for x in v) + "]"
+    if isinstance(v, dict):
+        return "object:keys=%d" % len(v)
+    return type(v).__name__
+
 try:
     body = json.load(open(tok_path))
 except Exception as exc:
     body = {"_unparseable": str(exc)}
 claim, note = None, ""
+aud_shape, ctl_shape = None, None
 tok = body.get("access_token")
 if tok and tok.count(".") == 2:
     seg = tok.split(".")[1]
     seg += "=" * (-len(seg) % 4)
     try:
-        claim = json.loads(base64.urlsafe_b64decode(seg)).get("aicprobe")
+        payload = json.loads(base64.urlsafe_b64decode(seg))
     except Exception as exc:
-        note = f"jwt decode failed: {exc}"
-    if claim is None and not note:
-        note = "no aicprobe claim — the fixture threw before setField, or the "\
-               "client is not stateless (needs overrideOAuth2ClientConfig."\
-               "statelessTokensEnabled)"
+        note = "jwt decode failed: %s" % exc
+        payload = None
+    if payload is not None:
+        ids = set()
+        for key in ("client_id", "sub", "azp"):
+            val = payload.get(key)
+            if isinstance(val, str):
+                ids.add(val)
+        claim = payload.get("aicprobe")
+        aud_shape = shape(payload.get("aud"), ids) if "aud" in payload else "absent"
+        ctl_shape = shape(payload.get("zzemuR3Mctl"), ids) if "zzemuR3Mctl" in payload else "absent"
+        if claim is None and not note:
+            note = ("no aicprobe claim — the fixture threw before setField, or the "
+                    "client is not stateless (needs overrideOAuth2ClientConfig."
+                    "statelessTokensEnabled)")
 elif tok:
     note = "opaque token — set statelessTokensEnabled on the client override"
 else:
-    note = "no token: " + json.dumps({k: body.get(k) for k in ("error", "error_description")})
+    err = {k: body.get(k) for k in ("error", "error_description") if k in body}
+    note = "no token: " + json.dumps(err)
 rows = json.load(open(results_path))
-rows.append({"fixture": name, "http": status, "claim": claim, "note": note})
+rows.append({
+    "fixture": name,
+    "http": status,
+    "claim": claim,
+    "aud": aud_shape,
+    "control": ctl_shape,
+    "note": note,
+})
 json.dump(rows, open(results_path, "w"), indent=1)
-print(f"  http={status} {note}")
+print("  http=%s aud=%s control=%s %s" % (status, aud_shape, ctl_shape, note))
 if claim is not None:
     print(json.dumps(claim, indent=2))
 PY
