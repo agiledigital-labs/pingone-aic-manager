@@ -969,7 +969,9 @@ leaves out:
   than `setField("aud", …)` (a string, a non-empty array of strings, or `null`,
   measured 2026-11-14; `setFields` of `aud` is still unmeasured, and there is
   no `removeField`), and
-  the `identity` writers. `identity.getAttributes()` is a fault on purpose: it
+  `identity.addAttribute` (`setAttribute` and `store` are measured on this
+  context; they stay faults on the other contexts that share this view).
+  `identity.getAttributes()` is a fault on purpose: it
   returns the client's password (`.ai/core.md` §8).
 - **The AIC lane** runs only decision-node scripts, so a token-context case is
   reported unsupported there and runs locally only.

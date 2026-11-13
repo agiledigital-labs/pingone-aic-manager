@@ -12,7 +12,7 @@ import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { CaseRunError, runCase } from "../../src/bindings/run.ts";
 import { defineCase } from "../../src/case/validate.ts";
-import { expectEmulationFailure } from "../../src/harness/emulation-guard.ts";
+import { expectEmulationFailure, expectHarnessFault } from "../../src/harness/emulation-guard.ts";
 import type { AccessTokenEffect, Engine, JsonObject, JsonValue } from "../../src/case/types.ts";
 import { packageRoot } from "../../src/paths.ts";
 import { RhinoRunner } from "../../src/runner.ts";
@@ -371,5 +371,65 @@ describe("access-token modification matches the live capture", () => {
     expect(verdict.pass, verdict.summary).toBe(true);
     expect(effects.accessToken!.initial.fields.aud).toBe(CLIENT);
     expect(effects.accessToken!.final.fields.aud).toBe(CLIENT);
+  }, 60_000);
+
+  // identity.setAttribute / store measured 2026-11-14. A read between the two
+  // still sees the seeded value. store records expect.identityWrites.
+  const owner = {
+    engine,
+    accessToken: { clientId: CLIENT },
+    identity: { name: "user-1", attributes: { description: ["baseline"] } },
+  };
+
+  it("setAttribute is invisible until store, which records the write", async () => {
+    const { effects, verdict } = await runCase(runner, defineCase({
+      name: "identity store",
+      context: "OAUTH2_ACCESS_TOKEN_MODIFICATION",
+      script: [
+        "var before = identity.getAttributeValues(\"description\");",
+        "var setRet = identity.setAttribute(\"description\", [\"stored\"]);",
+        "var mid = identity.getAttributeValues(\"description\");",
+        "var storeRet = identity.store();",
+        "var after = identity.getAttributeValues(\"description\");",
+        "accessToken.setField(\"probe\", [typeof setRet, typeof storeRet, before[0], mid[0], after[0]].join(\"|\"));",
+      ].join("\n"),
+      given: owner,
+      expect: {
+        accessToken: { fields: { added: { probe: "undefined|undefined|baseline|baseline|stored" } } },
+        identityWrites: [{ identity: "user-1", attribute: "description", values: ["stored"] }],
+      },
+    }));
+    expect(verdict.pass, verdict.summary).toBe(true);
+    expect(effects.identityWrites).toEqual([
+      { identity: "user-1", attribute: "description", values: ["stored"] },
+    ]);
+  }, 60_000);
+
+  it("setAttribute without store leaves the attribute and records no write", async () => {
+    const { effects, verdict } = await runCase(runner, defineCase({
+      name: "identity no store",
+      context: "OAUTH2_ACCESS_TOKEN_MODIFICATION",
+      script: [
+        "var before = identity.getAttributeValues(\"description\")[0];",
+        "identity.setAttribute(\"description\", [\"stored\"]);",
+        "var mid = identity.getAttributeValues(\"description\")[0];",
+        "accessToken.setField(\"probe\", before + \"|\" + mid);",
+      ].join("\n"),
+      given: owner,
+      expect: { accessToken: { fields: { added: { probe: "baseline|baseline" } } } },
+    }));
+    expect(verdict.pass, verdict.summary).toBe(true);
+    expect(effects.identityWrites).toEqual([]);
+  }, 60_000);
+
+  it("identity.addAttribute stays unmeasured", async () => {
+    expectHarnessFault("oauth2-token-unmeasured/identity.addAttribute()");
+    await expect(runCase(runner, defineCase({
+      name: "identity addAttribute",
+      context: "OAUTH2_ACCESS_TOKEN_MODIFICATION",
+      script: "identity.addAttribute(\"description\", \"extra\");",
+      given: owner,
+      expect: {},
+    }))).rejects.toThrow(/identity\.addAttribute/);
   }, 60_000);
 });

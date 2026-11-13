@@ -428,6 +428,15 @@ what AM stores for an unknown name is unmeasured. After `store()` the same
 wrapper and a fresh `getIdentity` see the new values at once; without
 `store()` nothing persists, matching AIC.
 
+On `OAUTH2_ACCESS_TOKEN_MODIFICATION` the bound `identity` records the same
+effect. `setAttribute(name, values)` does not change `getAttributeValues`
+until `store()`. `store()` writes one entry per attribute,
+`{ identity, attribute, values }`, where `identity` is `identity.getName()`
+(the fixture's `given.identity.name`) and `values` are the strings the script
+passed. Starting values are `given.identity.attributes`. `addAttribute` on
+that binding is unmeasured and faults. This path does not use the IDM layouts
+below.
+
 `store()` lays each attribute out in IDM as measured on AIC
 (`docs/api/14-am-identity-attributes.md`, "What `store()` writes"):
 
