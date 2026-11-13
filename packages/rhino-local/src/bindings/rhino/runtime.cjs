@@ -4835,7 +4835,7 @@ var __rhinoLocalPhase = (function (timer) {
 var __rhinoLocalLibUnbound = [
   "accessToken", "action", "allowedScopes", "auditEntryDetail", "availableScopes",
   "cacheManager", "callbacks", "callbacksBuilder", "claims", "claimsLocales",
-  "clientProperties", "config", "console", "defaultScopes", "existingSession",
+  "clientProperties", "config", "console", "context", "defaultScopes", "existingSession",
   "idRepository", "identity", "journey", "locales", "nodeState", "oauthApplication",
   "outcome", "process", "properties", "rawProfile", "requestCookies", "requestHeaders",
   "requestParameters", "requestProperties", "requestedClaims", "requestedScopes",
