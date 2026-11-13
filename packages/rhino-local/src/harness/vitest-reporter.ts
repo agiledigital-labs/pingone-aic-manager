@@ -11,13 +11,24 @@ function validationFailures(modules: readonly TestModule[]): ValidationFailure[]
   const failures: ValidationFailure[] = [];
   for (const module of modules) {
     const file = module.moduleId;
-    const collect = (ownerId: string, ownerName: string, errors: ReadonlyArray<{ name?: string; cause?: unknown }>): void => {
-      if (errors.length > 0) failures.push({ file, ownerId, ownerName, errors });
+    const collect = (
+      ownerId: string,
+      ownerName: string,
+      errors: ReadonlyArray<{ name?: string; cause?: unknown }>,
+      kind: "test" | "suite",
+    ): void => {
+      if (errors.length > 0) failures.push({ file, ownerId, ownerName, errors, kind });
     };
-    collect(`${file}\0collection`, module.relativeModuleId, module.errors());
+    // A beforeAll/afterAll refusal is stored on that suite. Its tests are
+    // skipped, so the failed-test walk never sees it. The file itself is the
+    // module; nested describes are the suites below it, one owner each.
+    collect(`${file}\0collection`, module.relativeModuleId, module.errors(), "suite");
+    for (const suite of module.children.allSuites()) {
+      collect(`${file}\0${suite.id}`, suite.fullName, suite.errors(), "suite");
+    }
     for (const test of module.children.allTests("failed")) {
       const result = test.result();
-      if (result.state === "failed") collect(`${file}\0${test.fullName}`, test.fullName, result.errors);
+      if (result.state === "failed") collect(`${file}\0${test.fullName}`, test.fullName, result.errors, "test");
     }
   }
   return failures;

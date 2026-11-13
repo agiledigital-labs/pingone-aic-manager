@@ -304,7 +304,9 @@ also writes the tally as JSON, even when it is empty. The default path is
 `AIC_SCRIPT_TESTER_STATE_DIR` or else `<project>/.aic-script-tester`. Set
 `AIC_SCRIPT_TESTER_FAULT_TALLY` to write it somewhere else. The tally covers
 every file, worker and pooled JVM in the run, and each fault is attributed to
-the case whose job raised it. Missing journey and IDM behaviour that has no id
+the case whose job raised it. A validation refusal from a nested suite's
+`beforeAll` is attributed to that suite: the hook's error is stored on the
+suite and its tests are skipped. Missing journey and IDM behaviour that has no id
 yet is listed separately, under its cause text. In watch mode with
 `isolate: false` the audit history spans reruns, so a rerun's tally can count
 cases from earlier runs; read the tally from a plain `vitest run`.
