@@ -2,6 +2,7 @@ import { normaliseIdentitySeeds } from "./identity.ts";
 import { CaseValidationError, validationFaultId } from "./validation-fault.ts";
 import { loadContext } from "../load.ts";
 import { bindingsJsonPath } from "../paths.ts";
+import { recordTiming } from "../timing.ts";
 import {
   ALLOW_UNDECLARED_CHANNELS,
   CASE_KEYS,
@@ -109,6 +110,23 @@ export function defineCase(
 }
 
 /**
+ * A validation refusal never reaches a JVM, so it has no timing row unless
+ * this writes one. `defineCase` and `runCase` both arrive here, and this is
+ * the only writer, so one refusal is one row. `--share` hashes `sourceName`;
+ * `faultIds` stays literal.
+ */
+function recordValidationRefusal(input: unknown, error: CaseValidationError): void {
+  const sourceName = isPlainObject(input) && typeof input.name === "string" && input.name !== "" ? input.name : "case";
+  recordTiming({
+    type: "job",
+    sourceName,
+    outcome: "protocol_error",
+    emulationFault: true,
+    faultIds: [error.faultId],
+  });
+}
+
+/**
  * Runtime validation. Dynamic cases (and typos TypeScript never sees) must
  * fail here rather than assert nothing. A refusal throws
  * {@link CaseValidationError}: the message is the detailed one, and `name`
@@ -118,9 +136,12 @@ export function validateCase(input: unknown): Case {
   try {
     return checkCase(input);
   } catch (error) {
-    if (error instanceof CaseValidationError) throw error;
     if (!(error instanceof Error)) throw error;
-    throw new CaseValidationError(validationFaultId(error.message), error.message);
+    const refusal = error instanceof CaseValidationError
+      ? error
+      : new CaseValidationError(validationFaultId(error.message), error.message);
+    recordValidationRefusal(input, refusal);
+    throw refusal;
   }
 }
 

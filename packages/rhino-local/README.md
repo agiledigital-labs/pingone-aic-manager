@@ -1591,7 +1591,9 @@ not running its body.
 
 `outcome` is the script's own outcome, so a script that caught a harness
 refusal reads `"ok"`; `emulationFault` says whether the run failed the fault
-audit, and `faultIds` names the faults.
+audit, and `faultIds` names the faults. A `defineCase` or `validateCase`
+refusal is a job row with its fault id too, though no JVM ran. `runCase`
+validates through that same call, so one refusal is one row.
 
 The summary adds a table of module-body time per library and of JVM time per
 test source. `--share` replaces every library id and source name with a salted

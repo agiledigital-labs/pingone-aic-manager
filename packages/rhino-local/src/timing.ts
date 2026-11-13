@@ -32,7 +32,10 @@
  *   `emulationFault` is true when the response carried an emulation failure
  *   (a harness fault, missing behaviour, a protocol error or a timeout) —
  *   `outcome` alone says "ok" for a run whose script caught the refusal —
- *   and `faultIds` lists the harness-fault ids it named.
+ *   and `faultIds` lists the harness-fault ids it named. A `validateCase`
+ *   refusal, including one from `defineCase`, is a job row too
+ *   (`outcome: "protocol_error"`, no `jvm` block). `runCase` validates
+ *   through that same call and does not write a second row.
  * - `publish`: the emulation runner sending a worker's failure-audit delta
  *   to the main process (on every job start and end, and at file
  *   boundaries): `publishMs`, and the send's size as `failures` (entries new
