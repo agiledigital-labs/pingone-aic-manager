@@ -113,6 +113,27 @@ if (qexpandedRow) {
   if (qexpandedRow.manager) {
     logger.info("manager {}", qexpandedRow.manager._ref);
   }
+  // Multi-valued expansion is a JS array on IDM (measured 2026-11-14).
+  var roleRefs = qexpandedRow.authzRoles.map(function (r) { return r._ref; });
+  logger.info("role refs {}", roleRefs.length);
+}
+
+// A query `result` and a has-many read are JS arrays on IDM (measured
+// 2026-11-14, docs/api/12). `.map()` is `Array.prototype.map`. The AM
+// Java-list rejection does not belong on this workspace.
+var listed = openidm.query(
+  "managed/__aic_fixture_user",
+  { _queryFilter: "true" },
+  ["userName"]
+);
+var listedIds = listed.result.map(function (r) { return r._id; });
+logger.info("listed {}", listedIds.length);
+var roleRead = openidm.read("managed/__aic_fixture_user/alice", undefined, [
+  "authzRoles",
+]);
+if (roleRead && roleRead.authzRoles) {
+  var refs = roleRead.authzRoles.map(function (r) { return r._ref; });
+  logger.info("refs {}", refs.length);
 }
 
 // An unknown path keeps the loose fallback: free-form fields, `any` result.
