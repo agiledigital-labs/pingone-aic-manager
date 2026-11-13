@@ -1,5 +1,6 @@
 //! The single `config/repo.ds` write workflow: stale-mapping removal for
-//! `relationship repair`, atomic pair addition for `map` / new `set`, and
+//! `relationship repair` (and, with `--empty-entry`, removal of a deleted type's
+//! empty per-type entry), atomic pair addition for `map` / new `set`, and
 //! explicit in-place conversion rollback (both ends removed in one PUT), and
 //! its preliminary unchanged-document write check before records are touched.
 //! `conversion_records` plans full rollback eligibility before any unlink;
@@ -30,7 +31,8 @@
 //! that another mapping reads through, and anything on an object
 //! `config/managed` does not declare. Removing an object's last mapped
 //! property is allowed and keeps its per-type entry with `properties: {}`,
-//! the measured state of a freshly added entry; the entry is never removed.
+//! the measured state of a freshly added entry. That entry is removed only
+//! by [`plan_remove_entry`] (`--empty-entry`), for a deleted or an existing type.
 //!
 //! Additions use the measured 2026-11-01 shape and waitForCompletion=true.
 //! A WritePermit proves consent outside dry-run; callers also gate production.
@@ -52,6 +54,9 @@ enum Operation {
     Add(Box<super::storage::Addition>),
     Rollback(super::conversion::Pair),
     Confirm(super::conversion::Pair),
+    /// Remove an empty per-type `genericMapping."managed/<object>"` entry for
+    /// a type `config/managed` no longer declares.
+    RemoveEntry,
 }
 
 /// A removal or atomic addition computed from one read of each document.
@@ -90,7 +95,10 @@ impl Plan {
     }
 
     pub fn label(&self) -> String {
-        format!("{}.{}", self.object, self.key)
+        match self.operation {
+            Operation::RemoveEntry => format!("managed/{}", self.object),
+            _ => format!("{}.{}", self.object, self.key),
+        }
     }
 }
 
@@ -257,6 +265,135 @@ pub fn plan(managed: &Value, repo_ds: &Value, object: &str, key: &str) -> Result
         before: repo_ds.clone(),
         after,
     })
+}
+
+/// The plan for removing `object`'s empty per-type `repo.ds` entry, or why it
+/// is refused.
+///
+/// Measured on the sandbox (2026-11-10, `docs/api/10-managed-objects.md`):
+/// for a type that **still exists**, with records and links written while it
+/// was mapped, removing its empty entry by a backed-up whole-document `PUT`
+/// left every record readable by id and by query and new records creatable,
+/// immediately and after ~65 s. For a type `config/managed` no longer declares
+/// the same removal was measured on 2026-11-09. So both are allowed, but only
+/// for the entry `aic` itself generates for the type
+/// (`storage::generated_entry`); any other value or field is refused. Also
+/// refused: an entry that still maps a property, and one another mapping names
+/// as its `resourcePath` (unmeasured).
+pub fn plan_remove_entry(managed: &Value, repo_ds: &Value, object: &str) -> Result<Plan, String> {
+    let label = format!("managed/{object}");
+    let key = format!("managed/{object}");
+    let Some(entry) = repo_ds.pointer(&format!(
+        "/resourceMapping/genericMapping/{}",
+        pointer_token(&key)
+    )) else {
+        return Err(format!(
+            "config/repo.ds has no genericMapping entry for {label}; nothing to remove"
+        ));
+    };
+    if let Some(properties) = entry.get("properties").and_then(Value::as_object)
+        && !properties.is_empty()
+    {
+        let names: Vec<&str> = properties.keys().map(String::as_str).collect();
+        return Err(format!(
+            "refusing to remove {label}'s per-type entry: it still maps {}. Remove those \
+             mappings first (`relationship repair <object>.<key>`)",
+            names.join(", ")
+        ));
+    }
+    if entry.get("properties").is_some_and(|p| !p.is_object()) {
+        return Err(format!(
+            "refusing to remove {label}'s per-type entry: its `properties` is not an object"
+        ));
+    }
+    let readers = readers_of(repo_ds, object);
+    if !readers.is_empty() {
+        return Err(format!(
+            "refusing to remove {label}'s per-type entry: config/repo.ds maps {} to \
+             managed/{object}, and removing the entry under a mapping that names it is unmeasured",
+            readers.join(", ")
+        ));
+    }
+    let mut after = repo_ds.clone();
+    let removed = after
+        .pointer_mut("/resourceMapping/genericMapping")
+        .and_then(Value::as_object_mut)
+        .and_then(|entries| entries.remove(&key));
+    if removed.is_none() {
+        return Err(format!("internal: could not locate {label} to remove"));
+    }
+    // Only the layout `aic` itself generates for this type is a measured one
+    // (docs/api/10). Any other value decides where records are stored, so
+    // removing it is refused rather than noted.
+    let generated = super::storage::generated_entry(object);
+    let mut differing: Vec<String> = Vec::new();
+    if let (Some(actual), Some(expected)) = (entry.as_object(), generated.as_object()) {
+        for (name, value) in expected {
+            if name != "properties" && actual.get(name) != Some(value) {
+                differing.push(name.clone());
+            }
+        }
+        for name in actual.keys() {
+            if !expected.contains_key(name) {
+                differing.push(name.clone());
+            }
+        }
+    } else {
+        differing.push("(the entry is not an object)".into());
+    }
+    if !differing.is_empty() {
+        return Err(format!(
+            "refusing to remove {label}'s per-type entry: it is not the layout aic generates \
+             (differs in {}), and removing a storage layout that was not measured is refused",
+            differing.join(", ")
+        ));
+    }
+    let mut notes = Vec::new();
+    if crate::managed::api::object_named(managed, object).is_ok() {
+        notes.push(format!(
+            "{object} is still declared in config/managed; its records were measured to stay \
+             readable and creatable after its empty entry was removed (docs/api/10)"
+        ));
+    }
+    Ok(Plan {
+        object: object.to_string(),
+        key: String::new(),
+        mapping: Mapping {
+            kind: "per-type entry".into(),
+            resource_path: Some(key),
+            property_name: None,
+        },
+        notes,
+        operation: Operation::RemoveEntry,
+        before: repo_ds.clone(),
+        after,
+    })
+}
+
+/// `object.key` labels of every `repo.ds` mapping, in any section, whose
+/// `resourcePath` is `managed/<object>`.
+fn readers_of(repo_ds: &Value, object: &str) -> Vec<String> {
+    let target = format!("managed/{object}");
+    let mut found = Vec::new();
+    let Some(sections) = repo_ds.get("resourceMapping").and_then(Value::as_object) else {
+        return found;
+    };
+    for (section, entries) in sections {
+        let Some(entries) = entries.as_object() else {
+            continue;
+        };
+        for (resource, entry) in entries {
+            let Some(properties) = entry.get("properties").and_then(Value::as_object) else {
+                continue;
+            };
+            for (key, mapping) in properties {
+                if mapping.get("resourcePath").and_then(Value::as_str) == Some(target.as_str()) {
+                    found.push(format!("{resource}.{key} ({section})"));
+                }
+            }
+        }
+    }
+    found
 }
 
 /// Plan an atomic addition; the writer treats this like a removal except for
@@ -464,7 +601,7 @@ pub fn recheck(plan: &Plan, managed: &Value, repo_ds: &Value) -> Result<(), Stri
             match plan.operation {
                 Operation::Rollback(_) | Operation::Confirm(_) => "rollback-map",
                 Operation::Add(_) => "map",
-                Operation::Remove => "repair",
+                Operation::Remove | Operation::RemoveEntry => "repair",
             }
         ));
     }
@@ -473,6 +610,7 @@ pub fn recheck(plan: &Plan, managed: &Value, repo_ds: &Value) -> Result<(), Stri
         Operation::Confirm(pair) => plan_confirm(managed, repo_ds, pair)?,
         Operation::Add(_) => plan_add(managed, repo_ds, &plan.object, &plan.key)?,
         Operation::Remove => self::plan(managed, repo_ds, &plan.object, &plan.key)?,
+        Operation::RemoveEntry => plan_remove_entry(managed, repo_ds, &plan.object)?,
     };
     if fresh.after != plan.after {
         return Err(
@@ -1340,5 +1478,167 @@ mod tests {
         assert!(authorize(true, true).is_none());
         assert!(authorize(true, false).is_none());
         // apply_with and the HTTP wrapper both require the opaque permit.
+    }
+    /// `gone` is not declared in `config/managed`; its per-type entry is what
+    /// a deleted type leaves behind.
+    fn repo_with_empty_entry_for_gone() -> Value {
+        let mut doc = repo(json!({}), json!({}));
+        doc["resourceMapping"]["genericMapping"]["managed/gone"] =
+            super::super::storage::generated_entry("gone");
+        doc
+    }
+
+    #[test]
+    fn an_empty_entry_of_a_deleted_type_is_planned_for_removal_and_nothing_else_moves() {
+        let before = repo_with_empty_entry_for_gone();
+        let plan = plan_remove_entry(&managed(), &before, "gone").unwrap();
+        assert_eq!(plan.label(), "managed/gone");
+        assert!(plan.notes.is_empty());
+        let mut expected = before.clone();
+        expected["resourceMapping"]["genericMapping"]
+            .as_object_mut()
+            .unwrap()
+            .remove("managed/gone");
+        assert_eq!(plan.after(), &expected);
+        // The mapped pair on the live types is untouched.
+        assert!(verify::mapped(plan.after(), "a", "live").is_some());
+        // An entry with no `properties` member at all is just as empty.
+        let mut bare = before;
+        bare["resourceMapping"]["genericMapping"]["managed/gone"]
+            .as_object_mut()
+            .unwrap()
+            .remove("properties");
+        assert!(plan_remove_entry(&managed(), &bare, "gone").is_ok());
+    }
+
+    /// The discriminating cases: each is an entry a looser rule ("remove any
+    /// per-type entry that looks empty") would take.
+    #[test]
+    fn an_entry_is_refused_while_it_maps_a_property_or_is_named_by_a_mapping() {
+        // The type still exists and its entry is empty: allowed (measured
+        // 2026-11-10), with a note; the same entry still mapping is refused.
+        let mut with_c = managed();
+        with_c["objects"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"name": "c", "schema": {"properties": {}}}));
+        let mut existing = repo(json!({}), json!({}));
+        existing["resourceMapping"]["genericMapping"]["managed/c"] =
+            super::super::storage::generated_entry("c");
+        let plan = plan_remove_entry(&with_c, &existing, "c").unwrap();
+        assert!(plan.notes.iter().any(|n| n.contains("still declared")));
+        existing["resourceMapping"]["genericMapping"]["managed/c"]["properties"] =
+            json!({"p": reference("b")});
+        let error = plan_remove_entry(&with_c, &existing, "c").unwrap_err();
+        assert!(error.contains("still maps p"), "{error}");
+        // The entry still maps a property.
+        let mut mapped = repo_with_empty_entry_for_gone();
+        mapped["resourceMapping"]["genericMapping"]["managed/gone"]["properties"] =
+            json!({"p": reference("b")});
+        let error = plan_remove_entry(&managed(), &mapped, "gone").unwrap_err();
+        assert!(error.contains("still maps p"), "{error}");
+        // Another mapping names the gone type.
+        let mut read = repo_with_empty_entry_for_gone();
+        read["resourceMapping"]["genericMapping"]["managed/b"]["properties"]["gone"] =
+            reference("gone");
+        let error = plan_remove_entry(&managed(), &read, "gone").unwrap_err();
+        assert!(
+            error.contains("b") && error.contains("managed/gone"),
+            "{error}"
+        );
+        // No entry at all.
+        let error = plan_remove_entry(&managed(), &repo(json!({}), json!({})), "gone").unwrap_err();
+        assert!(error.contains("nothing to remove"), "{error}");
+    }
+
+    /// A custom storage layout under an otherwise empty entry: every field
+    /// name is one aic writes, but the values place records elsewhere. Each
+    /// difference is refused and named, by the planner and by the recheck.
+    #[tokio::test]
+    async fn a_custom_storage_layout_is_refused_by_value_not_by_field_name() {
+        let generated = super::super::storage::generated_entry("gone");
+        let mut with_c = managed();
+        with_c["objects"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"name": "custom_widget", "schema": {"properties": {}}}));
+        let custom = json!({
+            "dnTemplate": "ou=archive,dc=example,dc=com",
+            "jsonAttribute": "custom-json",
+            "objectClasses": ["customClass"],
+            "jsonQueryEqualityMatchingRule": "customMatch",
+            "properties": {}
+        });
+        let mut doc = repo(json!({}), json!({}));
+        doc["resourceMapping"]["genericMapping"]["managed/custom_widget"] = custom;
+        let error = plan_remove_entry(&with_c, &doc, "custom_widget").unwrap_err();
+        for field in [
+            "dnTemplate",
+            "jsonAttribute",
+            "objectClasses",
+            "jsonQueryEqualityMatchingRule",
+        ] {
+            assert!(error.contains(field), "{error}");
+        }
+        // An unknown extra field is refused too, and named alone.
+        let mut extra = repo_with_empty_entry_for_gone();
+        extra["resourceMapping"]["genericMapping"]["managed/gone"]["unusual"] = json!(1);
+        let error = plan_remove_entry(&managed(), &extra, "gone").unwrap_err();
+        assert!(error.contains("differs in unusual"), "{error}");
+        // One generated value changed.
+        let mut one = repo_with_empty_entry_for_gone();
+        one["resourceMapping"]["genericMapping"]["managed/gone"]["dnTemplate"] = json!("ou=x");
+        let error = plan_remove_entry(&managed(), &one, "gone").unwrap_err();
+        assert!(error.contains("differs in dnTemplate"), "{error}");
+        // The recheck re-plans: a plan made against the generated layout is
+        // refused once the entry at write time holds a custom one.
+        let good = repo_with_empty_entry_for_gone();
+        let plan = plan_remove_entry(&managed(), &good, "gone").unwrap();
+        let mut swapped = good.clone();
+        swapped["resourceMapping"]["genericMapping"]["managed/gone"] = json!({
+            "dnTemplate": "ou=archive,dc=example,dc=com", "properties": {}});
+        assert!(recheck(&plan, &managed(), &swapped).is_err());
+        // The generated layout itself passes the recheck.
+        assert!(recheck(&plan, &managed(), &good).is_ok());
+        assert_eq!(
+            good["resourceMapping"]["genericMapping"]["managed/gone"],
+            generated
+        );
+    }
+
+    #[tokio::test]
+    async fn an_entry_removal_uses_the_same_recheck_backup_send_readback_sequence() {
+        let before = repo_with_empty_entry_for_gone();
+        let plan = plan_remove_entry(&managed(), &before, "gone").unwrap();
+        let tenant = Tenant::new(
+            managed(),
+            vec![Ok(before.clone()), Ok(plan.after().clone())],
+            Ok(()),
+        );
+        assert_eq!(
+            tenant.run(&plan, 0).await.unwrap().readback,
+            Readback::Confirmed
+        );
+        assert_eq!(
+            *tenant.log.borrow(),
+            [
+                "read managed",
+                "read repo.ds",
+                "backup",
+                "send",
+                "read repo.ds"
+            ]
+        );
+        // A mapping started naming the type between plan and write: repo.ds
+        // differs from what was planned, so nothing is sent.
+        let mut drifted = before.clone();
+        drifted["resourceMapping"]["genericMapping"]["managed/b"]["properties"]["gone"] =
+            reference("gone");
+        let tenant = Tenant::new(managed(), vec![Ok(drifted)], Ok(()));
+        assert!(matches!(
+            tenant.run(&plan, 0).await,
+            Err(Failure::NotWritten(_))
+        ));
+        assert_eq!(*tenant.log.borrow(), ["read managed", "read repo.ds"]);
     }
 }

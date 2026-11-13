@@ -29,11 +29,12 @@
  * fold these into the descriptor's story or drop them.
  */
 export declare const OBSERVED_BASE: readonly string[];
+// compat-accepted: comment reworded (reference-image wording) since 0.1.2; no signature change.
 /**
  * The scripted decision node's Java class allow-list: the descriptor's declared
  * entries plus `OBSERVED_BASE`.
  *
- * Read from the binding descriptor this project already extracted from AM
+ * Read from the binding descriptor this project already pulled from the tenant
  * (`docs/api/bindings/scripted-decision-next.json`), so the policy has one
  * source and cannot drift from the document the rest of the harness generates
  * its mocks from. Not hand-transcribed: a copied list is a list that goes

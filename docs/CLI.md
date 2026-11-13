@@ -598,7 +598,7 @@ as workspace scripts via `aic script` (`managed/<object>.<hook>`).
 
 ```bash
 aic managed list [--json]                        # object types with property + hook counts
-aic managed get alpha_user [--fields GLOB] [--hook-sources] [--schema-only | --property NAME]
+aic managed get alpha_user [--fields GLOB] [--hook-sources] [--schema-only | --property NAME] [--json]
 aic managed object create custom_widget [--title T] [--description D] [--yes] [--json]
 aic managed object rename custom_widget custom_gadget [--force] [--yes] [--json]
 aic managed object delete custom_gadget [--force] [--yes] [--json]
@@ -617,6 +617,7 @@ aic managed relationship capture-links --lower dev --upper uat --output FILE [--
 aic managed relationship restore-links FILE [--tenant uat] [--acknowledge-request-finished] [--dry-run] [--force] [--yes] [--json]
 aic managed relationship rollback-map FILE [--tenant dev] [--acknowledge-request-finished] [--dry-run] [--force] [--yes] [--json]
 aic managed relationship repair custom_widget.oldOwner [--dry-run] [--force] [--yes] [--json]
+aic managed relationship repair gone_widget --empty-entry [--dry-run] [--force] [--yes] [--json]
 aic managed relationship snapshot custom_widget.owner [--output FILE]
 aic managed relationship restore FILE [--dry-run] [--yes] [--json]
 aic managed diff custom_widget repo/managed-objects/custom_widget/custom_widget.json [--strict] [--json]
@@ -651,6 +652,15 @@ unaffected. With `--property`, only that property's pair is shown. The TUI
 relationship editor shows the same line under its title. What neither can show
 is whether the running IDM has *picked up* a `repo.ds` change: `aic` knows of
 no endpoint that reports it, so the line describes configuration, not runtime.
+
+stdout is the definition alone with or without `--json`; the notes above and
+"omitted N inline hook sources" / "showing N of M properties" go to stderr, so
+`aic managed get X 2>/dev/null | jq` is already clean. `--json` is the explicit
+form for a caller that merges the streams: it prints the same definition and
+drops every note (and skips the `config/repo.ds` read behind the storage lines),
+except a `--fields` pattern that matched nothing, which is still named on
+stderr. Content does not change: inline hook sources stay replaced by their
+`<script: …>` references unless `--hook-sources` is given.
 
 `managed diff <object> <file>` compares the tenant's definition of one object
 with a repository file, read-only. The file holds that object's definition
@@ -1083,8 +1093,7 @@ any resource, `internal/…` and `explicitMapping` included (naming it; repair
 a stale managed one first), and an object `config/managed` does not
 declare — the cases not measured. The last mapped property of an object is
 removed like any other, and the object keeps its per-type entry with no
-properties, the state a new per-type entry starts in; the entry itself is never
-removed. `--dry-run` prints the plan and writes
+properties, the state a new per-type entry starts in. `--dry-run` prints the plan and writes
 nothing; otherwise it asks, or takes `--force`, and passes the production
 gate. Immediately before writing it re-reads both documents and refuses if
 `repo.ds` changed at all. It backs the current document up to
@@ -1100,6 +1109,21 @@ only under another section such as `explicitMapping`, which `verify` and the
 write guards read as well, or a key mapped in more than one section. There is no undo
 entry: the backup is the way back (`docs/api/10-managed-objects.md`,
 "Removing a stale mapping").
+
+`relationship repair <object> --empty-entry` removes the empty per-type
+`genericMapping."managed/<object>"` entry that deleting a type
+(`managed object delete` leaves it) or its last mapped property leaves behind.
+It works for a deleted type and for one that still exists (measured 2026-11-10:
+records stayed readable and creatable, `docs/api/10`), but only when the entry
+is exactly the layout `aic` itself generates for that type (`dnTemplate`,
+`objectClasses`, `jsonAttribute`, `jsonQueryEqualityMatchingRule` with the
+generated values, and `properties: {}`). Any other value or extra field is
+refused and named; there is no `--force` for it, because those values decide
+where records are stored and no other layout was measured. It also refuses an
+entry that still maps a property or that another mapping names as its
+`resourcePath`. It uses the same recheck, local backup, whole-document `PUT` and
+read-back as the mapping removal, with the same `--dry-run`, `--force`, `--yes`
+and `--json`.
 
 `--enum` is repeatable and replaces the field's allowed-value set; use
 `value:Title` for a display label. On `field edit`, `--clear-enum` removes the
@@ -3009,6 +3033,13 @@ id; `--resolve remote` forgets the record for missing resources. Embedded
 managed-hook and sync-mapping scripts cannot be re-created by this prompt; the
 prompt names the owning config or missing local file when re-create is unavailable.
 Skipped entries are listed and make the command exit non-zero.
+With no terminal there is no prompt, so a deleted script is skipped; to resolve
+it non-interactively the flags are `--resolve remote --force` (forget the
+record, keep the local file) or `--resolve remote --force --remove-local`
+(forget it and remove the local file if unedited). `--remove-local` on its own
+resolves nothing, and `--resolve remote` without `--force` is refused; both the
+refusal and the end-of-run list print the exact command. `--resolve` applies to
+every selected script, so give a `<ref>` to name the one you mean.
 `--remove-local` makes forgetting also remove the local file, but only one
 that still holds the last-synced bytes (and a LIBRARY script's generated
 wrapper with it, when that is a plain file holding exactly the generated

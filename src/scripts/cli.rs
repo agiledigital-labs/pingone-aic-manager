@@ -341,15 +341,26 @@ pub enum ScriptCommand {
     /// Bidirectionally sync the workspace with the tenant: push local-only
     /// changes, pull remote-only changes, and resolve conflicts or deleted scripts.
     /// Scope with an optional <ref>; default reconciles everything synced.
+    ///
+    /// A script deleted on the tenant prompts (skip, re-create, forget); with no
+    /// terminal it is left unresolved and the command exits non-zero. To resolve
+    /// it without a prompt: `--resolve remote --force` forgets the sync record
+    /// and keeps the local file; add `--remove-local` to also remove the local
+    /// file when it is unedited (`--remove-local` alone resolves nothing).
+    /// `--resolve local --force` re-creates it. `--resolve` applies to every
+    /// selected entry, so name the script with <ref>.
     Sync {
         #[arg(help = "namespace, <namespace>/<name>, `all`, or empty for everything synced")]
         reference: Option<String>,
         /// Make this side win for every selected entry, including non-conflicts.
+        /// Needs bare --force beside it.
         #[arg(long, value_enum)]
         resolve: Option<Resolution>,
         /// When a script deleted on the tenant is forgotten, also remove its
         /// local file — only if it still holds the last-synced bytes. An
-        /// edited file, or a symlink, is kept and named.
+        /// edited file, or a symlink, is kept and named. It only takes effect
+        /// where the script is forgotten: at the prompt, or non-interactively
+        /// as `--resolve remote --force --remove-local`.
         #[arg(long)]
         remove_local: bool,
         #[arg(long, help = "Tenant to target")]
@@ -409,18 +420,63 @@ pub enum Resolution {
     Remote,
 }
 
+/// POSIX single-quote `word` so a shell reads it back as exactly one argument.
+fn shell_quote(word: &str) -> String {
+    format!("'{}'", word.replace('\'', "'\\''"))
+}
+
 fn validate_resolution_force(
     resolve: Option<Resolution>,
     force: OperationAndSyntaxCheckForce,
+    remove_local: bool,
 ) -> Result<()> {
-    if resolve.is_some() == force.operation() {
-        Ok(())
-    } else {
-        Err(Error::Config(
-            "script sync requires --resolve local|remote with bare --force, and bare --force requires --resolve"
+    // Checked first: no refusal below may suggest a combination this rejects.
+    if remove_local && resolve == Some(Resolution::Local) {
+        return Err(Error::Config(
+            "--remove-local applies to forgetting a deleted script, which --resolve local never does"
                 .into(),
-        ))
+        ));
     }
+    if resolve.is_some() == force.operation() {
+        return Ok(());
+    }
+    let extra = if remove_local { " --remove-local" } else { "" };
+    Err(Error::Config(match resolve {
+        Some(side) => {
+            let side = match side {
+                Resolution::Local => "local",
+                Resolution::Remote => "remote",
+            };
+            format!(
+                "--resolve {side} overwrites without prompting, so it also needs bare --force: \
+                 `aic script sync <ref> --resolve {side} --force{extra}`. \
+                 To forget a script deleted on the tenant and remove its unedited local file, \
+                 use `--resolve remote --force --remove-local`"
+            )
+        }
+        None => "bare --force on `script sync` needs --resolve local|remote beside it: \
+                 `aic script sync <ref> --resolve remote --force [--remove-local]` forgets \
+                 scripts deleted on the tenant (--remove-local also removes their unedited \
+                 local file); `--resolve local --force` re-creates them"
+            .into(),
+    }))
+}
+
+/// What a non-interactive run can do about scripts the tenant no longer has.
+/// `--resolve` applies to every selected entry, so the hint scopes to one
+/// script by ref instead of inviting a bare `--resolve remote --force`. The
+/// ref is a script name, which may hold spaces or shell metacharacters, so it
+/// is quoted: the command must run as printed.
+fn remote_missing_hint(first: &str, remove_local: bool) -> String {
+    let extra = if remove_local { " --remove-local" } else { "" };
+    let first = shell_quote(first);
+    format!(
+        "to proceed without a prompt, name the script and say which side wins — \
+         forget the record: `aic script sync {first} --resolve remote --force{extra}` \
+         (add --remove-local to also remove the local file if it is unedited); \
+         re-create from the local copy: `aic script sync {first} --resolve local --force`. \
+         Without a ref, --resolve applies to every synced script"
+    )
 }
 
 #[derive(Subcommand, Debug)]
@@ -1236,13 +1292,7 @@ pub(crate) async fn run_with_runtime(
             yes,
             force,
         } => {
-            validate_resolution_force(resolve, force)?;
-            if remove_local && resolve == Some(Resolution::Local) {
-                return Err(Error::Config(
-                    "--remove-local applies to forgetting a deleted script, which --resolve local never does"
-                        .into(),
-                ));
-            }
+            validate_resolution_force(resolve, force, remove_local)?;
             let t = runtime.writable_tenant_for(tenant)?;
             runtime.guard_legacy_workspace(&t)?;
             let cands = select_synced(runtime.push_candidates(&t)?, reference)?;
@@ -1563,6 +1613,12 @@ pub(crate) async fn run_with_runtime(
             }
             if !remote_missing.is_empty() {
                 println!("remote scripts left unresolved (choose re-create or forget):");
+                if !prompt_available() {
+                    println!(
+                        "  {}",
+                        remote_missing_hint(&remote_missing[0].0, remove_local)
+                    );
+                }
                 for (name, reason) in &remote_missing {
                     if let Some(reason) = reason {
                         println!("  {name} — re-create unavailable: {reason}");
@@ -4245,10 +4301,33 @@ mod tests {
         ] {
             let (resolve, force) = parsed(&args);
             assert!(
-                validate_resolution_force(resolve, force).is_err(),
+                validate_resolution_force(resolve, force, false).is_err(),
                 "{args:?}"
             );
         }
+        // The refusal names the flags that would proceed, not just the rule.
+        let (resolve, force) = parsed(&["--resolve", "remote", "--remove-local"]);
+        let message = validate_resolution_force(resolve, force, true)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            message.contains("--resolve remote --force --remove-local"),
+            "{message}"
+        );
+        let (resolve, force) = parsed(&["--force"]);
+        let message = validate_resolution_force(resolve, force, false)
+            .unwrap_err()
+            .to_string();
+        assert!(message.contains("--resolve remote --force"), "{message}");
+        // --resolve local with --remove-local is rejected first, so its refusal
+        // cannot suggest a command that the next run rejects.
+        let (resolve, force) = parsed(&["--resolve", "local", "--remove-local"]);
+        let message = validate_resolution_force(resolve, force, true)
+            .unwrap_err()
+            .to_string();
+        assert!(message.contains("--resolve local never does"), "{message}");
+        assert!(!message.contains("--resolve local --force --remove-local"));
+        assert!(!remote_missing_hint("a/b", false).contains("--force --remove-local`"));
         for args in [
             vec![],
             vec!["--force=syntax-check"],
@@ -4258,9 +4337,62 @@ mod tests {
         ] {
             let (resolve, force) = parsed(&args);
             assert!(
-                validate_resolution_force(resolve, force).is_ok(),
+                validate_resolution_force(resolve, force, false).is_ok(),
                 "{args:?}"
             );
+        }
+    }
+
+    /// Runs each command the hint suggests under `sh` with `aic` replaced by
+    /// a function that prints its arguments, and returns one line per `aic`
+    /// invocation. A substring match could not tell one argument from two, or
+    /// one command from two.
+    fn invocations(hint: &str) -> Vec<Vec<String>> {
+        let commands: Vec<&str> = hint.split('`').skip(1).step_by(2).collect();
+        assert_eq!(commands.len(), 2, "{hint}");
+        commands
+            .iter()
+            .map(|command| {
+                let script = format!("aic() {{ printf '<%s>' \"$@\"; printf '\\n'; }}; {command}");
+                let out = std::process::Command::new("sh")
+                    .arg("-c")
+                    .arg(script)
+                    .output()
+                    .unwrap();
+                String::from_utf8(out.stdout).unwrap()
+            })
+            .flat_map(|text| {
+                text.lines()
+                    .map(|line| {
+                        line.split('>')
+                            .filter(|piece| !piece.is_empty())
+                            .map(|piece| piece.trim_start_matches('<').to_string())
+                            .collect::<Vec<_>>()
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_remote_missing_hint_runs_as_printed_for_awkward_names() {
+        for name in [
+            "alpha/Example Script",
+            "alpha/Example; aic script sync all --resolve remote --force #",
+            "alpha/it's $(touch x) \"q\"",
+            "managed/thing.onCreate",
+        ] {
+            let calls = invocations(&remote_missing_hint(name, true));
+            // One `aic` per suggested command: nothing ran a second command.
+            assert_eq!(calls.len(), 2, "{name}: {calls:?}");
+            for call in &calls {
+                assert_eq!(&call[..3], ["script", "sync", name], "{name}: {call:?}");
+            }
+            assert_eq!(
+                calls[0][3..],
+                ["--resolve", "remote", "--force", "--remove-local"]
+            );
+            assert_eq!(calls[1][3..], ["--resolve", "local", "--force"]);
         }
     }
 

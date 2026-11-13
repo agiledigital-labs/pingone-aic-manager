@@ -3,6 +3,8 @@
 // Shared next-gen-common bindings come from common.d.ts + nextgen-common.d.ts.
 // Applied metadata refinements:
 //   - `Identity.getAttributeValues` adds the typed `AmUserAttribute` overload first.
+//   - `RequestProperties` is a shared type, measured in four other OAuth2 contexts; unmeasured here.
+//   - `ClientProperties` is a shared type, measured in four other OAuth2 contexts; unmeasured here.
 
 declare const requestProperties: RequestProperties;
 declare const clientProperties: ClientProperties;

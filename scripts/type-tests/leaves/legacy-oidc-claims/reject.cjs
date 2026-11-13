@@ -4,3 +4,5 @@ identity.getAttribute("mail").length; // expect: TS2339 — a java.util.HashSet 
 identity.getAttribute("mail").get(0); // expect: TS2339 — no get(int); use toArray()[0]
 identity.getAttributes().length; // expect: TS2339 — getAttributes returns a Map, not a list
 identity.getAttributes(["mail"]); // expect: TS2345 — the overload takes a java.util.Set, not a JS array
+session.getProperty("Principal"); // expect: TS18047 — null on a password grant
+identity.exists(); // expect: TS2551 — absent on the legacy engine (isExists is the one)

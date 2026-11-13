@@ -687,7 +687,7 @@ not shipped with the package.
 `src/runner.ts` launches Java 25 from `AIC_SCRIPT_TESTER_JAVA_HOME` or `JAVA_HOME`
 (`shell.nix` provides `temurin-bin-25`) and speaks line-delimited JSON.
 `AIC_SCRIPT_TESTER_JVM` selects `host` (default), `container`, or `both`; the latter
-lanes require Docker and the AM image. The cache defaults to
+lanes require Docker and the reference JVM image. The cache defaults to
 `~/.cache/aic-script-tester`; `AIC_SCRIPT_TESTER_CACHE` overrides it. Correlate by job `id`
 — do not assume the JVM answers in order. A crashed JVM rejects every pending
 job rather than hanging. `close()` ends stdin and waits for the process;

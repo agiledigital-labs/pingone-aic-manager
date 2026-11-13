@@ -729,6 +729,31 @@ pub fn leaf_tsconfig(slug: &str) -> String {
             ],
             Some("../lib/*"),
         ),
+        // Next-gen social profile transformation and config provider, typed from
+        // their descriptors with the measured corrections (2026-11-10). Their
+        // legacy slugs (`social-normalize`, `config-provider`) stay on the
+        // default arm below: that engine is not worth typing beyond the shared
+        // globals.
+        "social-normalize-ng" => (
+            &[
+                "rhino-1.7.14.d.ts",
+                "common.d.ts",
+                "secrets.d.ts",
+                "nextgen-common.d.ts",
+                "social-normalize-ng.d.ts",
+            ],
+            Some("../lib/*"),
+        ),
+        "config-provider-ng" => (
+            &[
+                "rhino-1.7.14.d.ts",
+                "common.d.ts",
+                "secrets.d.ts",
+                "nextgen-common.d.ts",
+                "config-provider-ng.d.ts",
+            ],
+            Some("../lib/*"),
+        ),
         "social-handler" => (
             &[
                 "rhino-1.7.14.d.ts",
@@ -856,9 +881,10 @@ pub fn leaf_tsconfig(slug: &str) -> String {
             ],
             None,
         ),
-        // Any other context (legacy OAuth2, SAML adapters, policy condition, …):
-        // shared Rhino + common globals, plus the classic Debug `logger` (these
-        // are mostly unmigrated/legacy-style scripts), until they go next-gen.
+        // Any other context (legacy OAuth2, SAML adapters, policy condition, the
+        // legacy social and config-provider engines, …): shared Rhino + common
+        // globals, plus the classic Debug `logger` (these are mostly legacy-engine
+        // scripts, which are upgraded to next-gen rather than typed further).
         _ => (
             &[
                 "rhino-1.7.14.d.ts",
@@ -1502,6 +1528,8 @@ mod tests {
             ("oidc-claims-ng", "oidc-claims-ng.d.ts"),
             ("device-match", "device-match.d.ts"),
             ("social-handler", "social-handler.d.ts"),
+            ("social-normalize-ng", "social-normalize-ng.d.ts"),
+            ("config-provider-ng", "config-provider-ng.d.ts"),
             ("saml-nameid-mapper", "saml-nameid-mapper.d.ts"),
             ("saml-sp-account-mapper", "saml-sp-account-mapper.d.ts"),
             ("oauth2-dcr", "oauth2-dcr.d.ts"),
@@ -1534,6 +1562,14 @@ mod tests {
 
         // Any other (legacy/unmigrated) context: shared rhino + common + classic
         // Debug logger, no next-gen overlay, no library alias.
+        for slug in ["config-provider", "social-normalize"] {
+            let other = leaf_tsconfig(slug);
+            assert!(
+                !other.contains("nextgen-common"),
+                "{slug}: the legacy engine stays on the default arm"
+            );
+            assert!(other.contains("../../types/legacy-common.d.ts"), "{slug}");
+        }
         let other = leaf_tsconfig("config-provider");
         assert!(other.contains("../../types/rhino-1.7.14.d.ts"));
         assert!(other.contains("../../types/common.d.ts"));
@@ -1542,6 +1578,41 @@ mod tests {
         assert!(!other.contains("nextgen-common"));
         assert!(!other.contains("managed/*.d.ts"));
         assert!(!other.contains("paths"));
+    }
+
+    #[test]
+    fn next_gen_social_and_config_provider_contexts_get_their_own_typings() {
+        // The context constants the tenant reports map to the `-ng` slugs, and
+        // those slugs have an arm. Without one they fell to the legacy default:
+        // a next-gen workspace got the classic logger and none of its bindings.
+        for (context, slug, overlay) in [
+            (
+                "SOCIAL_IDP_PROFILE_TRANSFORMATION_NEXT_GEN",
+                "social-normalize-ng",
+                "social-normalize-ng.d.ts",
+            ),
+            (
+                "CONFIG_PROVIDER_NODE_NEXT_GEN",
+                "config-provider-ng",
+                "config-provider-ng.d.ts",
+            ),
+        ] {
+            assert_eq!(slug_for(Some(context), Some("2.0")), slug);
+            let cfg = leaf_tsconfig(slug);
+            assert!(cfg.contains(&format!("../../types/{overlay}")), "{slug}");
+            assert!(cfg.contains("../../types/nextgen-common.d.ts"), "{slug}");
+            assert!(!cfg.contains("legacy-common"), "{slug}");
+            assert!(!cfg.contains("decision-node"), "{slug}");
+        }
+        // The legacy constants keep their short slugs.
+        assert_eq!(
+            slug_for(Some("SOCIAL_IDP_PROFILE_TRANSFORMATION"), Some("1.0")),
+            "social-normalize"
+        );
+        assert_eq!(
+            slug_for(Some("CONFIG_PROVIDER_NODE"), Some("1.0")),
+            "config-provider"
+        );
     }
 
     #[test]

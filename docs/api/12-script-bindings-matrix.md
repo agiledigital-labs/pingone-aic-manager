@@ -563,6 +563,33 @@ Note that `java.lang.Integer` is **not** in the next-gen allow-list declared in
 `Long`, `Float`, `Number`, `Void` but no `Integer`) yet constructs fine — a
 third data point for the allow-list caveat in `docs/api/13-script-contexts.md`.
 
+**An integer the engine holds goes out as an integer (measured on the sandbox
+2026-11-13).** The same fixture sends a second body mixing JS controls with
+integers that come from the Java side, as an object body and again as a
+`JSON.stringify` string body. As echoed by the receiver:
+
+| Source value                                   | Object body | `JSON.stringify` string body |
+| ---------------------------------------------- | ----------- | ---------------------------- |
+| `3` (JS literal)                               | **`3.0`**   | `3`                          |
+| `1 + 2` (JS computed)                          | **`3.0`**   | `3`                          |
+| `new java.lang.String("abc").length()`         | `3`         | `3`                          |
+| `new java.lang.String("abc").indexOf("c")`     | `2`         | `2`                          |
+| `list.size()` on a `java.util.ArrayList`       | `3`         | `3`                          |
+| `nodeState.keys().size()`                      | `3`         | `3`                          |
+| `requestHeaders.size()`                        | `20`        | `20`                         |
+| `"abc".length` (JS string literal)             | `3`         | `3`                          |
+| `"abc".indexOf("c")` (JS string literal)       | `2`         | `2`                          |
+
+So the trap is the JS _number_, not integer-ness: a count or index obtained
+from a method call renders without a fraction, while a literal or an
+arithmetic result renders as a double. `typeof` is `"number"` for every row,
+so nothing in the script distinguishes them. `1 + 2` was a double here too;
+`"abc".length` and `"abc".indexOf` came back as integers although they are
+JS-side expressions. A `JSON.stringify` string body is sent verbatim, so it
+renders every number as `JSON.stringify` does. `new java.util.HashMap()`
+is not constructible (`TypeError: [JavaPackage java.util.HashMap] is not a
+function, it is object.`).
+
 ### 2. `undefined` becomes an explicit `null`
 
 `JSON.stringify` **drops** a key whose value is `undefined`; `httpClient` sends
@@ -1354,8 +1381,7 @@ profile and no user data is in reach).
 | `String(v)` | `[]` empty, `[Confidential]` populated — a collection's bracketed `toString` |
 
 **AM names the class in its own error**, which is what makes this a measurement
-rather than an inference from the 8.1.1 `getAttribute(String) -> java.util.Set`
-signature. It is the same failure shape `scopes` gives in this context, and the
+rather than an inference from a method signature. It is the same failure shape `scopes` gives in this context, and the
 same class shutter behaviour: `HashSet`'s iterator is allowed where
 `ArrayList$Itr` is not.
 
@@ -1745,6 +1771,12 @@ cookie would measure the completed session (see `09-journeys.md`).
   `containsKey`, `size` and `keySet` are functions on it. `keys()` is
   a Java collection, iterated with `iterator()`, that includes **transient**
   keys.
+  Indexing it fails (measured on the sandbox 2026-11-13, scripted decision
+  node): `nodeState.keys()[0]` throws
+  `InternalError: Java class "java.util.HashSet" has no public instance field or method named "0".`
+  with the script name and line appended. `typeof nodeState.keys()` is
+  `"object"`; `nodeState.keys().iterator().next()` returned a key (`realm`),
+  and `.size()` works.
 
 **Plain versus registered objectAttributes (live AIC-lane probe,
 2026-10-01).** A value supplied by `nodeState.putShared("objectAttributes", {})`
@@ -1896,6 +1928,64 @@ only way to its values is `values().toArray()` or `map[k]`. A key named `get`,
   writes as unbucketed evidence. That false assertion does not establish a
   different tenant value. The corrected probe compares that evidence with
   the local serverinfo seed without printing the value.
+
+### `openidm.query` result and relationship arrays — next-gen (verified 2026-11-08)
+
+`fixtures/openidm-query-result-type.script.js`, run through `test-cycle.sh` on a
+next-gen scripted decision, described `openidm.query("managed/alpha_user",
+{_queryFilter: "true", _pageSize: 2}, ["_id"]).result` (two records), the
+`result` of a query matching nothing, and the empty `roles` of a user read with
+`fields: ["roles"]`. All three answered alike, apart from their length:
+
+| Probe                                  | Result                                                         |
+| -------------------------------------- | -------------------------------------------------------------- |
+| `typeof v` / `Array.isArray(v)`        | `"object"` / `false`                                           |
+| `v.length`, `v.size()`                 | the element count                                              |
+| `typeof v[0]`, `typeof v.get(0)`       | `"object"` (two-record query); `v.get(0)` on an empty list throws `InternalError: Index 0 out of bounds for length 0` |
+| `typeof` `some` / `map` / `filter` / `join` | `"undefined"`; calling `v.some(fn)` throws `TypeError: Cannot find function some` |
+| `typeof v.forEach`                     | `"function"` (not called)                                      |
+| `[].concat(v)`                         | a JS array (`Array.isArray` true) holding every element        |
+| `Array.prototype.slice.call(v).length` | the element count                                              |
+| `for (k in v)`                         | one key per element                                            |
+| `v.getClass()`                         | the shutter's `Access to Java class "java.lang.Class" is prohibited.` |
+
+So a query's `result`, and a has-many relationship array on a read, are Java
+lists, not JS arrays: array methods are absent, and `[].concat(v)` is the
+measured way to get one. A populated relationship array was not probed; that it
+is the same kind of list as the empty one is an inference from the query result.
+`forEach`'s callback arguments were not probed.
+
+A second probe, `fixtures/openidm-query-result-string.script.js` (sandbox,
+2026-11-08), read the same query `result` populated (two records, fields
+`["_id"]`) and empty:
+
+| Probe                                   | Populated (2 records)                                    | Empty                                          |
+| --------------------------------------- | -------------------------------------------------------- | ---------------------------------------------- |
+| `typeof v.toJSON`                       | `"undefined"`                                            | `"undefined"`                                  |
+| `String(v)`, `"" + v`                   | shape only (the probe never emits a populated list's contents): starts `[`, ends `]`, holds `{`, `=` and `_id`, no `":` | `[]` |
+| `JSON.stringify(v)`                     | a JSON array of 2 objects, keys `_id,_rev`               | `[]`                                           |
+| `v.get(2)` / `v.get(-1)`                | `InternalError: Index 2 out of bounds for length 2` / `InternalError: Index -1 out of bounds for length 2` | — |
+| `v.some(fn)` / `v.map(fn)`              | `TypeError: Cannot find function some`                   | `TypeError: Cannot find function some in object [].` / `… map in object [].` |
+| `JSON.stringify(response)`              | —                                                        | `{"totalPagedResults":-1,"result":[],"resultCount":0,"totalPagedResultsPolicy":"NONE","pagedResultsCookie":null}` (one call; see below — the order varies) |
+
+So `JSON.stringify` serialises the list without any `toJSON` member, and the
+`String` form has the shape of Java's `AbstractCollection` / `AbstractMap`
+rendering (`[{_id=…, _rev=…}, …]`), which is also how Rhino words the `Cannot
+find function` message. The `", "` separators are Java's, inferred rather than
+seen; how a number inside a record renders (`Integer` versus `Double`) and the
+order of a record's keys in that form were not probed.
+
+A third probe, `fixtures/openidm-query-response-order.script.js` (sandbox,
+2026-11-09), read the key order of four responses (populated and empty, each
+with and without a field list) three ways:
+
+| Read                               | Order                                                                                   |
+| ---------------------------------- | --------------------------------------------------------------------------------------- |
+| `for (k in resp)`, `Object.keys`   | `pagedResultsCookie, totalPagedResultsPolicy, totalPagedResults, resultCount, result` on all four |
+| `JSON.stringify(resp)`             | different between calls: `result` came second, third or fourth, and `resultCount` second or third, with `totalPagedResults` first and `pagedResultsCookie` last each time |
+
+So enumeration order is stable and serialisation order is not; a script or a
+test must not depend on the order of a serialised response.
 
 ### AM script families (folder slugs)
 

@@ -54,7 +54,7 @@ public final class Runner {
 
   /**
    * What this JVM would make of a script that looked at its surroundings. The
-   * client refuses a JVM whose answers differ from the AM image's, because a
+   * client refuses a JVM whose answers differ from the expected ones, because a
    * host that defaulted to its own timezone or locale would pass a date-shaped
    * test locally that fails on the tenant.
    */
@@ -162,8 +162,8 @@ public final class Runner {
       if (classAllowList != null) {
         cx.setClassShutter(AmClassShutter.of(classAllowList));
       }
-      if (cx instanceof AmContextFactory.ObservedContext) {
-        ((AmContextFactory.ObservedContext) cx).timeoutMs = timeoutMs;
+      if (cx instanceof AmContextFactory.TimedContext) {
+        ((AmContextFactory.TimedContext) cx).timeoutMs = timeoutMs;
       }
       final SimpleScriptContext scriptContext = AmScopes.newEngineContext(sourceName);
       injectGlobals(scriptContext, job.get("globals"));
