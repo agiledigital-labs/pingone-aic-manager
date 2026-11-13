@@ -241,6 +241,12 @@ array and `null` (null drops the claim). `removeField` is not a method
 that missing method is `undefined`, which is not the legacy "`typeof` says
 function" trap above.
 
+The same lane, with `GRANT_TYPE=password` as managed user `zzemuR3M-user`,
+measured `identity.setAttribute` and `identity.store` on `description` the
+same day. Neither throws and both return `undefined`. Without `store()` the
+value does not persist and the same wrapper still reads the previous one.
+After `store()` a fresh managed read shows the new value.
+
 ## The token-exchange lane (`fixtures-exchange/`)
 
 A third lane, for RFC 8693. The OAuth2 lane drives one client on
