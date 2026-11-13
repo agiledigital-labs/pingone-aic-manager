@@ -2,17 +2,18 @@
  * A case-validation refusal is a named fault. The thrown message stays the
  * detailed one; the id is one per kind. Two different unknown keys share an id.
  */
+import { spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { RhinoRunner } from "../../src/runner.ts";
 import { runCase } from "../../src/bindings/run.ts";
-import { CaseValidationError, validateCase } from "../../src/case/index.ts";
+import { CaseValidationError, defineCase, validateCase } from "../../src/case/index.ts";
 import { CASE_VALIDATION_FAULTS } from "../../src/case/validation-fault.ts";
 import { tallyFaults } from "../../src/harness/fault-tally.ts";
 import { caseValidationAudit } from "../../src/harness/validation-audit.ts";
-import { TIMING_ENV, summarizeTiming } from "../../src/timing.ts";
+import { TIMING_ENV, type TimingSummary } from "../../src/timing.ts";
 
 function refuse(input: unknown): CaseValidationError {
   try {
@@ -97,7 +98,7 @@ describe("case validation fault ids", () => {
       if (previous === undefined) delete process.env[TIMING_ENV];
       else process.env[TIMING_ENV] = previous;
     }
-    const summary = summarizeTiming(readFileSync(file, "utf8"), { share: { salt: "s" } });
+    const summary = shareTiming(file);
     rmSync(dir, { recursive: true, force: true });
     expect(summary.faults).toEqual([{ id: "case-invalid/engine-legacy", jobs: 1 }]);
     const shared = `${JSON.stringify(summary)}\n`;
@@ -107,4 +108,50 @@ describe("case validation fault ids", () => {
     // Share therefore emits no source row at all; the case name is absent, not rewritten.
     expect(summary.sources).toEqual([]);
   });
+
+  it("records a defineCase refusal once in timing --share --json", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "rl-define-case-timing-"));
+    const file = join(dir, "timing.jsonl");
+    const previous = process.env[TIMING_ENV];
+    process.env[TIMING_ENV] = file;
+    const runner = { eval(): never { throw new Error("the JVM should not run"); } } as unknown as RhinoRunner;
+    const input = { ...base, name: "secret-define", given: { engine: "legacy" as never } };
+    const jobs = (): Array<{ type?: string; faultIds?: string[] }> =>
+      readFileSync(file, "utf8").trim().split("\n").filter((line) => line !== "")
+        .map((line) => JSON.parse(line) as { type?: string; faultIds?: string[] })
+        .filter((row) => row.type === "job");
+    try {
+      expect(() => defineCase(input)).toThrow(CaseValidationError);
+      expect(jobs()).toEqual([expect.objectContaining({ faultIds: ["case-invalid/engine-legacy"] })]);
+      const defined = shareTiming(file);
+      expect(defined.jobs).toBe(1);
+      expect(defined.faultedJobs).toBe(1);
+      expect(defined.faults).toEqual([{ id: "case-invalid/engine-legacy", jobs: 1 }]);
+      expect(defined.sources).toEqual([]);
+      expect(JSON.stringify(defined)).not.toContain("secret-define");
+
+      expect(() => validateCase(input)).toThrow(CaseValidationError);
+      // runCase validates through validateCase, so this call adds one row.
+      await expect(runCase(runner, input)).rejects.toBeInstanceOf(CaseValidationError);
+      expect(jobs()).toHaveLength(3);
+      expect(jobs().every((row) => row.faultIds?.length === 1 && row.faultIds[0] === "case-invalid/engine-legacy")).toBe(true);
+      const again = shareTiming(file);
+      expect(again.faults).toEqual([{ id: "case-invalid/engine-legacy", jobs: 3 }]);
+      expect(JSON.stringify(again)).not.toContain("secret-define");
+    } finally {
+      if (previous === undefined) delete process.env[TIMING_ENV];
+      else process.env[TIMING_ENV] = previous;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
+
+/** The public `bin/timing.ts --share --json` summary. */
+function shareTiming(file: string): TimingSummary {
+  const cli = spawnSync(process.execPath, ["bin/timing.ts", "--share", "--json", "--salt=s", file], {
+    cwd: process.cwd(),
+    encoding: "utf8",
+  });
+  expect(cli.status, `${cli.stderr}\n${cli.stdout}`).toBe(0);
+  return JSON.parse(cli.stdout) as TimingSummary;
+}
