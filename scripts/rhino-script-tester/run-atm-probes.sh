@@ -41,7 +41,9 @@ OUT_DIR="${OUT_DIR:-$ROOT/tmp/rhino-script-tester}"
 
 # Never hard-code the tenant host: derive it, so nothing here carries a
 # client-identifying hostname into the repo.
-BASE="${BASE:-$("$AIC_BIN" ctx list --no-prompt | awk '/^\*/{print $4}')}"
+# BASE_URL is the last column. `ctx list` gained a THEME column, so $4 is the
+# theme ("sandbox") and $NF is the URL.
+BASE="${BASE:-$("$AIC_BIN" ctx list --no-prompt | awk '/^\*/{print $NF}')}"
 [[ -n "$BASE" ]] || { echo "Could not resolve tenant base URL" >&2; exit 1; }
 
 SECRET_FILE="${SECRET_FILE:-}"
@@ -96,7 +98,7 @@ for fixture in "${fixtures[@]}"; do
 
   status="$(curl -sS -o "$tmp/tok.json" -w '%{http_code}' \
     -X POST "$BASE/am/oauth2/realms/root/realms/$REALM/access_token" \
-    "${grant_args[@]}")"
+    "${grant_args[@]}" || echo 000)"
 
   # The claim is the result. A 200 with no `aicprobe` means the script threw
   # before setField — AM issues the token anyway, so the status alone lies.

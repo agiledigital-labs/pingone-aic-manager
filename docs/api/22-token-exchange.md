@@ -442,6 +442,12 @@ realm flag off and no whitelist entry. That is the shortest path to an `aud`
 that is a trust domain rather than a client id — at the cost of the audience no
 longer being anything AM itself will enforce.
 
+The same string overwrite on a next-gen `client_credentials` token, plus a
+one-element array, a two-element array, `null`, and `removeField("aud")`, was
+measured on 2026-11-14. `null` drops the claim. `removeField` is not a method.
+Details and the issued claim shapes are in
+`docs/api/12-script-bindings-matrix.md`.
+
 ### The JWT header is not scriptable
 
 `typ` is always `"JWT"`. The context that would change it,
@@ -459,6 +465,10 @@ a capability token with `expires_in: 59` from a 900s identity token.
 
 ## Verified against
 
+- Date: 2026-11-14 — realm `alpha`, next-gen access-token modification,
+  `client_credentials` on throwaway client `zzemuR3M-atm`. `setField("aud", …)`
+  with a string, a one-element array, a two-element array and `null`, plus
+  `removeField("aud")`. Recorded in `docs/api/12-script-bindings-matrix.md`.
 - Date: 2026-08-28 — realm `bravo`, throwaway `ZZProbe_sub` / `ZZProbe_atm`
   client pair plus two throwaway scripts, all deleted afterwards.
 - Calls: one exchange per row of the `requested_token_type` table above, each

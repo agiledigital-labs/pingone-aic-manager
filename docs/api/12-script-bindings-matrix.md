@@ -1815,6 +1815,45 @@ token. `accessToken.getScope().add(…)` throws `InternalError: null`.
 `setExpiryTime(auth + 600000)` shortens both the JWT and the body's `expires_in`
 (599).
 
+#### `setField("aud")` (verified 2026-11-14)
+
+Next-gen `OAUTH2_ACCESS_TOKEN_MODIFICATION_NEXT_GEN` only, on a
+`client_credentials` grant, stateless token. Throwaway client `zzemuR3M-atm`
+(scope `zzemuR3M-scope`) and script `zzemuR3M-atm`. Fixtures
+`scripts/rhino-script-tester/fixtures-atm-ng/aud-*.script.js`, driven by
+`run-atm-probes.sh`. Each case also called `setField("zzemuR3Mctl", "ctl-ok")`.
+That claim was present on every issued token and every response was HTTP 200,
+so the script ran and a custom claim set the same way is issued.
+
+Before any write, `getField("aud")` is a string equal to the client id and
+`getAudience()` is a one-element JavaList of that same id. The issued `aud`
+is that string. `typeof accessToken.removeField` is `undefined`.
+
+| Call | Throws | Issued `aud` |
+| --- | --- | --- |
+| `setField("aud", "zzemuR3M-aud")` | no; returns `undefined` | the string `zzemuR3M-aud` |
+| `setField("aud", ["zzemuR3M-aud"])` | no; returns `undefined` | a one-element JSON array of that string |
+| `setField("aud", ["zzemuR3M-a", "zzemuR3M-b"])` | no; returns `undefined` | a two-element JSON array, that order |
+| `setField("aud", null)` | no; returns `undefined` | claim absent (not JSON `null`) |
+| `removeField("aud")` | `TypeError: Cannot find function removeField` | unchanged client-id string |
+
+After a string write, `getField("aud")` is that string and `getAudience()` is
+a one-element JavaList of it. After an array write, `getField` is that array
+and `getAudience()` is a JavaList of the same elements in the same order.
+After `null`, `getField` is `null` and `getAudience()` is an empty JavaList.
+`removeField` changes neither.
+
+A string is issued as a string, not wrapped in an array. An array is issued
+as an array. `null` removes the claim. There is no `removeField` method.
+
+In the probe claim, `length` of the array `getField` returns is `1.0` or
+`2.0`, while `getAudience().length` in the same claim is the integer `1` or
+`2`. String lengths in that claim stayed integers.
+
+The string overwrite agrees with the 2026-08-28 exchange measurement in
+`docs/api/22-token-exchange.md`. The array, `null`, and `removeField` cases
+were not part of that run.
+
 #### Legacy additions to the 2026-08-27 surface
 
 - `getClientId() === "<id>"` is **`false`** and `==` is `true`: the getters
