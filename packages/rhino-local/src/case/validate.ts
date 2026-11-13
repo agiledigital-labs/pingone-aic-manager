@@ -1,4 +1,5 @@
 import { normaliseIdentitySeeds } from "./identity.ts";
+import { CaseValidationError, validationFaultId } from "./validation-fault.ts";
 import { loadContext } from "../load.ts";
 import { bindingsJsonPath } from "../paths.ts";
 import {
@@ -109,9 +110,21 @@ export function defineCase(
 
 /**
  * Runtime validation. Dynamic cases (and typos TypeScript never sees) must
- * fail here rather than assert nothing.
+ * fail here rather than assert nothing. A refusal throws
+ * {@link CaseValidationError}: the message is the detailed one, and `name`
+ * carries a stable fault id for the tally.
  */
 export function validateCase(input: unknown): Case {
+  try {
+    return checkCase(input);
+  } catch (error) {
+    if (error instanceof CaseValidationError) throw error;
+    if (!(error instanceof Error)) throw error;
+    throw new CaseValidationError(validationFaultId(error.message), error.message);
+  }
+}
+
+function checkCase(input: unknown): Case {
   if (!isPlainObject(input)) {
     throw new Error("rhino-local: case is not an object");
   }
@@ -857,6 +870,8 @@ function parseIdentityAttributes(raw: unknown, path: string): Record<string, Ide
   }
   return out;
 }
+
+export { CaseValidationError } from "./validation-fault.ts";
 
 /** Why a case that names the legacy engine fails. One wording, so every surface says the same. */
 export const LEGACY_ENGINE_REMOVED =

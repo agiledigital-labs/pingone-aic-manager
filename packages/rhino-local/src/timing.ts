@@ -110,6 +110,8 @@ export interface TimingSummary {
   libraries: TimingSummaryRow[];
   /** Per job `sourceName`: `jvm.totalMs` over that source's jobs, largest sum first. */
   sources: TimingSummaryRow[];
+  /** Fault ids named by job rows (`faultIds`), including case-validation refusals. Not hashed by `--share`. */
+  faults: { id: string; jobs: number }[];
 }
 
 export interface TimingSummaryOptions {
@@ -155,6 +157,7 @@ export function summarizeTiming(text: string, options: TimingSummaryOptions = {}
   const libraries = collector();
   const sources = collector();
   let jobs = 0, faultedJobs = 0, spawns = 0, borrows = 0, publishes = 0, jobsShippingSources = 0;
+  const faultJobs = new Map<string, number>();
   for (const line of text.split("\n")) {
     if (line.trim() === "") continue;
     const row = JSON.parse(line) as Record<string, unknown>;
@@ -166,6 +169,11 @@ export function summarizeTiming(text: string, options: TimingSummaryOptions = {}
       jobs++;
       if (typeof row.sourcesShipped === "number" && row.sourcesShipped > 0) jobsShippingSources++;
       if (row.emulationFault === true) faultedJobs++;
+      if (Array.isArray(row.faultIds)) {
+        for (const id of row.faultIds) {
+          if (typeof id === "string") faultJobs.set(id, (faultJobs.get(id) ?? 0) + 1);
+        }
+      }
     }
     const jvm = row.jvm !== null && typeof row.jvm === "object" ? (row.jvm as Record<string, unknown>) : undefined;
     if (row.type === "job" && typeof row.sourceName === "string") sources.add(name("source", row.sourceName), jvm?.totalMs);
@@ -187,6 +195,7 @@ export function summarizeTiming(text: string, options: TimingSummaryOptions = {}
     fields: rows(fields.values).sort((a, b) => a.field.localeCompare(b.field)),
     libraries: rows(libraries.values).sort(bySum),
     sources: rows(sources.values).sort(bySum),
+    faults: [...faultJobs.entries()].map(([id, count]) => ({ id, jobs: count })).sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0),
   };
 }
 
@@ -194,6 +203,7 @@ export function formatTimingSummary(summary: TimingSummary, top = 20): string {
   const lines = [
     summary.harness,
     `jobs ${summary.jobs} (${summary.jobsShippingSources} shipped source text, ${summary.faultedJobs} with an emulation fault), spawns ${summary.spawns}, borrows ${summary.borrows}, publishes ${summary.publishes}`,
+    ...(summary.faults.length === 0 ? [] : [`faults ${summary.faults.map((fault) => `${fault.id} ${fault.jobs}`).join(", ")}`]),
   ];
   const num = (v: number, w: number): string => (Number.isInteger(v) ? String(v) : v.toFixed(3)).padStart(w);
   const table = (title: string, list: TimingSummaryRow[]): void => {
