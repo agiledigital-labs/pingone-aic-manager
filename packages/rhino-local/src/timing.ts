@@ -41,6 +41,11 @@
  *   `outstanding` and `packs` (task results re-sent with it). Only under the
  *   package's Vitest runner.
  *
+ * A job row's `sourceName` is the case, test, or step name when the harness
+ * set one, and the script's compile name for a direct eval. The compile name
+ * stays on the JVM job either way, so the cache key and stack traces still
+ * name the script file.
+ *
  * Every worker appends to the same file; each line is one `appendFileSync`,
  * which Linux and macOS keep whole for lines this size. Rows carry source
  * names and library ids; `aic-script-tester-timing --share` summarises with

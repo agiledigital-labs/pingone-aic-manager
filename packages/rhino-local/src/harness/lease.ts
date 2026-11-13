@@ -432,9 +432,7 @@ export class Lease<TSchema extends z.ZodType> {
       given = await this.#runStep(testName, index, step, given, input, stepResults);
     }
     const kase = caseWithGiven(this.#spec, testName, given, expected);
-    const effects = await runCase(this.#options.runner, kase, {
-      ...(this.#options.timeoutMs !== undefined ? { timeoutMs: this.#options.timeoutMs } : {}),
-    });
+    const effects = await runCase(this.#options.runner, kase, this.#caseRunOptions(kase.name));
     const verdict = judge(kase, effects.effects);
 
     const store = cloneStore(effects.effects.managedStore);
@@ -500,9 +498,7 @@ export class Lease<TSchema extends z.ZodType> {
       ...(step.expect ?? {}),
       outcome: null,
     });
-    const run = await runCase(this.#options.runner, kase, {
-      ...(this.#options.timeoutMs !== undefined ? { timeoutMs: this.#options.timeoutMs } : {}),
-    });
+    const run = await runCase(this.#options.runner, kase, this.#caseRunOptions(kase.name));
     const verdict = judge(kase, run.effects);
     if (!verdict.pass) {
       throw new Error(`rhino-local: ${kase.name}\n${verdict.summary}`);
@@ -527,6 +523,19 @@ export class Lease<TSchema extends z.ZodType> {
     const submitted = submittedCallbacks(run.effects.callbacks, replies, kase.name);
     results.push({ kase, effects: run.effects, verdict, submitted });
     return carryGiven(given, run.effects, submitted);
+  }
+
+  /**
+   * Compile under the script's own name. The case name stays on the verdict
+   * and the timing row, so two tests of one script share a compiled form
+   * and a stack trace still names the file.
+   */
+  #caseRunOptions(attributionName: string): { sourceName: string; attributionName: string; timeoutMs?: number } {
+    return {
+      sourceName: this.#spec.sourceName ?? this.#spec.name,
+      attributionName,
+      ...(this.#options.timeoutMs !== undefined ? { timeoutMs: this.#options.timeoutMs } : {}),
+    };
   }
 
   #laneHooks(

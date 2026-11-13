@@ -887,6 +887,13 @@ name to the local runner for the same comparison.
 suite with explicit `scriptName` fails setup in both modes. Use an explicit
 `scriptName` only for suites that are always local-only.
 
+`sourceName` is the name the subject compiles under: the script's path or id.
+It defaults to the suite `name`, and it is shared by every test and callback
+step, so a suite compiles the subject once. Stack traces and parse errors name
+that file. The test or step name stays on the verdict and on the timing row.
+`scriptName` is the binding the script reads; changing it does not change the
+compile name.
+
 `cookieName` follows the same fixed-tenant rule. Local-only suites can set it
 in `always`, with `.cookieName(name)`, or in `beforeRun` via
 `request.cookieName`. With `aicWhenEnabled()`, any explicit author value is
@@ -1642,7 +1649,9 @@ start a JVM per lease as before.
 Within a JVM, the case prelude (generated mocks, identity policy, runtime) and
 each library body are compiled once and cached by content hash, and each
 distinct text crosses the pipe once per JVM, whichever lease, worker or file
-sends it: the pool hands each lease the hashes earlier leases shipped. A case therefore costs a few
+sends it: the pool hands each lease the hashes earlier leases shipped. The
+subject script is cached the same way, keyed by its text and its source name,
+so the tests and callback steps of one script compile it once. A case therefore costs a few
 milliseconds, plus executing the libraries it `require`s, however large the
 library map. `node bench/run.ts [--workers=N]` and `node bench/micro.ts`
 measure this on invented fixtures.
@@ -1650,7 +1659,10 @@ measure this on invented fixtures.
 Job shape (open enough to carry later mock bindings):
 
 - `source` / `sourceName` — author's script; `sourceName` is Rhino's source
-  name, so a parse error names the author's file and line, not `<eval>`
+  name, so a parse error names the author's file and line, not `<eval>`.
+  It is part of the compile cache key. A suite passes one stable `sourceName`
+  for every test and step; the test or step name is recorded on the timing
+  row instead
 - `engine` — `"am"` (default) or `"idm"`
 - `globals` — AM JSON values placed in ENGINE_SCOPE Bindings
 - `preamble` — evaluated first so concatenating mocks into `source` is not
