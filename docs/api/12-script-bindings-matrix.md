@@ -1783,7 +1783,7 @@ afterwards. `identity.getAttributes()` was never called.
 | Binding | Present | Notes |
 | --- | --- | --- |
 | `accessToken` | yes | `AccessTokenScriptWrapper`. Getters return JS strings and numbers: `getClientId() === "<id>"` is `true`. |
-| `identity` | yes | `ScriptedIdentityScriptWrapper`: `getName`, `getUniversalId`, `exists()`, `getAttributeValues` (a list; `[]` for an attribute it lacks). `getAttribute` and `isExists` are `Cannot find function`. |
+| `identity` | yes | `ScriptedIdentityScriptWrapper`: `getName`, `getUniversalId`, `exists()`, `getAttributeValues` (a list; `[]` for an attribute it lacks). `getAttribute` and `isExists` are `Cannot find function`. `setAttribute` and `store` on a password grant: verified 2026-11-14, below. |
 | `session` | **no** | Not bound at all: reading it is `ReferenceError: "session" is not defined.`, where legacy binds `null`. |
 | `scopes` | yes | A Java list: `size()`, `contains()`, `scopes[0]` and `length` work, and `add()` mutates it. |
 | `requestProperties` | yes | Four entries (`size()` is 4): `realm`, `requestHeaders`, `requestParams`, `requestUri`. Param and header values are lists; headers answer to lower and Title case. `requestParams` renders as JSON (`{ "grant_type": [ … ] }`). |
@@ -1853,6 +1853,38 @@ In the probe claim, `length` of the array `getField` returns is `1.0` or
 The string overwrite agrees with the 2026-08-28 exchange measurement in
 `docs/api/22-token-exchange.md`. The array, `null`, and `removeField` cases
 were not part of that run.
+
+#### `identity.setAttribute` and `identity.store` (verified 2026-11-14)
+
+Next-gen `OAUTH2_ACCESS_TOKEN_MODIFICATION_NEXT_GEN` on a password grant as
+managed user `zzemuR3M-user`, same throwaway client and script as the `aud`
+probe above (`zzemuR3M-atm`, stateless). Fixtures
+`scripts/rhino-script-tester/fixtures-atm-ng/identity-set-nostore.script.js`
+and `identity-set-store.script.js`. The attribute written was `description`.
+Each request also set `zzemuR3Mctl` to `ctl-ok`. Both responses were HTTP 200
+and that claim was present, so the script ran. Issued `aud` stayed the
+client-id string.
+
+`identity.exists()` is `true`. `getName()` is not the user's `userName`; the
+name's length is 36. `typeof identity.setAttribute` and
+`typeof identity.store` are both `"function"`. Before either write,
+`getAttributeValues("description")` is a one-element list
+`["zzemuR3M-baseline"]`.
+
+| Call | Throws | Same wrapper afterwards | Fresh managed read |
+| --- | --- | --- | --- |
+| `setAttribute("description", ["zzemuR3M-nostore"])`, no `store()` | no; returns `undefined` | still `["zzemuR3M-baseline"]` | `description` still `zzemuR3M-baseline`; `accountStatus` `active`; revision unchanged |
+| `setAttribute("description", ["zzemuR3M-stored"])` then `store()` | neither throws; both return `undefined`. Before `store()`, the wrapper still reads the baseline | after `store()`, `["zzemuR3M-stored"]` | `description` is `zzemuR3M-stored`; `accountStatus` `active`; revision changed |
+
+A JSON Patch replacing `/description` with `zzemuR3M-baseline` returned
+HTTP 200. A fresh managed read then showed that baseline, `accountStatus`
+`active`, and a revision that had moved again.
+
+`setAttribute` without `store()` does not persist and is not visible on the
+same wrapper. `store()` writes `description` through to a fresh managed read,
+and the same wrapper then reads the stored value. This is the decision-node
+rule in `docs/api/14-am-identity-attributes.md` (measured 2026-10-01). This
+context had not been measured before.
 
 #### Legacy additions to the 2026-08-27 surface
 
