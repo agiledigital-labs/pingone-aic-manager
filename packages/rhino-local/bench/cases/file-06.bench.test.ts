@@ -1,3 +1,3 @@
 import { benchFile } from "../suite.ts";
 
-benchFile("file-06");
+benchFile(6);
