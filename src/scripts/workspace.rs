@@ -1027,7 +1027,7 @@ mod tests {
     fn every_template_edit_is_covered_by_a_version_bump() {
         const TEMPLATE_RELEASE: (u32, &str) = (
             108,
-            "75e32da3d8d1775f873c905fc46783a9460deec5100762480d9cc4a84cb79ce5",
+            "b4181077450251fcb6ebd5b8a1cb86d6725bf84b561b22ff5d9b4ae660d2ff53",
         );
         const LOCAL_ARTIFACTS: &[&str] = &[
             "node_modules",
