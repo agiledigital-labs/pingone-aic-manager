@@ -1101,6 +1101,13 @@ headers and the request URI.
 `fields` and `responseFields` (added/changed/removed, as for state buckets),
 `scope` (compared as a set), `expiryTime`, `nonce`, `authLevel`, `claims`,
 `act`, `mayAct` and `permissions` (each a value or a matcher), and `issued`.
+`aud` is a field on that map. It starts as the client id when the audience has
+one element (the default), as the audience array when it has several, and
+absent when the audience is empty. `setField("aud", value)` sets a string or a
+non-empty array of strings, and `null` removes the claim. Declare that change
+in `fields`. `getAudience()` reads the claim back (a string is a one-element
+list, an array is its elements, a missing claim is empty). `getCustomFields()`
+does not list `aud`. There is no `removeField`.
 Any change the case does not declare fails the verdict, as every other channel
 does, unless `allowUndeclared: { accessToken: true }`. `issued` defaults to
 `true`. A script can return normally and still leave AM unable to issue the

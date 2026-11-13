@@ -28,7 +28,10 @@ var __rhinoLocalAtUnbound = [
 
 var __rhinoLocalAtClass = "org.forgerock.oauth2.core.scripting.AccessTokenScriptWrapper";
 
-// Claims AM writes itself. Overwriting one with setField is unmeasured.
+// Claims AM writes itself. Overwriting one is unmeasured, except
+// setField("aud"), measured 2026-11-14: a string, a non-empty array of
+// strings, or null (which removes the claim). setFields of aud stays
+// unmeasured, and there is no removeField.
 var __rhinoLocalAtReserved = [
   "aud", "auditTrackingId", "authGrantId", "auth_time", "client_id", "cts", "exp", "expires_in", "grant_type", "iat",
   "iss", "jti", "nbf", "realm", "scope", "sub", "subname", "tokenName", "token_type", "nonce", "auth_level", "claims",
@@ -37,6 +40,100 @@ var __rhinoLocalAtReserved = [
 
 __rhinoLocalCtx.prefix = "oauth2-token-unmeasured";
 __rhinoLocalCtx.noun = "access-token modification";
+
+// The issued aud claim lives in the field map, so expect.accessToken.fields
+// is how a case asserts it. A one-element audience is the client-id string;
+// several elements are the array; none leaves the claim absent.
+function __rhinoLocalAtInstallAudience(token) {
+  var audience = token.audience;
+  var copy = [];
+  var i;
+  if (Object.prototype.hasOwnProperty.call(token.fields, "aud")) {
+    return;
+  }
+  if (audience.length === 1 && typeof audience[0] === "string") {
+    Object.defineProperty(token.fields, "aud", {
+      value: audience[0], enumerable: true, configurable: true, writable: true,
+    });
+    return;
+  }
+  if (audience.length < 2) {
+    return;
+  }
+  for (i = 0; i < audience.length; i += 1) {
+    if (typeof audience[i] !== "string") {
+      return;
+    }
+    copy.push(audience[i]);
+  }
+  Object.defineProperty(token.fields, "aud", {
+    value: copy, enumerable: true, configurable: true, writable: true,
+  });
+}
+
+function __rhinoLocalAtSetAudience(value) {
+  var copy = [];
+  var i;
+  if (value === null) {
+    delete __rhinoLocalAt.state.fields.aud;
+    return;
+  }
+  if (typeof value === "string") {
+    Object.defineProperty(__rhinoLocalAt.state.fields, "aud", {
+      value: value, enumerable: true, configurable: true, writable: true,
+    });
+    return;
+  }
+  if (!Array.isArray(value) || value.length === 0) {
+    throw __rhinoLocalCtxUnmeasured("accessToken.setField(\"aud\", …)",
+      "with a value that is not a string, a non-empty array of strings, or null");
+  }
+  for (i = 0; i < value.length; i += 1) {
+    if (typeof value[i] !== "string") {
+      throw __rhinoLocalCtxUnmeasured("accessToken.setField(\"aud\", …)", "with a non-string audience");
+    }
+    copy.push(value[i]);
+  }
+  Object.defineProperty(__rhinoLocalAt.state.fields, "aud", {
+    value: copy, enumerable: true, configurable: true, writable: true,
+  });
+}
+
+// getAudience follows the current aud claim: a string is a one-element list,
+// an array is its elements, and a missing claim is an empty list.
+function __rhinoLocalAtAudience(fields) {
+  var aud;
+  if (!Object.prototype.hasOwnProperty.call(fields, "aud")) {
+    return [];
+  }
+  aud = fields.aud;
+  if (typeof aud === "string") {
+    return [aud];
+  }
+  if (Array.isArray(aud)) {
+    return aud.slice();
+  }
+  throw __rhinoLocalCtxUnmeasured("accessToken.getAudience()",
+    "when the aud claim is not a string or an array of strings");
+}
+
+// aud is a JWT claim and not a custom field (measured: getCustomFields is
+// subname and expires_in). Compare and render the map without it, so an
+// aud-only write does not look like a custom-field change.
+function __rhinoLocalAtCustomFields(fields) {
+  var out = {};
+  var keys = Object.keys(fields);
+  var i;
+  for (i = 0; i < keys.length; i += 1) {
+    if (keys[i] === "aud") {
+      continue;
+    }
+    Object.defineProperty(out, keys[i], {
+      value: fields[keys[i]], enumerable: true, configurable: true, writable: true,
+    });
+  }
+  return out;
+}
 
 function __rhinoLocalAtSetField(name, value, method) {
   if (typeof name !== "string") {
@@ -139,7 +236,7 @@ function __rhinoLocalAtBuildToken(seed) {
     return seed.authTimeSeconds;
   });
   m("getAudience", 0, function () {
-    return __rhinoLocalCtxList(seed.audience.slice());
+    return __rhinoLocalCtxList(__rhinoLocalAtAudience(state().fields));
   });
   m("getExpiryTime", 0, function () {
     return state().expiryTime;
@@ -178,6 +275,10 @@ function __rhinoLocalAtBuildToken(seed) {
     return undefined;
   });
   m("setField", 2, function (name, value) {
+    if (name === "aud") {
+      __rhinoLocalAtSetAudience(value);
+      return undefined;
+    }
     __rhinoLocalAtSetField(name, value, "setField");
     return undefined;
   });
@@ -206,8 +307,9 @@ function __rhinoLocalAtBuildToken(seed) {
     return value;
   });
   m("getCustomFields", 0, function () {
-    var fields = state().fields;
-    var untouched = JSON.stringify(fields) === JSON.stringify(__rhinoLocalAt.initial.fields);
+    var fields = __rhinoLocalAtCustomFields(state().fields);
+    var initial = __rhinoLocalAtCustomFields(__rhinoLocalAt.initial.fields);
+    var untouched = JSON.stringify(fields) === JSON.stringify(initial);
     return __rhinoLocalCtxMap("accessToken.getCustomFields()", Object.keys(fields), function () {
       throw __rhinoLocalCtxUnmeasured("accessToken.getCustomFields()", "entry values");
     }, untouched ? function () {
@@ -295,6 +397,16 @@ function __rhinoLocalAtBuildToken(seed) {
   __rhinoLocalCtxToJSON(token, "accessToken");
   // Its Java tag is unmeasured (Sol ctx r2 P2-5).
   __rhinoLocalCtxTag(token, null, "accessToken");
+  // removeField is absent (measured 2026-11-14): the engine's TypeError, and
+  // typeof stays "undefined". Rhino's own missing-call error stringifies the
+  // target, and this view's toString is an unmeasured fault, so that one name
+  // raises the TypeError here. Every other missing call still stringifies.
+  __rhinoLocalHide(token, "__noSuchMethod__", function (name) {
+    if (name === "removeField") {
+      throw new TypeError("Cannot find function removeField");
+    }
+    throw new TypeError("Cannot find function " + name + " in object " + String(this) + ".");
+  });
   return __rhinoLocalCtxWatch(token, "accessToken");
 }
 
@@ -324,6 +436,7 @@ function __rhinoLocalAtDefaults(given) {
     auditTrackingId: at.auditTrackingId !== undefined ? at.auditTrackingId : "rhino-local-audit-tracking-id",
     authGrantId: at.authGrantId !== undefined ? at.authGrantId : "rhino-local-auth-grant-id",
   };
+  __rhinoLocalAtInstallAudience(token);
   var id = given.identity || {};
   var name = id.name !== undefined ? id.name : owner;
   var bareRealm = String(tokenRealm).replace(/^\//, "") || "root";
