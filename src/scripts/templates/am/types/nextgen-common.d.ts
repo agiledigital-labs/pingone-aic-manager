@@ -628,9 +628,10 @@ interface ClientProperties {
 // `size()`, measured in token modification and may-act but not in OIDC claims; and
 // `toArray()`, measured in OIDC claims and may-act (not a JS array). `get(i)` is
 // not declared, because no scope set was measured calling it, and `add()` is
-// measured only on token modification and validate scope (on may-act it faults),
-// so it is not here either. Validate scope has more (`ValidateScopeList`, in its
-// overlay).
+// measured only on token modification and validate scope (unmeasured on may-act),
+// so it is not here either. Token modification (`TokenScopeList`), may-act
+// (`MayActScopeList`) and validate scope (`ValidateScopeList`) each extend this in
+// their own overlay with what was measured there.
 interface ScopeList extends MeasuredJavaListCore<string> {
   contains(scope: StringLike): boolean;
   toArray(): MeasuredJavaArray;

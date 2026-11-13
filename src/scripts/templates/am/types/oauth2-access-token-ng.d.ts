@@ -8,12 +8,19 @@
 //   - `AccessToken.addExtraJsonData` also accepts the JSON string measured on next-gen.
 //   - `AccessToken.setScope` accepts a JS array or the `scopes` list.
 //   - `Identity.getAttributeValues` adds the typed `AmUserAttribute` overload first.
-//   - `scopes` is a `ScopeList` (a Java list), not a JS array.
+//   - `scopes` is a `TokenScopeList` (a Java list), not a JS array.
 
 // A custom access-token field: any JSON-ish scalar, array, or object. Whatever
 // you set here lands in the CTS entry, or as a JWT claim for client-based
 // tokens — keep it small.
 type TokenFieldValue = StringLike | number | boolean | any[] | object;
+
+// `add()` was measured on this context's `scopes` only: it returned `true` and
+// grew the list, and a later `setScope` copy does not see it (docs/api/12).
+interface TokenScopeList extends ScopeList {
+  /** Grows the list in place; `true` on success. */
+  add(scope: StringLike): boolean;
+}
 
 declare const requestProperties: RequestProperties;
 declare const clientProperties: ClientProperties;
@@ -110,7 +117,7 @@ interface Identity {
 }
 declare const identity: Identity;
 
-declare const scopes: ScopeList;
+declare const scopes: TokenScopeList;
 
 // `session` is conditional. Ping documents it for this context and the descriptor
 // omits it. Bare reads were `ReferenceError: "session" is not defined.` on a

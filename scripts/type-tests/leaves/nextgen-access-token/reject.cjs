@@ -7,3 +7,5 @@ scopes.join(","); // expect: TS2339 — a Java list has no join
 clientProperties.allowedScopes; // expect: TS4111 — the class shutter on every read
 clientProperties["allowedGrantTypes"].contains("x"); // expect: TS2571 — unknown, never a readable set
 requestProperties.requestHeaders["x"]?.includes("a"); // expect: TS2339 — the value list has no includes
+// policy: not a known runtime failure; forEach is an unmeasured member here, left undeclared.
+scopes.forEach(function (s) { return s; }); // expect: TS2339 — policy: forEach was not measured on token-modification scopes

@@ -176,13 +176,29 @@ const CONTEXTS = {
     unmeasuredShared: ["RequestProperties"],
   },
   OAUTH2_ACCESS_TOKEN_MODIFICATION_NEXT_GEN: {
-    types: { scopes: "ScopeList" },
+    types: { scopes: "TokenScopeList" },
     conditionalSession: true,
-    notes: ["`scopes` is a `ScopeList` (a Java list), not a JS array."],
+    notes: ["`scopes` is a `TokenScopeList` (a Java list), not a JS array."],
+    preamble: [
+      "// `add()` was measured on this context's `scopes` only: it returned `true` and",
+      "// grew the list, and a later `setScope` copy does not see it (docs/api/12).",
+      "interface TokenScopeList extends ScopeList {",
+      "  /** Grows the list in place; `true` on success. */",
+      "  add(scope: StringLike): boolean;",
+      "}",
+      "",
+    ],
   },
   OAUTH2_MAY_ACT_NEXT_GEN: {
-    types: { scopes: "ScopeList" },
-    notes: ["`scopes` is a `ScopeList` (a Java list), not a JS array."],
+    types: { scopes: "MayActScopeList" },
+    notes: ["`scopes` is a `MayActScopeList` (a Java list), not a JS array."],
+    preamble: [
+      "// `forEach` was measured on this context's `scopes` only: it hands JS strings.",
+      "interface MayActScopeList extends ScopeList {",
+      "  forEach(callback: (scope: string) => void): void;",
+      "}",
+      "",
+    ],
   },
   OIDC_CLAIMS_NEXT_GEN: {
     types: { scopes: "ScopeList", claims: "OidcClaimsMap" },

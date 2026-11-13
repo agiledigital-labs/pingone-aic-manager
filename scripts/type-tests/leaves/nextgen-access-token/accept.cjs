@@ -31,6 +31,10 @@ if (scopes.contains("openid") && scopes.length > 0 && scopes.size() > 0) {
   accessToken.setScope(scopes);
 }
 accessToken.setScope(["openid"]);
+// add() is measured on this context's scopes: it returns true and grows the list.
+if (scopes.add("extra")) {
+  logger.info("added");
+}
 logger.info("first scope {}", String(scopes[0]));
 
 // Request values are lists of JS strings, so a strict comparison is a real one.
