@@ -10,5 +10,9 @@ logger.info("{}", String(token.getAct()));
 if (scopes.contains("openid") && scopes.length > 0) {
   logger.info("scope {}", String(scopes[0]));
 }
+// forEach is measured on this context's scopes and hands JS strings.
+scopes.forEach(function (s) {
+  logger.info("scope {}", s);
+});
 // toArray() is measured (not a JS array), so only length and [i] are declared.
 logger.info("{}", String(scopes.toArray().length));

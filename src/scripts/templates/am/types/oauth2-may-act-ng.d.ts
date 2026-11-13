@@ -6,7 +6,12 @@
 //   - `Token.getAct` / `getMayAct` return `object | null`: an absent claim is JS `null`.
 //   - `Token.setMayAct` also accepts `null`, which stamps JSON null.
 //   - `Identity.getAttributeValues` adds the typed `AmUserAttribute` overload first.
-//   - `scopes` is a `ScopeList` (a Java list), not a JS array.
+//   - `scopes` is a `MayActScopeList` (a Java list), not a JS array.
+
+// `forEach` was measured on this context's `scopes` only: it hands JS strings.
+interface MayActScopeList extends ScopeList {
+  forEach(callback: (scope: string) => void): void;
+}
 
 declare const requestProperties: RequestProperties;
 declare const clientProperties: ClientProperties;
@@ -44,4 +49,4 @@ interface Identity {
 }
 declare const identity: Identity;
 
-declare const scopes: ScopeList;
+declare const scopes: MayActScopeList;
