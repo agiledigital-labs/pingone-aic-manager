@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { runCase } from "../../src/bindings/index.ts";
 import { defineCase } from "../../src/case/index.ts";
+import { expectHarnessFault } from "../../src/harness/emulation-guard.ts";
 import { RhinoRunner } from "../../src/runner.ts";
 import { SchemaViolation } from "../../src/profile/validate.ts";
 import type { EnvProfile } from "../../src/profile/types.ts";
@@ -79,27 +80,99 @@ describe("environment profile through the JVM runner", () => {
     expect(result).toEqual({ threw: false, value: "null" });
   });
 
-  it("an UNdeclared type still throws, naming the environment", async () => {
-    // The discriminating pair: AIC returns null for both, which is exactly why
-    // a fixture typo is invisible there and must not be invisible here.
-    const result = await probeRead(
-      readCase("undeclared", "managed/zzz_not_a_type/anything", false),
-      true
+  // A type the profile says the tenant does not have: emulated where AIC is
+  // measured, a harness fault where it is not.
+  async function probeCall(call: string, seedAlice = false) {
+    const run = await runCase(
+      runner,
+      defineCase({
+        name: "undeclared",
+        script: probe.replace("openidm.read(RESOURCE)", call),
+        given: seedAlice
+          ? { managed: { "managed/alpha_user": [{ _id: "alice", userName: "alice" }] } }
+          : {},
+        expect: { outcome: "true" },
+      }),
+      { timeoutMs: 5_000, profile }
     );
-    expect(result.threw).toBe(true);
-    expect(result.error).toContain("is not a managed object");
-    expect(result.error).toContain("sandbox");
+    return JSON.parse(String(run.effects.sharedState.final.probe)) as {
+      threw: boolean;
+      value?: string;
+      error?: string;
+    };
+  }
+
+  it("a read of an UNdeclared type returns null, as AIC does (docs/api/10)", async () => {
+    expect(await probeCall('openidm.read("managed/zzz_not_a_type/anything")')).toEqual({
+      threw: false,
+      value: "null",
+    });
+  });
+
+  it("a query of an UNdeclared type throws AIC's catchable not-found (corpus query/2/absent-type)", async () => {
+    expect(
+      await probeCall('openidm.query("managed/zzz_not_a_type", { _queryFilter: "true" })')
+    ).toEqual({
+      threw: true,
+      error: "Error: rhino-local: openidm.query: Resource &#39;managed/zzz_not_a_type&#39; not found",
+    });
+  });
+
+  // Every write, create and action included (round-2 P2-2: those two used to
+  // succeed, so a typo'd type passed locally). The record-level action would
+  // otherwise be fixture/openidm-action, so it discriminates the check's order.
+  it.each([
+    ["update", 'openidm.update("managed/zzz_not_a_type/anything", null, {})'],
+    ["patch", 'openidm.patch("managed/zzz_not_a_type/anything", null, [])'],
+    ["delete", 'openidm.delete("managed/zzz_not_a_type/anything", null)'],
+    ["create", 'openidm.create("managed/zzz_not_a_type", "a", { k: 1 })'],
+    ["create", 'openidm.create("managed/zzz_not_a_type", null, { k: 1 })'],
+    ["action", 'openidm.action("managed/zzz_not_a_type", "patch", [])'],
+    ["action", 'openidm.action("managed/zzz_not_a_type", "nosuchaction", {})'],
+    ["action", 'openidm.action("managed/zzz_not_a_type/anything", "custom", {})'],
+  ])("an %s of an UNdeclared type is a harness fault naming the environment: unmeasured on AIC (%s)", async (method, call) => {
+    expectHarnessFault("openidm-unknown-managed-type");
+    await expect(probeCall(call)).rejects.toThrow(
+      new RegExp(`harness fault openidm-unknown-managed-type: openidm\\.${method}: "managed\\/zzz_not_a_type" is not a managed object in environment "sandbox"`)
+    );
+  });
+
+  // Round-3 P1-1: a profile lists managed TYPES, so it says nothing about any
+  // other resource. Each of these used to read as an absent managed type
+  // (null, or a catchable not-found) once a profile was on, silently, while the
+  // same call without a profile was this fault. A relationship collection of a
+  // DECLARED, seeded type is the sharpest row: on AIC it exists and has rows.
+  it.each([
+    ["read", "internal/role", 'openidm.read("internal/role/r1")'],
+    ["query", "internal/role", 'openidm.query("internal/role", { _queryFilter: "true" })'],
+    ["read", "config/ui", 'openidm.read("config/ui/configuration")'],
+    ["read", "system/ldap/account", 'openidm.read("system/ldap/account/x")'],
+    ["read", "managed/alpha_user/alice/roles", 'openidm.read("managed/alpha_user/alice/roles/x")'],
+    [
+      "query",
+      "managed/alpha_user/alice/roles",
+      'openidm.query("managed/alpha_user/alice/roles", { _queryFilter: "true" })',
+    ],
+    ["update", "internal/role", 'openidm.update("internal/role/r1", null, {})'],
+    ["create", "internal/role", 'openidm.create("internal/role", null, { name: "r" })'],
+  ])("a %s of %s, which a profile does not speak for, is a missing fixture (P1-1)", async (method, collection, call) => {
+    expectHarnessFault("fixture/managed");
+    await expect(probeCall(call, true)).rejects.toThrow(
+      new RegExp(
+        `harness fault fixture/managed: openidm\\.${method}: no given\\.managed entry for "${collection.replace(/\//g, "\\/")}"`
+      )
+    );
   });
 
   it("without a profile, a declared-but-unseeded type is still a missing fixture", async () => {
     // Pre-profile behaviour must be untouched, or every existing case changes
     // meaning the day a profile is introduced.
-    const result = await probeRead(
-      readCase("no-profile", "managed/alpha_organization/anything", false),
-      false
+    expectHarnessFault("fixture/managed");
+    await expect(
+      probeRead(readCase("no-profile", "managed/alpha_organization/anything", false), false)
+    ).rejects.toThrow(
+      /harness fault fixture\/managed: openidm\.read: no given\.managed entry for "managed\/alpha_organization"; seed it, or run with a profile/
     );
-    expect(result.threw).toBe(true);
-    expect(result.error).toContain("no given.managed entry");
   });
 
   it("a seeded record still reads back with a profile present", async () => {

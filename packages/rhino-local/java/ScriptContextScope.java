@@ -60,8 +60,40 @@ final class ScriptContextScope implements Scriptable {
     return Scriptable.NOT_FOUND;
   }
 
+  private java.util.Set<String> sealedNames = java.util.Collections.emptySet();
+
+  /**
+   * After the preamble: the harness's own globals -- every {@code __rhinoLocal…} name defined by
+   * then -- become read-only and permanent to the script, as a non-writable property is in sloppy
+   * mode: an assignment or delete is ignored. A script that rebinds a harness helper must not be
+   * able to turn a harness fault into an ordinary error it catches. Names a script declares later
+   * (the AIC-lane wrapper's own {@code __rhinoLocalOutcome}) stay ordinary variables.
+   */
+  void sealHarnessGlobals() {
+    java.util.Set<String> names = new java.util.HashSet<>();
+    for (int scope : scriptContext.getScopes()) {
+      javax.script.Bindings bindings = scriptContext.getBindings(scope);
+      if (bindings == null) {
+        continue;
+      }
+      for (String name : bindings.keySet()) {
+        if (name.startsWith("__rhinoLocal")) {
+          names.add(name);
+        }
+      }
+    }
+    sealedNames = names;
+  }
+
+  private boolean sealed(String name) {
+    return sealedNames.contains(name);
+  }
+
   @Override
   public void put(String name, Scriptable start, Object value) {
+    if (sealed(name)) {
+      return;
+    }
     int scope = scriptContext.getAttributesScope(name);
     if (scope == -1) {
       scope = ScriptContext.ENGINE_SCOPE;
@@ -79,6 +111,9 @@ final class ScriptContextScope implements Scriptable {
 
   @Override
   public void delete(String name) {
+    if (sealed(name)) {
+      return;
+    }
     int scope = scriptContext.getAttributesScope(name);
     if (scope != -1) {
       scriptContext.removeAttribute(name, scope);

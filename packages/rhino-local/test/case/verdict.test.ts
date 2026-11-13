@@ -5,7 +5,7 @@ import { bucket, makeCase, makeEffects } from "./helpers.ts";
 describe("verdict engine — outcome", () => {
   it("passes when the engine-neutral outcome string matches", () => {
     const kase = makeCase({
-      name: "next-gen or legacy, same assertion",
+      name: "engine-neutral outcome, same assertion",
       expect: { outcome: "true" },
     });
     const verdict = judge(kase, makeEffects({ outcome: "true" }));

@@ -204,9 +204,7 @@ The reusable AIC lease uses its deterministic UUIDv5 subject ID. A one-shot
 run with a known run ID uses `oneShotSubjectId(runId)`; local-only runs use the
 visible `<unseeded-script-id>` placeholder unless a raw `Case` supplies
 `given.loggerScriptId`. The format has only been measured for the next-gen
-decision-node context (live AIC-lane probe, 2026-10-01). The legacy mock
-retains its earlier bare-name behavior; that context's tenant format remains
-unmeasured.
+decision-node context (live AIC-lane probe, 2026-10-01).
 
 The runner needs a host JDK 25: `AIC_SCRIPT_TESTER_JAVA_HOME`, then `JAVA_HOME`, then
 `java`/`javac` on `PATH` (`shell.nix` provides `temurin-bin-25`). The Rhino jar
@@ -953,8 +951,6 @@ It never changes a reused library. Any owned library still referenced by a
 reused external consumer remains journalled and is reported as residue at close.
 The orchestrator's 2026-09-30 live run after `d7de205` confirmed that AM
 accepted the empty-source PUT and the tested lease left no library residue.
-Legacy `require()` is
-unsupported, so a legacy case with libraries fails validation.
 
 `useLease()` accepts an AIC opt-in alongside the local options:
 

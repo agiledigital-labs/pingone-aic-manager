@@ -1,0 +1,153 @@
+/** Immutable tenant config snapshot, shared by emulator forks. No disk loading. */
+import type { JsonValue } from "../protocol.ts";
+import type { ConfigInput, EndpointConfig, ManagedConfig, ManagedType } from "./types.ts";
+
+/**
+ * Where DS stores a managed type's records. `generic`: JSON in `ou=managed` (the `managed/*`
+ * generic mapping, or a per-type `genericMapping` entry); `explicit`: a type with its own LDAP
+ * object class; `unknown`: no `repo` supplied, or a repo naming the type in both sections.
+ * `alpha_user` / `bravo_user` are explicit by name (docs/api/14).
+ */
+export type StorageKind = "generic" | "explicit" | "unknown";
+/** How a property is JSON-stored (`IdmConfig.jsonStored`): via `managed/*` alone, via the type's own entry, or not. */
+export type JsonStorage = "wildcard" | "own" | false;
+/**
+ * A `config/sync` mapping as the implicit-sync fault describes it. `queued`: `queuedSync.enabled`
+ * is true, which makes AIC's implicit sync asynchronous (measured 2026-07-29, docs/api/16).
+ * `disabled`: `enableSync` is false, whose effect on implicit sync is unmeasured. Both still fault.
+ */
+export type SyncMapping = { readonly name: string; readonly queued: boolean; readonly disabled: boolean };
+
+const USER_TYPES = ["alpha_user", "bravo_user"];
+
+function section(repo: Readonly<Record<string, JsonValue>> | undefined, name: string): Record<string, JsonValue> | undefined {
+  const mapping = repo?.resourceMapping;
+  if (mapping === null || typeof mapping !== "object" || Array.isArray(mapping)) return undefined;
+  const value = (mapping as Record<string, JsonValue>)[name];
+  return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, JsonValue> : undefined;
+}
+const has = (object: Record<string, JsonValue> | undefined, key: string): boolean =>
+  object !== undefined && Object.prototype.hasOwnProperty.call(object, key);
+
+/** Validate caller data before cloning can erase a non-plain prototype. */
+function plainObject(value: unknown, path: string): void {
+  if (value === null || typeof value !== "object" || Array.isArray(value) ||
+      (Object.getPrototypeOf(value) !== Object.prototype && Object.getPrototypeOf(value) !== null)) {
+    throw new TypeError(`Invalid IDM configuration: ${path} must be a plain object`);
+  }
+}
+
+function freeze(value: unknown): void {
+  if (value === null || typeof value !== "object" || Object.isFrozen(value)) return;
+  if (!Array.isArray(value)) Object.setPrototypeOf(value, null);
+  for (const child of Object.values(value)) freeze(child);
+  Object.freeze(value);
+}
+
+export class IdmConfig {
+  readonly managed: ManagedConfig;
+  readonly endpoints: Readonly<Record<string, EndpointConfig>>;
+  /** Presence of a snapshot alone does not establish namespace completeness. */
+  readonly endpointsSupplied: boolean;
+  readonly complete: Readonly<{ managed: boolean; endpoints: boolean }>;
+  private readonly types: ReadonlyMap<string, ManagedType>;
+  private readonly repo: Readonly<Record<string, JsonValue>> | undefined;
+  /** Mappings by source resource (`managed/<type>`), in config order. */
+  private readonly syncSources: ReadonlyMap<string, readonly SyncMapping[]>;
+
+  constructor(input: ConfigInput) {
+    plainObject(input, "input");
+    plainObject(input.managed, "managed");
+    if (!Array.isArray(input.managed.objects)) throw new TypeError("Invalid IDM configuration: managed.objects must be an array");
+    for (const [index, type] of input.managed.objects.entries()) {
+      plainObject(type, `managed.objects[${index}]`);
+      if (typeof type.name !== "string" || type.name.length === 0) throw new TypeError(`Invalid IDM configuration: managed.objects[${index}].name must be a nonempty string`);
+    }
+    if (input.endpoints !== undefined) plainObject(input.endpoints, "endpoints");
+    if (input.repo !== undefined) plainObject(input.repo, "repo");
+    if (input.sync === undefined) {
+      throw new TypeError("Invalid IDM configuration: sync is required: pass the tenant's config/sync as read, or { mappings: [] } to state that it has no mappings");
+    }
+    {
+      plainObject(input.sync, "sync");
+      if (!Array.isArray(input.sync.mappings)) throw new TypeError("Invalid IDM configuration: sync.mappings must be an array");
+      for (const [index, mapping] of input.sync.mappings.entries()) {
+        plainObject(mapping, `sync.mappings[${index}]`);
+        const { name, source } = mapping as Record<string, JsonValue>;
+        if (typeof name !== "string" || name.length === 0 || typeof source !== "string" || source.length === 0) {
+          throw new TypeError(`Invalid IDM configuration: sync.mappings[${index}] needs a nonempty string name and source`);
+        }
+      }
+    }
+    if (input.complete !== undefined) {
+      plainObject(input.complete, "complete");
+      for (const [namespace, value] of Object.entries(input.complete)) {
+        if (!["managed", "endpoints"].includes(namespace) || typeof value !== "boolean") {
+          throw new TypeError("Invalid IDM configuration: complete supports only boolean managed/endpoints flags");
+        }
+      }
+      if (input.complete.endpoints === true && input.endpoints === undefined) {
+        throw new TypeError("Invalid IDM configuration: complete.endpoints requires an endpoints map");
+      }
+    }
+    const snapshot = structuredClone(input);
+    freeze(snapshot);
+    this.managed = snapshot.managed;
+    this.endpointsSupplied = snapshot.endpoints !== undefined;
+    this.endpoints = snapshot.endpoints ?? Object.freeze({});
+    this.repo = snapshot.repo;
+    const sources = new Map<string, SyncMapping[]>();
+    for (const mapping of snapshot.sync.mappings as Array<Record<string, JsonValue>>) {
+      const source = (mapping.source as string).replace(/^\/+|\/+$/g, "");
+      const queuedSync = mapping.queuedSync;
+      const queued = queuedSync !== null && typeof queuedSync === "object" && !Array.isArray(queuedSync) && queuedSync.enabled === true;
+      sources.set(source, [...(sources.get(source) ?? []), { name: mapping.name as string, queued, disabled: mapping.enableSync === false }]);
+    }
+    this.syncSources = sources;
+    this.complete = Object.freeze({ managed: snapshot.complete?.managed === true, endpoints: snapshot.complete?.endpoints === true });
+    const types = new Map<string, ManagedType>();
+    for (const type of this.managed.objects) {
+      if (types.has(type.name)) throw new Error(`Duplicate managed type: ${type.name}`);
+      types.set(type.name, type);
+    }
+    this.types = types;
+    Object.freeze(this);
+  }
+
+  managedType(name: string): ManagedType | undefined {
+    return this.types.get(name);
+  }
+
+  /** The sync mappings whose source is `managed/<type>`, in config order; empty when there are none. */
+  syncMappings(type: string): readonly SyncMapping[] {
+    return this.syncSources.get(`managed/${type}`) ?? [];
+  }
+
+  /** The type's storage kind, read from the supplied `config/repo.ds` (see `StorageKind`). */
+  storage(type: string): StorageKind {
+    if (USER_TYPES.includes(type)) return "explicit";
+    if (this.repo === undefined) return "unknown";
+    const key = `managed/${type}`;
+    const explicit = has(section(this.repo, "explicitMapping"), key);
+    const generic = section(this.repo, "genericMapping");
+    const own = has(generic, key);
+    if (explicit && own) return "unknown";
+    if (explicit) return "explicit";
+    return own || has(generic, "managed/*") ? "generic" : "unknown";
+  }
+
+  /**
+   * Whether a top-level property of a type is stored as JSON in DS, and through which mapping: a
+   * generic type's property that its `genericMapping` entry does not map to an attribute of its
+   * own (a mapped relationship is listed under `properties`). `wildcard` is the measured shape (the
+   * type is covered by `managed/*` alone); `own` is a type with an entry of its own, whose JSON
+   * keys and matching rule were not measured (review pf-01 P3-1); `false` is not JSON.
+   */
+  jsonStored(type: string, field: string): JsonStorage {
+    if (field.includes("/") || this.storage(type) !== "generic") return false;
+    const entry = section(this.repo, "genericMapping")?.[`managed/${type}`];
+    if (entry === undefined) return "wildcard";
+    const properties = entry !== null && typeof entry === "object" && !Array.isArray(entry) ? (entry as Record<string, JsonValue>).properties : undefined;
+    return properties !== null && typeof properties === "object" && !Array.isArray(properties) && has(properties as Record<string, JsonValue>, field) ? false : "own";
+  }
+}

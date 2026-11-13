@@ -1,10 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { loadBehaviour, runScript } from "./load-behaviour.ts";
+import { loadBehaviour, runScript, sandboxFaults } from "./load-behaviour.ts";
 
 describe("require", () => {
-  it("is a function on next-gen and undefined on legacy", () => {
+  it("is a function", () => {
     expect(typeof loadBehaviour().require).toBe("function");
-    expect(typeof loadBehaviour({ engine: "legacy" }).require).toBe("undefined");
   });
 
   it("explains why an undeclared top-level require would diverge from AIC", () => {
@@ -128,9 +127,11 @@ describe("require", () => {
     expect(effects.sharedState.final).toEqual({ value: "a" });
   });
 
-  it("rejects the wrong arity", () => {
-    const requireFn = loadBehaviour().require as (...args: unknown[]) => unknown;
-    expect(() => requireFn()).toThrow(/require arity=0 \(expected 1\)/);
+  it("faults the wrong arity, because AIC's accepted counts are unmeasured", () => {
+    const sandbox = loadBehaviour();
+    const requireFn = sandbox.require as (...args: unknown[]) => unknown;
+    expect(() => requireFn()).toThrow(/require arity=0 \(the harness accepts 1; /);
+    expect(sandboxFaults(sandbox).map((f) => f.id)).toEqual(["arity-unknown/require"]);
   });
 });
 

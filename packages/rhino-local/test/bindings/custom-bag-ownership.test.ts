@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { validateCase } from "../../src/case/validate.ts";
 import { normaliseEffects } from "../../src/case/verdict.ts";
 import { caseWith } from "../aic/helpers.ts";
-import { runScript } from "./load-behaviour.ts";
+import { expectCaughtFault, runScript, runScriptWithFaults } from "./load-behaviour.ts";
 
 const resource = "managed/alpha_user/example";
 const row = { _id: "example", givenName: "Original" };
@@ -159,7 +159,7 @@ describe("validated historical bag ownership", () => {
   });
 
   it("same-store overlap with a historically owned absent key refuses atomically", () => {
-    const effects = runScript(
+    const { effects, faults } = runScriptWithFaults(
       identity +
         'identity.setAttribute("alias", ["restored"]); identity.setAttribute("fr-idm-custom-attrs", []); try { identity.store(); } catch(e) { nodeState.putShared("error", String(e)); }',
       seed,
@@ -167,6 +167,7 @@ describe("validated historical bag ownership", () => {
     expect(effects.sharedState.final.error).toMatch(
       /bag replacement and another attribute write in the same store.*unmeasured/,
     );
+    expectCaughtFault({ effects, faults }, "identity-bag-replacement-overlap");
     expect(effects.identityWrites).toEqual([]);
     expect(effects.managedStore).toEqual(seed.managed);
     expect(effects.identityCustomAttrsOwnedKeys).toEqual(
@@ -176,7 +177,7 @@ describe("validated historical bag ownership", () => {
 
   it("a historical key write into a non-object bag refuses before changing ownership", () => {
     const given = { ...seed, identityCustomAttrs: { [resource]: ["null"] } };
-    const effects = runScript(
+    const { effects, faults } = runScriptWithFaults(
       identity +
         'identity.setAttribute("alias", ["restored"]); try { identity.store(); } catch(e) { nodeState.putShared("error", String(e)); }',
       given,
@@ -184,6 +185,7 @@ describe("validated historical bag ownership", () => {
     expect(effects.sharedState.final.error).toMatch(
       /within a non-object.*unmeasured/,
     );
+    expectCaughtFault({ effects, faults }, "identity-store-non-object-bag");
     expect(effects.identityWrites).toEqual([]);
     expect(effects.managedStore).toEqual(seed.managed);
     expect(effects.identityCustomAttrsOwnedKeys).toEqual(

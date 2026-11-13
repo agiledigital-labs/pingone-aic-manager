@@ -1,5 +1,13 @@
 import { readFileSync } from "node:fs";
-import { bindingsJsonPath } from "../paths.ts";
+import {
+  accessTokenBindingsJsonPath,
+  bindingsJsonPath,
+  configProviderBindingsJsonPath,
+  oidcClaimsBindingsJsonPath,
+  socialIdpBindingsJsonPath,
+  validateScopeBindingsJsonPath,
+  mayActBindingsJsonPath,
+} from "../paths.ts";
 
 let cached: string[] | undefined;
 
@@ -52,17 +60,113 @@ export const OBSERVED_BASE: readonly string[] = [
  */
 export function decisionNodeClassAllowList(): string[] {
   if (cached === undefined) {
-    const parsed: unknown = JSON.parse(readFileSync(bindingsJsonPath, "utf8"));
-    const lists =
-      typeof parsed === "object" && parsed !== null
-        ? (parsed as { allowLists?: unknown }).allowLists
-        : undefined;
-    if (!Array.isArray(lists) || lists.some((item) => typeof item !== "string")) {
-      throw new Error(
-        `rhino-local: ${bindingsJsonPath} has no allowLists array of strings`
-      );
-    }
-    cached = [...(lists as string[]), ...OBSERVED_BASE];
+    cached = [...declaredAllowList(bindingsJsonPath), ...OBSERVED_BASE];
   }
   return cached;
+}
+
+let cachedAccessToken: string[] | undefined;
+
+/**
+ * The next-gen access-token-modification context's allow-list, from its own
+ * descriptor (`docs/api/bindings/oauth2-atm-next.json`) plus the same
+ * `OBSERVED_BASE`. Far narrower than the decision node's: it names no
+ * `java.util` class at all, so `new java.util.HashSet()` is refused there.
+ */
+export function accessTokenClassAllowList(): string[] {
+  if (cachedAccessToken === undefined) {
+    cachedAccessToken = [...declaredAllowList(accessTokenBindingsJsonPath), ...OBSERVED_BASE];
+  }
+  return cachedAccessToken;
+}
+
+let cachedOidcClaims: string[] | undefined;
+
+/**
+ * The next-gen OIDC claims context's allow-list, from its own descriptor
+ * (`docs/api/bindings/oidc-claims-next.json`) plus the same `OBSERVED_BASE`.
+ */
+export function oidcClaimsClassAllowList(): string[] {
+  if (cachedOidcClaims === undefined) {
+    cachedOidcClaims = [...declaredAllowList(oidcClaimsBindingsJsonPath), ...OBSERVED_BASE];
+  }
+  return cachedOidcClaims;
+}
+
+let cachedSocialIdp: string[] | undefined;
+
+/**
+ * The next-gen social IdP profile transformation context's allow-list, from
+ * its own descriptor (`docs/api/bindings/social-idp-profile-transformation-next.json`,
+ * captured 2026-11-10) plus the same `OBSERVED_BASE`. It names no `java.util`
+ * class: `nodeState.keys()` there fails with `Access to Java class
+ * "java.util.HashSet" is prohibited` (measured the same day).
+ */
+export function socialIdpClassAllowList(): string[] {
+  if (cachedSocialIdp === undefined) {
+    cachedSocialIdp = [...declaredAllowList(socialIdpBindingsJsonPath), ...OBSERVED_BASE];
+  }
+  return cachedSocialIdp;
+}
+
+let cachedConfigProvider: string[] | undefined;
+
+/**
+ * The next-gen config provider node context's allow-list, from its own
+ * descriptor (`docs/api/bindings/config-provider-node-next.json`, captured
+ * 2026-11-10) plus the same `OBSERVED_BASE`. Like the social context's, it
+ * names no `java.util` class: `nodeState.keys()` fails with `Access to Java
+ * class "java.util.HashSet" is prohibited`, and `new java.util.HashMap()` is
+ * `[JavaPackage java.util.HashMap] is not a function` (both measured that day).
+ */
+export function configProviderClassAllowList(): string[] {
+  if (cachedConfigProvider === undefined) {
+    cachedConfigProvider = [...declaredAllowList(configProviderBindingsJsonPath), ...OBSERVED_BASE];
+  }
+  return cachedConfigProvider;
+}
+
+let cachedValidateScope: string[] | undefined;
+
+/**
+ * The next-gen validate scope context's allow-list, from its own descriptor
+ * (`docs/api/bindings/oauth2-validate-scope-next.json`) plus the same
+ * `OBSERVED_BASE`. It names no `java.util` class: a scope list's iterator()
+ * fails with `Access to Java class "java.util.ArrayList$Itr" is prohibited`,
+ * and clientProperties' sets with the HashSet/TreeSet/LinkedHashSet refusals
+ * (measured 2026-11-10).
+ */
+export function validateScopeClassAllowList(): string[] {
+  if (cachedValidateScope === undefined) {
+    cachedValidateScope = [...declaredAllowList(validateScopeBindingsJsonPath), ...OBSERVED_BASE];
+  }
+  return cachedValidateScope;
+}
+
+let cachedMayAct: string[] | undefined;
+
+/**
+ * The next-gen may-act context's allow-list, from its own descriptor
+ * (`docs/api/bindings/oauth2-may-act-next.json`, captured 2026-11-10) plus
+ * the same `OBSERVED_BASE`. It names no `java.util` class: `new
+ * java.util.HashMap()` fails with `[JavaPackage java.util.HashMap] is not a
+ * function`, and `token.getField("scope")` with the TreeSet shutter.
+ */
+export function mayActClassAllowList(): string[] {
+  if (cachedMayAct === undefined) {
+    cachedMayAct = [...declaredAllowList(mayActBindingsJsonPath), ...OBSERVED_BASE];
+  }
+  return cachedMayAct;
+}
+
+function declaredAllowList(path: string): string[] {
+  const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
+  const lists =
+    typeof parsed === "object" && parsed !== null
+      ? (parsed as { allowLists?: unknown }).allowLists
+      : undefined;
+  if (!Array.isArray(lists) || lists.some((item) => typeof item !== "string")) {
+    throw new Error(`rhino-local: ${path} has no allowLists array of strings`);
+  }
+  return lists as string[];
 }

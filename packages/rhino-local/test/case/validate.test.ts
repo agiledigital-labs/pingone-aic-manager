@@ -39,14 +39,12 @@ function validInput() {
 }
 
 describe("defineCase / validateCase", () => {
-  it("accepts string library sources and refuses legacy or non-string sources", () => {
+  it("accepts string library sources and refuses non-string sources", () => {
     const input = validInput();
     expect(validateCase({ ...input, given: { ...input.given, libraries: { lib: "exports.x = 1;" } } }).given.libraries)
       .toEqual({ lib: "exports.x = 1;" });
     expect(() => validateCase({ ...input, given: { ...input.given, libraries: { lib: 1 } } }))
       .toThrow(/given\.libraries\.lib must be a string/);
-    expect(() => validateCase({ ...input, given: { ...input.given, libraries: { lib: "" }, engine: "legacy" } }))
-      .toThrow(/libraries requires the next-gen engine/);
   });
   it("accepts the design-note shape", () => {
     const kase = defineCase(validInput());
@@ -263,8 +261,33 @@ describe("defineCase / validateCase", () => {
       expect: { outcome: "true" },
     };
     expect(() => validateCase(input)).toThrow(
-      /case.given.engine must be "next-gen" or "legacy"/
+      /case.given.engine must be "next-gen"/
     );
+  });
+
+  describe("the removed legacy engine", () => {
+    const legacyCase = (extra: Record<string, unknown> = {}) => ({
+      name: "legacy",
+      script: "am/decision-node/x.js",
+      given: { engine: "legacy", ...extra },
+      expect: { outcome: "true" },
+    });
+
+    it("fails validation naming the removal, not falling through to next-gen", () => {
+      expect(() => validateCase(legacyCase())).toThrow(
+        /case\.given\.engine "legacy": the legacy \(V1\) script engine is no longer emulated/
+      );
+      expect(() => defineCase(legacyCase() as never)).toThrow(/no longer emulated/);
+    });
+
+    it("is refused before any other problem with the same case is reported", () => {
+      expect(() => validateCase(legacyCase({ libraries: { lib: 1 } }))).toThrow(/no longer emulated/);
+      expect(() => validateCase({ ...legacyCase(), outcomes: "nope" })).toThrow(/no longer emulated/);
+    });
+
+    it("still accepts next-gen spelled out", () => {
+      expect(validateCase({ ...legacyCase(), given: { engine: "next-gen" } }).given.engine).toBe("next-gen");
+    });
   });
 
   it("rejects actionName on a non-action openidm expectation", () => {

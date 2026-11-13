@@ -4,6 +4,14 @@ import { isPortable } from "../../src/case/portable.ts";
 import { caseWith } from "./helpers.ts";
 
 describe("aicUnsupportedReason", () => {
+  // A cast Case can carry the removed engine past validateCase; the lane must
+  // refuse it before it emits a journey to a tenant.
+  it("refuses a legacy-engine case before anything is emitted", () => {
+    const base = caseWith({});
+    const kase = { ...base, given: { ...base.given, engine: "legacy" } } as unknown as typeof base;
+    expect(aicUnsupportedReason(kase)).toMatch(/legacy/);
+    expect(aicUnsupportedReason(caseWith({}))).toBeUndefined();
+  });
   it("rejects a local binding replacement on the tenant lane", () => {
     expect(aicUnsupportedReason(caseWith({ given: { bindingOverrides: { logger: "({})" } } })))
       .toMatch(/given.bindingOverrides/);
@@ -70,10 +78,7 @@ describe("aicUnsupportedReason", () => {
     ).toMatch(/putSecure/);
   });
 
-  it("skips legacy, resumedFromSuspend=true, and extra binding seeds", () => {
-    expect(
-      aicUnsupportedReason(caseWith({ given: { engine: "legacy" } }))
-    ).toMatch(/legacy/);
+  it("skips resumedFromSuspend=true and extra binding seeds", () => {
     expect(
       aicUnsupportedReason(caseWith({ given: { resumedFromSuspend: true } }))
     ).toMatch(/resumedFromSuspend/);

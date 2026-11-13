@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { runScript } from "./load-behaviour.ts";
+import { expectCaughtFault, runScript, runScriptWithFaults } from "./load-behaviour.ts";
 
 const resource = "managed/alpha_user/example";
 const record = {
@@ -69,7 +69,7 @@ describe("pre-mutation bag guards (round 3 #1/#3)", () => {
         JSON.stringify(Object.fromEntries([[key, "collision"]])),
       );
       const ordinary = 'identity.setAttribute("givenName", ["Changed"]);';
-      const effects = runScript(
+      const { effects, faults } = runScriptWithFaults(
         identity +
           catchCall(
             (first === "bag" ? bag + ordinary : ordinary + bag) +
@@ -87,6 +87,7 @@ describe("pre-mutation bag guards (round 3 #1/#3)", () => {
       expect(effects.sharedState.final.error).toMatch(
         /collides with .+; this identity mapping is unmeasured/,
       );
+      expectCaughtFault({ effects, faults }, "identity-bag-key-collision");
       expect(effects.sharedState.final.bag).toBe('{"custom_seed":"old"}');
       expect(effects.managedStore).toEqual(seed.managed);
       expect(effects.identityWrites).toEqual([]);
@@ -151,7 +152,7 @@ describe("pre-mutation bag guards (round 3 #1/#3)", () => {
         const bagText = '{"custom_owned":"old"}';
         const target = `identity.${method}("alias", ${method === "setAttribute" ? '["Changed"]' : '"Changed"'});`;
         const clear = 'identity.setAttribute("fr-idm-custom-attrs", []);';
-        const effects = runScript(
+        const { effects, faults } = runScriptWithFaults(
           identity +
             catchCall(
               (first === "target" ? target + clear : clear + target) +
@@ -169,6 +170,7 @@ describe("pre-mutation bag guards (round 3 #1/#3)", () => {
         expect(effects.sharedState.final.error).toMatch(
           /bag replacement and another attribute write in the same store.*unmeasured/,
         );
+        expectCaughtFault({ effects, faults }, "identity-bag-replacement-overlap");
         expect(effects.managedStore).toEqual({ "managed/alpha_user": [row] });
         expect(effects.identityCustomAttrs).toEqual({ [resource]: [bagText] });
         expect(effects.identityWrites).toEqual([]);
@@ -252,7 +254,7 @@ describe("pre-mutation bag guards (round 3 #1/#3)", () => {
               : method === "update"
                 ? `openidm.update("${resource}", null, {_id:"example",givenName:"Changed"});`
                 : 'openidm.create("managed/alpha_user", "example", {givenName:"Changed"});';
-        const effects = runScript(
+        const { effects, faults } = runScriptWithFaults(
           identity +
             stageBag(text) +
             "identity.store();" +
@@ -263,6 +265,7 @@ describe("pre-mutation bag guards (round 3 #1/#3)", () => {
         expect(effects.sharedState.final.error).toMatch(
           /this IDM access is unmeasured/,
         );
+        expectCaughtFault({ effects, faults }, "identity-bag-non-object-access");
         expect(effects.sharedState.final.bag).toBe(text);
         expect(effects.managedStore).toEqual({
           "managed/alpha_user": [
@@ -275,7 +278,7 @@ describe("pre-mutation bag guards (round 3 #1/#3)", () => {
   }
 
   it("a boolean _id query remains unmeasured", () => {
-    const effects = runScript(
+    const { effects, faults } = runScriptWithFaults(
       identity +
         stageBag("true") +
         "identity.store();" +
@@ -287,5 +290,6 @@ describe("pre-mutation bag guards (round 3 #1/#3)", () => {
     expect(effects.sharedState.final.error).toMatch(
       /bag \(boolean\); this IDM access is unmeasured/,
     );
+    expectCaughtFault({ effects, faults }, "identity-bag-non-object-access");
   });
 });

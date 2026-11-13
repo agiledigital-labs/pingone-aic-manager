@@ -255,6 +255,12 @@ export class RunBuilder<TInput> {
     return this;
   }
 
+  /** Mint the session for `principal`; see `Channels.sessionPrincipal`. */
+  sessionPrincipal(principal: string): this {
+    this.#override = { ...this.#override, sessionPrincipal: principal };
+    return this;
+  }
+
   /**
    * Declare one suspended pass: what the script must send, what the client
    * sends back, and what must be true of the world in between.

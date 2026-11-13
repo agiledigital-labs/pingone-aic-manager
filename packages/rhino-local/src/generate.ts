@@ -4,13 +4,28 @@ import { pathToFileURL } from "node:url";
 import { emitDts } from "./emit-dts.ts";
 import { emitJs } from "./emit-js.ts";
 import { loadContext } from "./load.ts";
-import { generatedDir, sourceBindingsJsonPath } from "./paths.ts";
+import {
+  generatedDir,
+  sourceAccessTokenBindingsJsonPath,
+  sourceBindingsJsonPath,
+  sourceConfigProviderBindingsJsonPath,
+  sourceOidcClaimsBindingsJsonPath,
+  sourceSocialIdpBindingsJsonPath,
+  sourceValidateScopeBindingsJsonPath,
+  sourceMayActBindingsJsonPath,
+} from "./paths.ts";
 import { classifyBinding, membersOf } from "./schema.ts";
 import type { ContextsDocument, Element } from "./schema.ts";
 
 export const generatedJsName = "scripted-decision-mocks.cjs";
 export const generatedDtsName = "scripted-decision-mocks.d.ts";
 export const generatedBindingsName = "scripted-decision-next.json";
+export const generatedAccessTokenBindingsName = "oauth2-atm-next.json";
+export const generatedOidcClaimsBindingsName = "oidc-claims-next.json";
+export const generatedSocialIdpBindingsName = "social-idp-profile-transformation-next.json";
+export const generatedConfigProviderBindingsName = "config-provider-node-next.json";
+export const generatedValidateScopeBindingsName = "oauth2-validate-scope-next.json";
+export const generatedMayActBindingsName = "oauth2-may-act-next.json";
 
 export function generate(
   jsonPath = sourceBindingsJsonPath,
@@ -25,6 +40,18 @@ export function generate(
   // The run-time surface (binding names, the class allow-list) is read from
   // this copy, so an installed package needs no docs tree beside it.
   copyFileSync(jsonPath, join(outDir, generatedBindingsName));
+  // The access-token context's class allow-list, read the same way.
+  copyFileSync(sourceAccessTokenBindingsJsonPath, join(outDir, generatedAccessTokenBindingsName));
+  // And the OIDC claims context's.
+  copyFileSync(sourceOidcClaimsBindingsJsonPath, join(outDir, generatedOidcClaimsBindingsName));
+  // And the social IdP profile transformation context's.
+  copyFileSync(sourceSocialIdpBindingsJsonPath, join(outDir, generatedSocialIdpBindingsName));
+  // And the config provider node context's.
+  copyFileSync(sourceConfigProviderBindingsJsonPath, join(outDir, generatedConfigProviderBindingsName));
+  // And the validate scope context's.
+  copyFileSync(sourceValidateScopeBindingsJsonPath, join(outDir, generatedValidateScopeBindingsName));
+  // And the may-act context's.
+  copyFileSync(sourceMayActBindingsJsonPath, join(outDir, generatedMayActBindingsName));
   return { js, dts, doc };
 }
 
@@ -64,7 +91,7 @@ function printSummary(doc: ContextsDocument): void {
     overloads += counted.overloads;
   }
   process.stdout.write(
-    `wrote ${generatedJsName}, ${generatedDtsName} and ${generatedBindingsName}\n` +
+    `wrote ${generatedJsName}, ${generatedDtsName}, ${generatedBindingsName}, ${generatedAccessTokenBindingsName}, ${generatedOidcClaimsBindingsName}, ${generatedSocialIdpBindingsName}, ${generatedConfigProviderBindingsName}, ${generatedValidateScopeBindingsName} and ${generatedMayActBindingsName}\n` +
       `${doc.bindings.length} bindings (${scalar} scalar, ${opaque} opaque); ` +
       `${unique} methods (${overloads} signatures including overloads)\n`
   );

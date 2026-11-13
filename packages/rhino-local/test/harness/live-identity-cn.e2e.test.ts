@@ -1,14 +1,15 @@
 import { describe, expect, it } from "vitest";
 import { AIC_LANE_ENV, aicWhenEnabled, defineSuite, managed, useLease } from "../../src/harness/index.ts";
+import { expectHarnessFault } from "../../src/harness/emulation-guard.ts";
 
 const ID = "00000000-0000-4000-8000-0000000000dd";
 const RESOURCE = `managed/alpha_user/${ID}`;
 
 // cn is the one measured attribute the local lane refuses to write: AM keeps
 // it outside the IDM managed record, which is all this lane models. The lanes
-// therefore disagree by design, and this file pins both sides exactly — the
-// local refusal as the verdict, the tenant's values through the AIC lane's
-// failure report.
+// therefore disagree by design, and this file pins both sides — the local
+// refusal as a harness fault (identity-write-cn) that fails the run, the
+// tenant's values through the AIC lane's failure report.
 const suite = defineSuite({
   name: "identity-cn",
   script: [
@@ -70,7 +71,11 @@ describe("identity cn", () => {
       identityWrites: [],
     });
     if (process.env[AIC_LANE_ENV] !== "1") {
-      expect((await pending).verdict.pass).toBe(true);
+      // The script catches the refusal, but it is a harness fault: the local
+      // lane cannot say what AIC would store, so the run fails rather than
+      // passing on the harness's own refusal text.
+      expectHarnessFault("identity-write-cn");
+      await expect(pending).rejects.toThrow(/rhino-local harness fault identity-write-cn: /);
       return;
     }
     const error = await pending.then(() => undefined, (caught: unknown) => caught);

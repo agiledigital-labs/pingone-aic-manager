@@ -107,7 +107,7 @@ describe("explicit bag workaround seed compatibility", () => {
     expect(given.managed["managed/alpha_user"]?.[0]?.[bag]).toEqual(explicit);
   });
 
-  it("accepts the legacy empty-object seed", () => {
+  it("accepts the empty-object seed", () => {
     expect(runScript(identity + read, seed({ _id: "example", [bag]: "{}" })).sharedState.final.bag).toEqual({});
   });
 

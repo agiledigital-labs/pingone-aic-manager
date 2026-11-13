@@ -22,7 +22,8 @@ export interface ExpectedObject {
 export type Pattern = string | RegExp;
 export declare const CASE_KEYS: readonly ["name", "script", "outcomes", "given", "expect"];
 export type CaseKey = (typeof CASE_KEYS)[number];
-export declare const ENGINES: readonly ["next-gen", "legacy"];
+/** compat-accepted: the legacy engine is no longer emulated; `given.engine: "legacy"` still type-checks and fails validation naming the removal (README, legacy-engine removal). */
+export declare const ENGINES: readonly ["next-gen"];
 export type Engine = (typeof ENGINES)[number];
 export declare const GIVEN_KEYS: readonly ["sharedState", "transientState", "secureState", "realm", "scriptName", "cookieName", "resumedFromSuspend", "requestHeaders", "requestParameters", "requestCookies", "locales", "existingSession", "esv", "secrets", "libraries", "callbacks", "managed", "http", "engine", "bindings"];
 export type GivenKey = (typeof GIVEN_KEYS)[number];
@@ -57,7 +58,8 @@ export declare const CHANNELS: readonly ["outcome", "sharedState", "transientSta
 export type Channel = (typeof CHANNELS)[number] | "sessionProperties" | "identityWrites";
 export declare const STATE_CHANNELS: readonly ["sharedState", "transientState", "secureState"];
 export type StateChannel = (typeof STATE_CHANNELS)[number];
-export type EvidenceChannel = Channel | "nodeState";
+/** compat-accepted: the access-token, OIDC claims, social IdP, config provider, validate scope and may-act contexts report their own evidence channels. */
+export type EvidenceChannel = Channel | "nodeState" | "accessToken" | "oidc" | "socialIdp" | "configProvider" | "validateScope" | "mayAct" | "returns";
 export declare const ENV_INPUT_KEYS: readonly ["esv", "secrets", "managed", "http"];
 export type EnvInputKey = (typeof ENV_INPUT_KEYS)[number];
 export interface StateDiff {

@@ -64,11 +64,12 @@ describe("documented reference-envelope projection (round 3 #2)", () => {
   });
 
   it.each(["read", "query"])(
-    "%s refuses scalar, array and null parents rather than inventing their projection",
+    "%s refuses scalar, non-reference array and null parents rather than inventing their projection",
     (method) => {
-      for (const parent of ["scalar", 1, true, null, [meta]]) {
+      // An array of `_ref` objects is a measured relationship array (relationship-array-projection.test.ts).
+      for (const parent of ["scalar", 1, true, null, [lastChanged]]) {
         expect(() => projection(parent, ["_meta/lastChanged"], method)).toThrow(
-          /scalar or array parent is unmeasured/,
+          /fields "_meta\/lastChanged": projecting a child of .* is unmeasured/,
         );
       }
     },
@@ -79,7 +80,7 @@ describe("documented reference-envelope projection (round 3 #2)", () => {
     (method) => {
       const parent = { _ref: "managed/alpha_usermeta/meta-example" };
       expect(() => projection(parent, ["_meta/lastChanged"], method)).toThrow(
-        /unresolved _ref or reference expansion is unmeasured/,
+        /carries no lastChanged, and reference expansion is unmeasured/,
       );
       const script =
         method === "read"
@@ -102,7 +103,7 @@ describe("documented reference-envelope projection (round 3 #2)", () => {
   ])(
     "a whole-parent selector does not hide an unsupported child selector: %j",
     ({ fields }) => {
-      expect(() => projection([meta], fields)).toThrow(/unmeasured/);
+      expect(() => projection([lastChanged], fields)).toThrow(/unmeasured/);
     },
   );
 
@@ -129,7 +130,7 @@ describe("documented reference-envelope projection (round 3 #2)", () => {
           "scalar",
           1,
           null,
-          [meta],
+          [lastChanged],
         ]) {
           expect(() => projection(parent, fields, method)).toThrow(
             /unmeasured/,
@@ -137,7 +138,7 @@ describe("documented reference-envelope projection (round 3 #2)", () => {
         }
         // Even with a measured parent the combined selector is unmeasured.
         expect(() => projection(meta, fields, method)).toThrow(
-          /combining \* with parent\/child selectors is unmeasured/,
+          /combining \* with a child selector is unmeasured unless the parent is a relationship array, and _meta is an object/,
         );
       },
     );
@@ -156,7 +157,8 @@ describe("documented reference-envelope projection (round 3 #2)", () => {
       projection({ ...envelope, lastChanged: [lastChanged] }, [
         "*,_meta/lastChanged/date",
       ]),
-    ).toThrow(/scalar or array parent is unmeasured/);
+      // The object parent refuses the wildcard combination before the deep path is reached.
+    ).toThrow(/combining \* with a child selector is unmeasured/);
   });
 
   it("the explicit fields argument still takes precedence over unmeasured params selectors", () => {
@@ -178,5 +180,32 @@ describe("documented reference-envelope projection (round 3 #2)", () => {
       _id: "example",
       _rev: "1",
     });
+  });
+});
+
+// astra-e15ab r3 P2: projection copied selected keys by assignment, so in the vm lane an own
+// `__proto__` field set the result's prototype instead and vanished; Rhino keeps it as data.
+describe("projection keeps an own __proto__ field as data", () => {
+  const record = JSON.parse(
+    '{"_id":"x","_rev":"1","__proto__":"yes","box":{"__proto__":"nested","q":1},' +
+      '"roles":[{"_ref":"managed/alpha_role/r","_id":"r","__proto__":"el","name":"r"}]}',
+  ) as JsonValue;
+  const read = (fields: string[]) =>
+    JSON.parse(
+      runScript(
+        `nodeState.putShared("row", JSON.stringify(openidm.read("managed/alpha_user/x", null, ${JSON.stringify(fields)})));`,
+        { managed: { "managed/alpha_user": [record] } as never },
+      ).sharedState.final.row as string,
+    ) as Record<string, unknown>;
+  const own = (o: unknown, key: string) => Object.prototype.hasOwnProperty.call(o, key) ? (o as Record<string, unknown>)[key] : "<absent>";
+
+  it.each([
+    [["__proto__"], (r: Record<string, unknown>) => own(r, "__proto__"), "yes"],
+    [["box/__proto__"], (r: Record<string, unknown>) => own(r.box, "__proto__"), "nested"],
+    [["__proto__", "box/q"], (r: Record<string, unknown>) => [own(r, "__proto__"), own(r.box, "q")], ["yes", 1]],
+    [["roles/*"], (r: Record<string, unknown>) => own((r.roles as unknown[])[0], "__proto__"), "el"],
+    [["roles/*/__proto__"], (r: Record<string, unknown>) => own((r.roles as unknown[])[0], "__proto__"), "el"],
+  ] as const)("%j", (fields, pick, expected) => {
+    expect(pick(read([...fields]))).toEqual(expected);
   });
 });

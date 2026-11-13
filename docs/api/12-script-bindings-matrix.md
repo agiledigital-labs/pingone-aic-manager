@@ -341,7 +341,17 @@ partial guide:
   Enforcement matches neither the three nor the 51, and **differs between these
   contexts**: a `LIBRARY` script reaches `java.util.HashSet` and `ArrayList`
   perfectly well, while a next-gen validate-scope script cannot name
-  `java.util` at all. `oauth2-atm-next` and `oidc-claims-next` are unprobed.
+  `java.util` at all. `oauth2-atm-next` and `oidc-claims-next` are unprobed
+  as lists. One data point (2026-11-10): an OIDC claims next-gen script is
+  refused `java.util.HashSet`, `LinkedHashSet` and `TreeSet` on reading
+  `clientProperties.allowed*` ("OIDC claims on both engines" below).
+
+> **Corrected 2026-11-11.** The `LIBRARY` `HashSet` / `ArrayList` row above was a
+> library required from a next-gen decision node. Required from a next-gen OAuth
+> caller (token modification, validate scope, may-act, evaluate scope),
+> `new java.util.HashSet()` is refused. `ArrayList` was not re-probed on those
+> callers. The shutter is the caller's. See
+> [Library scope when required](#library-scope-when-required-verified-2026-11-11).
 
 Read the per-context list as "classes this context's metadata bothered to
 declare", not as the sandbox boundary. This is the same metadata-is-not-behaviour
@@ -524,6 +534,31 @@ work at runtime — harmless, because the index loop it steers you to is correct
   the client profile is the same one whose `userpassword` leaks through
   `identity.getAttributes()` in the legacy ATM context.
 
+### The Rhino engine package is not reachable by name (verified 2026-11-10)
+
+Fixtures: `fixtures/engine-package-access.script.js` (next-gen decision node,
+`evaluatorVersion` 2.0) and `fixtures-legacy/legacy-engine-package-access.script.js`
+(legacy, 1.0). Both engines gave identical answers, every step in its own
+`try`/`catch`:
+
+| Expression                                           | Result (both engines)                                                                  |
+| ---------------------------------------------------- | -------------------------------------------------------------------------------------- |
+| `typeof Packages.org.mozilla.javascript`             | `object`                                                                               |
+| `typeof Packages.org.mozilla.javascript.Context`     | `object` (a `[JavaPackage …]` placeholder, not a class)                                |
+| `typeof org.mozilla.javascript.Context`              | `object`                                                                               |
+| `new Packages.org.mozilla.javascript.Context()`      | `TypeError: [JavaPackage org.mozilla.javascript.Context] is not a function, it is object.` |
+| `new org.mozilla.javascript.Context()`               | the same `TypeError`                                                                   |
+| `JavaImporter(Packages.org.mozilla.javascript).Context` | `undefined`                                                                         |
+| `java.lang.Class.forName("org.mozilla.javascript.Context")` | `TypeError: Cannot call property forName in object [JavaPackage java.lang.Class]. It is not a function, it is "object".` |
+| `typeof Packages.org.mozilla.javascript.ScriptableObject` | `object`                                                                          |
+
+So AM treats the engine package like any class off the allow-list: a script
+cannot construct a `Context`, hence cannot call `decompileFunction` or
+`initStandardObjects`. The refusal is a catchable `TypeError`. (The engine's
+own use of its classes, such as the `ConsString` a template literal produces,
+is not script-named and is unaffected.) The decompile and fresh-scope steps
+were never reached, because construction fails.
+
 ## `httpClient.send` body serialization (verified 2026-07-30)
 
 `httpClient` does **not** serialize a JS object body with `JSON.stringify`
@@ -557,6 +592,12 @@ magnitude. Receivers that validate a JSON integer type — strict OpenAPI
 also works and avoids the deprecated boxing constructor — prefer it. For
 contrast, `new java.lang.Double(1)` renders `1.0`, confirming the culprit is the
 Java numeric type the value lands in.
+
+A number the engine itself holds as an integer, such as `'abc'.length`, an
+`indexOf` result or a Java `size()`, also goes out as an integer (measured on
+the sandbox 2026-11-13). Not measured: a `JSON.parse` result. `rhino-local`
+cannot tell one from a boxed `Integer`, so it writes `3`, not `3.0`, and marks
+the run's body text as assumed.
 
 Note that `java.lang.Integer` is **not** in the next-gen allow-list declared in
 `docs/api/bindings/scripted-decision-next.json` (which has `Byte`, `Short`,
@@ -606,8 +647,125 @@ if (typeof value === "undefined") {
 ```
 
 Both behaviours were observed on the next-gen engine. Not probed: the `form`
-(form-encoded) option, the legacy `httpClient`, and whether `openidm.*` write
-payloads share the serializer — do not assume they do.
+(form-encoded) option and the legacy `httpClient`.
+
+### 3. A top-level `undefined` body is sent as `null` (verified 2026-11-04)
+
+`scripts/experiment-journey-precedence.sh`, next-gen journey decision node, the
+same httpbin.org echo as above; `data` is the raw body httpbin received.
+
+| `options` passed to `httpClient.send` (all `POST`, `Content-Type: application/json`) | Body on the wire | Echoed `Content-Type` |
+| --- | --- | --- |
+| no `body` key (control) | empty, `Content-Length: 0` | `application/json` |
+| `body: undefined` | **`null`** (4 bytes) | `application/json; charset=UTF-8` |
+| `body: null` (control) | `null` (4 bytes) | `application/json; charset=UTF-8` |
+| `body: {count: 1}` | `{"count":1.0}`; the script's own `JSON.stringify` gave `{"count":1}` | `application/json; charset=UTF-8` |
+
+So `body: undefined` is not "no body": a conditional body built as
+`body: maybeObject` posts the JSON literal `null` when the value is missing.
+Omit the key instead. The last row re-confirms §1. The charset
+suffix appears only when a body is serialized.
+
+### 4. String escaping on the wire (verified 2026-11-04)
+
+`scripts/experiment-journey-escaping-query.sh`, next-gen journey decision node,
+`POST` with `Content-Type: application/json` and an object `body`, through the
+same httpbin.org echo (here it returned the first body as a base64 `data:` URL,
+so the bytes below are exact; `Content-Length` agreed with every count).
+Control: the script's own `JSON.stringify` of the same object, returned
+alongside. Hex is the UTF-8 the receiver got.
+
+| String in the body | `JSON.stringify` (Rhino) | On the wire via `httpClient` |
+| --- | --- | --- |
+| every char `0x20`–`0x7e` in one value | `"` → `\"`, `\` → `\\`, nothing else escaped | **byte-identical**: no `\/`, and `<`, `>`, `&`, `'` stay literal |
+| `"é"`, U+00A0, U+2028, U+FEFF | raw | raw UTF-8: `c3 a9`, `c2 a0`, `e2 80 a8`, `ef bb bf` — U+2028 is **not** escaped |
+| U+007F | raw | raw `7f` |
+| `"\n"`, `"\t"` | `\n`, `\t` | `\n`, `\t` |
+| U+0001, U+001F | `\u0001`, `\u001f` | `\u0001`, **`\u001F`** — upper-case hex |
+| `"\ud83d\ude00"` (an astral emoji) | raw (4 UTF-8 bytes) | **`\uD83D\uDE00`** — escaped, upper-case, ASCII only |
+| lone surrogate `"\ud800"` | raw lone surrogate | **accepted, sent as `\uD800`** (status 200) |
+| key `"k/<é"` | `{"k/<é":"x"}` | identical — keys are escaped like values, `é` raw (`c3 a9`) |
+| `nul: null` | `"nul":null` | `"nul":null` — a null value keeps its key |
+
+So for strings the serializer agrees with `JSON.stringify` except in two
+places: control characters other than the short escapes use upper-case hex,
+and every code point above U+FFFF — or an unpaired surrogate — goes out as
+`\uXXXX` surrogate escapes instead of raw bytes. Both are valid JSON and parse
+to the same value; only a receiver that hashes or signs the raw body (an HMAC
+over the request, a byte-for-byte comparison) sees the difference. BMP
+characters, U+2028 included, are never escaped. A lone surrogate is not
+refused: it reaches the receiver as an escape that a strict UTF-16 decoder may
+reject. Rhino's own `JSON.stringify` emits a lone surrogate raw, which is not
+ES2019 well-formed output either.
+
+### 5. Non-JSON values in an object body (verified 2026-11-04)
+
+`scripts/experiment-journey-nonjson-body.sh`, next-gen journey decision node,
+`POST` with `Content-Type: application/json` and an **object** `body` (the form
+the rhino-local emulator models), through the same httpbin.org echo. One tree
+per case, so a failure in one cannot hide another; each value sits under `v`
+beside a sentinel `a: "x"`. Positive control: `{a: "x"}` arrived as exactly
+`{"a":"x"}` (9 bytes). No case failed the journey (every `authenticate` was
+HTTP 200 with the node's callback).
+
+| `v` in the body | `JSON.stringify` (Rhino) | `httpClient.send` | On the wire |
+| --- | --- | --- | --- |
+| `new Date(0)` | `"1970-01-01T00:00:00.000Z"` | sends (200) | **a ~1 KB bean dump of the Rhino `NativeDate`**: `{"className":"Date","empty":true,…,"prototype":{…"allIds":["constructor","toString",…]}…}` — the time value is **not** in it |
+| `NaN` | `null` | sends | **`"NaN"`** — a string |
+| `1/0`, `-1/0` | `null`, `null` | sends | **`"Infinity"`**, **`"-Infinity"`** — strings |
+| `-0` | `0` | sends | **`-0.0`** |
+| `function () { return 1; }` | key omitted | sends | **a ~1.7 KB bean dump of the Rhino function**: `sourceName` (the script's name), `encodedSource` (Rhino's encoded form of the function source), line numbers, and the `ids` of the enclosing `ScriptContextScope` — every binding and top-level variable **name** in the script |
+| cycle (`b.self = b`) | throws `TypeError: Cyclic org.mozilla.javascript.NativeObject value not allowed.` | **throws, catchable**: `InternalError: Cannot produce JSON from [object Object]` | nothing sent |
+| `/a/g` | `{}` | sends | **a ~1 KB bean dump of the Rhino `NativeRegExp`** (same scope `ids` list); neither source nor flags appear |
+| `new java.util.Date(0)` | `"Thu Jan 01 00:00:00 UTC 1970"` (constructs: the class shutter allows it) | sends | **`0`** — an integer. Epoch 0 is the same in milliseconds, seconds and microseconds, so the unit is **inferred** as milliseconds (Jackson's default), not measured |
+
+So the serializer never refuses a value except a cycle, and it did not apply
+`Date.prototype.toJSON`. No other `toJSON` was sent, so that it never calls one
+is inferred. Only a root self-cycle was sent; that any cycle of plain objects
+gives the same message is inferred from its naming only `[object Object]`. A JS `Date`, `RegExp` or function is reflected as a Java bean of the
+Rhino object rather than converted, which sends a large meaningless object
+and, for a function, sends source-derived data and the script's variable names
+to the receiver. The non-finite numbers become strings rather than JSON's
+`null`. A `java.util.Date` is the one date type that arrives as a usable value.
+Convert before sending: `date.toISOString()` or `date.getTime()`.
+
+### `openidm.create` content with an `undefined` value (verified 2026-11-04)
+
+Same script; one next-gen journey decision node called
+`openidm.create("managed/alpha_user", <uuid>, content)` four times, each
+`content` being `{userName, givenName, sn, mail}` plus:
+
+| `description` in `content` | Create | Returned object's `description` | IDM REST re-read | `description pr` query |
+| --- | --- | --- | --- | --- |
+| key omitted (control) | succeeds | `null` | `"description": null` | no match |
+| `undefined` | **succeeds** | `null` | `"description": null` | no match |
+| `null` (control) | succeeds | `null` | `"description": null` | no match |
+| `"zz-set"` (positive control) | succeeds | `"zz-set"` | `"zz-set"` | **match** |
+
+`description eq "undefined"` matched none of the four. So an `undefined` value
+neither fails the create nor stores the string `"undefined"`; the record is
+indistinguishable from one created without the key. A plain `GET` renders
+every schema property, so absent and `null` both read as `null` — the presence
+query is what shows nothing was stored. Whether `openidm` serialized the key as
+`null` or dropped it is **not** observable this way (the store keeps neither).
+
+**On a property with a schema `default` it is observable, and `undefined` is
+sent as `null`** (verified 2026-11-04, `scripts/experiment-journey-defaults-case.sh`,
+run twice). `alpha_user` has no defaulted property, so the probe used
+`bravo_user.frIndexedInteger1` (`default: 0`) and wrote no schema:
+
+| `frIndexedInteger1` in `content` | `openidm.create` | Stored |
+| --- | --- | --- |
+| key omitted (control) | returns the record | `0` — the default applied |
+| `null` (control) | throws `JavaException: …ResourceExceptionScriptAdapter: Policy validation failed`; `e.javaException.getDetail()` names `NOT_NULL` on the property | no record (GET 404) |
+| `undefined` | **throws the same, with the same `NOT_NULL` detail** | no record |
+| `7` (positive control) | returns the record | `7` |
+
+So `openidm.create` serializes an `undefined` value as `null` — the same rule
+as `httpClient`'s top-level body above. Where the property has no default
+and no `NOT_NULL` guard the difference is invisible; where it has a default,
+`{x: maybeValue}` both loses the default and fails the create. Delete the key
+instead (`docs/api/10-managed-objects.md`, defaults table).
 
 > **Surfaced since `TEMPLATES_VERSION` 46.** `HttpOptions.body` stays typed as
 > plain `object` — neither trap is expressible as a type without contorting the
@@ -667,7 +825,7 @@ workspace routing slug from `src/aic/script/am.rs::slug_for`.
 | `action`                                 | via `Action` class                                         | binding                              | **D/I**   | Next-gen: `action.goTo(...)` chainable `ActionWrapper`. Legacy: static `Action.goTo()` (`ActionBuilder`). Used in 106 `src/`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | `callbacks` / `callbacksBuilder`         | `callbacks`                                                | `callbacksBuilder`                   | **D/I**   | Legacy reads `callbacks`; next-gen builds via `callbacksBuilder.*`. Both names appear (~142 each).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | `idRepository`                           | direct attr methods + `getIdentity()` → `ScriptedIdentity` | `getIdentity()` → `ScriptedIdentity` | **D/V/I** | `getIdentity()` exists on both engines. Legacy also has direct `getAttribute(user,attr)`. Used in 40 `src/`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
-| `requestHeaders`/`requestParameters`     | yes                                                        | yes                                  | **D/V/I** | `Map<String,String[]>`-ish `.get()` (case-insensitive on headers). **The lists really do hold more than one element**: repeat a header or a query parameter and you get one element per occurrence, in the order sent — and `x-forwarded-for` arrives with two without anyone duplicating anything (verified 2026-09-08 on both engines, below). `Origin` and `Referer` are passed through when the client sends them — used for hosted-UI vs custom-UI branching (verified 2026-08-13; see `docs/api/09-journeys.md`). `keySet()` is blocked; iterate with `for…in` or `String(map)`.                                                                                                                                                                                                                                                                                                                                             |
+| `requestHeaders`/`requestParameters`     | yes                                                        | yes                                  | **D/V/I** | `Map<String,String[]>`-ish `.get()` (case-insensitive on headers). **The lists really do hold more than one element**: repeat a header or a query parameter and you get one element per occurrence, in the order sent — and `x-forwarded-for` arrives with two without anyone duplicating anything (verified 2026-09-08 on both engines, below). `Origin` and `Referer` are passed through when the client sends them — used for hosted-UI vs custom-UI branching (verified 2026-08-13; see `docs/api/09-journeys.md`). `keySet()` is blocked; iterate with `for…in`, `String(map)` or `map.forEach(function (key, list) { … })` (next-gen, verified 2026-11-08, below); copy a value list into a JS array with `[].concat(map.get(k))`, and `JSON.stringify` writes it as a JSON array (next-gen, verified 2026-11-10, below).                                                                                                                                                                                                                                                                                                                                             |
 | `requestCookies`                         | no                                                         | yes                                  | **D**     | Next-gen only (migrate doc).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | `existingSession` / `resumedFromSuspend` | yes                                                        | yes                                  | **V**     | `existingSession` is `undefined` unless the request carries a session cookie; with one it is a **flat string map**, enumerable with `for…in`. 23 keys on a minimal journey-issued session (2026-09-14): `AMCtxId`, `AuthLevel`, `CharSet`, `FullLoginURL`, `Host`, `HostName`, `IndexType`, `Locale`, `OidcSid`, `Organization`, `Principal`, `Principals`, `Service`, `UserId`, `UserProfile`, `UserToken`, `amlbcookie`, `authInstant`, `clientType`, `loginURL`, `successURL`, `sun.am.UniversalIdentifier`, plus every property a prior journey set with `action.putSessionProperty`. Values are strings (`AuthLevel` is `"0"`, not `0`). There is **no `username` key** — the principal is `UserId`/`Principals`. See `09-journeys.md` → "Minting a session for a test". `resumedFromSuspend` is **false on a callback round trip** (measured 2026-09-14): it belongs to `action.suspend()`, not to the ordinary send-callbacks-and-re-execute cycle, so it is not the way to tell a node's first pass from its later ones — `callbacks.isEmpty()` is. Shared state survives that round trip and transient state does not; see `09-journeys.md` → "What survives a callback round trip". |
 | `cacheManager`                           | no                                                         | yes                                  | **D**     | Next-gen scripted decision only.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
@@ -940,6 +1098,224 @@ class because `getClass()` on these maps is refused on **both** engines —
 `InternalError: Access to Java class "java.lang.Class" is prohibited` — the
 handed-you-one shape described under **The Java class shutter** above.
 
+### Request map `forEach` and value lists — next-gen (verified 2026-11-08)
+
+`keySet()` is blocked by the class shutter, so scripts iterate a request map
+with `java.util.Map.forEach`. `fixtures/request-map-foreach.script.js` probed it
+on `requestParameters` and `requestHeaders` (through
+`run-journey-multivalue.sh`) and on `requestCookies` (the same run with a
+`Cookie: probeqc=alpha; probeqd=bravo` header), on a next-gen scripted decision.
+All three maps answered alike:
+
+| Probe                                    | Result                                                                    |
+| ---------------------------------------- | ------------------------------------------------------------------------- |
+| `typeof map.forEach`                     | `"function"`                                                              |
+| callback arguments                       | exactly two, `(key, value)`; key is a JS `string`; `arguments[2]` absent  |
+| `this` in the callback                   | an object, not the map                                                    |
+| return value                             | `undefined`                                                               |
+| a `throw new Error("x")` in the callback | reaches the caller as that same `Error` (`name`, `message`, no `javaException`) |
+| `map.forEach()`                          | `InternalError: Can't find method java.util.Map.forEach().`               |
+| `map.forEach(5)`                         | `InternalError: Can't find method java.util.Map.forEach(number).`         |
+| a one-parameter callback                 | called once per key                                                       |
+| key order                                | neither send order nor sorted: the map's hash order                       |
+
+The value a parameter or header key holds is a Java list, not a JS array:
+`typeof` is `"object"`, `Array.isArray` is `false`, `length`, `[0]`, `size()`
+and `get(0)` work, `String(v)` is Java's `[alpha, bravo]`, `v.map` and `v.join`
+are `undefined`, and `v.getClass()` is the shutter's `Access to Java class
+"java.lang.Class" is prohibited.` A cookie's value is a JS string. Header keys
+arrive lowercased, as with `for…in`. The legacy engine was not probed.
+
+### Request value lists under `concat` and `JSON.stringify` — next-gen (verified 2026-11-10)
+
+`fixtures/request-list-concat.script.js` probed what scripts do to copy a
+request value list into a JS array, on a next-gen scripted decision, sending
+each probe header and query parameter twice (`alpha`, `bravo`), once (`solo`),
+once comma-joined (`alpha,bravo`) and once empty (`probeqempty=` and an empty
+`X-Aic-Probe-Empty;` header). Parameters and headers answered identically.
+
+| Probe (`many` = the two-value list, `single` = the one-value list) | Result |
+| ------------------------------------------------------------------ | ------ |
+| `[].concat(many)`                                                  | a JS array (`Array.isArray` true), `length` 2, elements `typeof "string"` and `=== "alpha"` true; `join`, `String()` and `JSON.stringify` behave as on any array |
+| `[].concat(single)`, `[].concat(joined)`                           | one element each: `solo`, `alpha,bravo` (a comma never splits) |
+| an empty value                                                     | `get` returns a list of **one** empty string, not an empty list: `size()` 1, `String(v)` `[]`, `[].concat(v)` is `[""]` |
+| a key not sent                                                     | `get` returns `null`, so `[].concat(missing)` is `[null]` |
+| `[].concat(many, single)`                                          | `[alpha, bravo, solo]` |
+| `[].concat("x", many, 1, single, ["y"])`                           | `["x","alpha","bravo",1,"solo","y"]`, the number still a number |
+| `["first"].concat(many)`                                           | `["first","alpha","bravo"]` |
+| `[].concat(parametersList, headersList)`                           | the four elements, in argument order |
+| `Array.prototype.concat.call(many, "z")`                           | `["alpha","bravo","z"]`: as the receiver the list is copied too |
+| `typeof many.concat`                                               | `"undefined"` (no `Array.prototype` member, as measured 2026-11-08) |
+| `String(many)`                                                     | `[alpha, bravo]` (as measured 2026-11-08) |
+| `JSON.stringify(many)`, `JSON.stringify({ k: many })`, `[many]`    | `["alpha","bravo"]`, `{"k":["alpha","bravo"]}`, `[["alpha","bravo"]]` |
+| the list returned from `toJSON`, from a getter, from a replacer    | written as the same JSON array |
+| a function replacer's view of the list                             | the list itself: `Array.isArray` false, `typeof v.size` `"function"`, `v === many` |
+| under a property list (`JSON.stringify(many, ["0"])`, `({ v: many, w: 1 }, ["v"])`) | still the whole array of strings |
+| with `space` 1                                                     | the indented array |
+
+A truly empty list (size 0) could not be produced: an empty header or
+parameter arrives as one empty string. The legacy engine was not probed.
+
+### `openidm.query` result and relationship arrays — next-gen (verified 2026-11-08)
+
+`fixtures/openidm-query-result-type.script.js`, run through `test-cycle.sh` on a
+next-gen scripted decision, described `openidm.query("managed/alpha_user",
+{_queryFilter: "true", _pageSize: 2}, ["_id"]).result` (two records), the
+`result` of a query matching nothing, and the empty `roles` of a user read with
+`fields: ["roles"]`. All three answered alike, apart from their length:
+
+| Probe                                  | Result                                                         |
+| -------------------------------------- | -------------------------------------------------------------- |
+| `typeof v` / `Array.isArray(v)`        | `"object"` / `false`                                           |
+| `v.length`, `v.size()`                 | the element count                                              |
+| `typeof v[0]`, `typeof v.get(0)`       | `"object"` (two-record query); `v.get(0)` on an empty list throws `InternalError: Index 0 out of bounds for length 0` |
+| `typeof` `some` / `map` / `filter` / `join` | `"undefined"`; calling `v.some(fn)` throws `TypeError: Cannot find function some` |
+| `typeof v.forEach`                     | `"function"` (not called)                                      |
+| `[].concat(v)`                         | a JS array (`Array.isArray` true) holding every element        |
+| `Array.prototype.slice.call(v).length` | the element count                                              |
+| `for (k in v)`                         | one key per element                                            |
+| `v.getClass()`                         | the shutter's `Access to Java class "java.lang.Class" is prohibited.` |
+
+So a query's `result`, and a has-many relationship array on a read, are Java
+lists, not JS arrays: array methods are absent, and `[].concat(v)` is the
+measured way to get one. A populated relationship array was not probed; that it
+is the same kind of list as the empty one is an inference from the query result.
+`forEach`'s callback arguments were not probed.
+
+A second probe, `fixtures/openidm-query-result-string.script.js` (sandbox,
+2026-11-08), read the same query `result` populated (two records, fields
+`["_id"]`) and empty:
+
+| Probe                                   | Populated (2 records)                                    | Empty                                          |
+| --------------------------------------- | -------------------------------------------------------- | ---------------------------------------------- |
+| `typeof v.toJSON`                       | `"undefined"`                                            | `"undefined"`                                  |
+| `String(v)`, `"" + v`                   | shape only (the probe never emits a populated list's contents): starts `[`, ends `]`, holds `{`, `=` and `_id`, no `":` | `[]` |
+| `JSON.stringify(v)`                     | a JSON array of 2 objects, keys `_id,_rev`               | `[]`                                           |
+| `v.get(2)` / `v.get(-1)`                | `InternalError: Index 2 out of bounds for length 2` / `InternalError: Index -1 out of bounds for length 2` | — |
+| `v.some(fn)` / `v.map(fn)`              | `TypeError: Cannot find function some`                   | `TypeError: Cannot find function some in object [].` / `… map in object [].` |
+| `JSON.stringify(response)`              | —                                                        | `{"totalPagedResults":-1,"result":[],"resultCount":0,"totalPagedResultsPolicy":"NONE","pagedResultsCookie":null}` (one call; see below — the order varies) |
+
+So `JSON.stringify` serialises the list without any `toJSON` member, and the
+`String` form has the shape of Java's `AbstractCollection` / `AbstractMap`
+rendering (`[{_id=…, _rev=…}, …]`), which is also how Rhino words the `Cannot
+find function` message. The `", "` separators are Java's, inferred rather than
+seen; how a number inside a record renders (`Integer` versus `Double`) and the
+order of a record's keys in that form were not probed.
+
+A third probe, `fixtures/openidm-query-response-order.script.js` (sandbox,
+2026-11-09), read the key order of four responses (populated and empty, each
+with and without a field list) three ways:
+
+| Read                               | Order                                                                                   |
+| ---------------------------------- | --------------------------------------------------------------------------------------- |
+| `for (k in resp)`, `Object.keys`   | `pagedResultsCookie, totalPagedResultsPolicy, totalPagedResults, resultCount, result` on all four |
+| `JSON.stringify(resp)`             | different between calls: `result` came second, third or fourth, and `resultCount` second or third, with `totalPagedResults` first and `pagedResultsCookie` last each time |
+
+So enumeration order is stable and serialisation order is not; a script or a
+test must not depend on the order of a serialised response.
+
+`rhino-local` emulates the three tables on the next-gen engine (the legacy engine
+has no `openidm`): `result` and every has-many array a read projects (a bare
+name beside `*` included) are a `java.util.List` with `length`, `[i]`, `size()`
+and `get(i)`, no array methods and no `toJSON` member. `get(i)` with any integer
+out of range throws the measured `InternalError`. `[].concat(v)` copies it into
+a JS array, and `JSON.stringify` writes a JSON array, nested lists included.
+`String(v)` renders Java's form of strings, booleans, null, maps and lists, in
+the record's own key order; a number is written as the script engine holds it
+(`3`), which was not measured on AIC.
+The query response's keys come in the measured enumeration order, and `JSON.stringify` writes them in that order too (AIC's serialised order varies). The other
+`List` members (`forEach`, `isEmpty`, `contains`, `indexOf`, `toArray`) answer as Java's list does; they were not probed on AIC. Other
+array-valued fields of a record, a has-many array read with `*` alone or with
+no field list, and nested arrays inside a record are still JS arrays; whether
+AIC hands those over as Java lists too is not measured.
+
+### `openidm` failure `getDetail()` — next-gen (verified 2026-11-08)
+
+`fixtures/openidm-error-detail.script.js`, run through `run-journey.sh`, made
+three `openidm` calls fail from a next-gen scripted decision: a `bravo_user`
+create with `frIndexedInteger1: null` (policy), a delete of a missing
+`alpha_user`, and an unknown managed-collection action. Nothing was created.
+Each threw a `JavaException` whose `e.javaException` answered
+`typeof getDetail === "function"`:
+
+| Call            | `getCode()` / `getReason()` | `String(e.javaException.getDetail())`                             |
+| --------------- | --------------------------- | ----------------------------------------------------------------- |
+| policy create   | `403` / `Forbidden`         | `{ "result": false, "failedPolicyRequirements": [ { "policyRequirements": [ { "policyRequirement": "NOT_NULL" } ], "property": "frIndexedInteger1" } ] }` |
+| missing delete  | `404` / `Not Found`         | `null`                                                            |
+| unknown action  | `400` / `Bad Request`       | `null`                                                            |
+
+The detail is never a JS `null`: it is a CREST `org.forgerock.json.JsonValue`
+(`typeof` `"object"`) in every case. `d.get("result")` is another `JsonValue`
+(`String` gives `false`, or `null` on the null detail), `d.isNull()` is `true`
+only for the null detail, `JSON.stringify(d.getObject())` is plain JSON, and
+`JSON.stringify(d)` is the string form above, quoted. Dot access to a field
+(`d.result`) is `undefined`. `Object.keys(d)` and `for…in` list the class's
+Java members, not the detail's fields. The 404's message names the directory
+entry it looked for, so it carries the record's id.
+
+### `getDetail()` `asString()`, `get(index)` and member presence — next-gen (verified 2026-11-10)
+
+`fixtures/openidm-detail-asstring.script.js` failed the same policy create
+(403) and missing delete (404) from a next-gen scripted decision (nothing was
+created) and read their `getDetail()` `JsonValue`s:
+
+| Read                                                                      | Result |
+| ------------------------------------------------------------------------- | ------ |
+| `d.get("failedPolicyRequirements").get(0).get("property").asString()`     | `"frIndexedInteger1"`, a JS `string` (`===` a literal is `true`) |
+| `asString()` on the 404's null detail, on `.get("result")` of it, and on a missing key of the 403's | `null` |
+| `asString()` on `get("result")` (a boolean)                               | `InternalError: /detail/result: Expecting a java.lang.String but got java.lang.Boolean` |
+| `asString()` on the detail, `failedPolicyRequirements`, its element `0`, and that element's `policyRequirements` | the same, with `/detail`, `/detail/failedPolicyRequirements`, `…/0`, `…/0/policyRequirements` and `java.util.LinkedHashMap` / `java.util.ArrayList` |
+| `asString(1)`                                                             | `InternalError: Can't find method org.forgerock.json.JsonValue.asString(number).` |
+| `String(d.asString)`                                                      | `function asString() {/*\njava.lang.String asString()\n*/}\n` |
+| `get(5)` past the end of an array, `get("property")` on an array, `get(0)` on an object or a string, `get(…)` on a null value, a missing key | a `JsonValue` whose `isNull()` is `true` and `String` is `null` (never a JS `null`) |
+| `get(-1)` on an array                                                     | `InternalError: /detail/failedPolicyRequirements: List index out of range: -1` |
+| `typeof d.<m>` / `"<m>" in d` for `asString`, `isString`, `asBoolean`, `asInteger`, `asList`, `asMap`, `isNull`, `get`, `size`, `keys`, `expect`, `defaultTo`, `required` | `"function"` / `true`, on the object, null and string values alike |
+| `typeof d.class`                                                          | the class shutter's `InternalError: Access to Java class "java.lang.Class" is prohibited.`; `"class" in d` is `true` |
+| `typeof d.zzNotAMember` / `in`                                            | `"undefined"` / `false` |
+
+So a script can feature-detect a `JsonValue` method with `typeof`, and
+`asString()` is a safe read of an optional string field: `null` when absent,
+a catchable error when the field is not a string.
+
+### `openidm.read` fields on a has-many relationship — next-gen (verified 2026-11-08)
+
+`fixtures/array-relationship-fields.script.js`, run through `run-journey.sh`,
+created two throwaway `alpha_role` records, one `alpha_user` holding both in
+`roles` and one holding none, read each user with the selectors below, and
+deleted all four. Per element of `roles`:
+
+| Selector                                                    | Each element carries                                                                         |
+| ----------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| `roles`                                                     | `_ref`, `_refResourceCollection`, `_refResourceId`, `_refProperties`                         |
+| `roles/*`                                                   | those, plus `_id`, `_rev`, `_refResourceRev` and every field of the role                     |
+| `roles/*/name`, `roles/*/name/x`                            | the envelope with `_id`, `_rev`, `_refResourceRev`, plus `name` (whole: `/x` below a string is ignored) |
+| `roles/_id`, `roles/name`, `roles/_ref`, `roles/_refProperties`, `roles/0`, `roles/*/_id`, `roles/*/_refProperties` | the envelope with `_id`, `_rev`, `_refResourceRev` only. `roles/name` does **not** return `name` |
+| `roles/*` with `roles/_id`; `roles` with `roles/*`          | the union: the same as `roles/*`                                                             |
+
+- **`*` combines with a child selector.** `["*", "roles/*"]` and
+  `["*", "roles/name"]` return every top-level field, with `roles` projected as
+  the child selector alone would project it.
+- **`*` alone omits `roles`**: a relationship is not returned by default.
+- **An empty relationship** reads as `[]`, key present, under every selector.
+- **The value is a Java list**, not a JS array: `Array.isArray` is `false`,
+  `length` and `size()` are both 2, `roles[0]` is an object and `roles.map` is
+  `undefined`. `JSON.stringify` gives a JSON array.
+- **Order is not stable.** The element order flipped between reads of the same
+  record, and so did key order within an element.
+
+`rhino-local` emulates the table for a seeded array of `_ref` objects. It
+derives `_refResourceCollection`, `_refResourceId` and `_id` from `_ref` when
+the seed leaves them out, and fills `_rev` and `_refResourceRev` from each
+other. It keeps the seeded order and returns the same emulated Java list as a
+query's `result` (next section). Three cases are
+unmeasured and fault: `parent/*` on an element seeded as a bare reference
+(`openidm-fields-unresolved-ref`), a path below an object field of an element,
+below an envelope key (`parent/*/_refProperties/_id`) or more than one segment
+past a non-`*` name (`parent/name/x`) (`openidm-fields-relationship-deep-path`),
+and `*` with a child of anything
+other than a relationship array (`openidm-fields-wildcard-with-path`). It does
+not yet drop a seeded relationship under `*` alone.
+
 ### `requestProperties` arity — next-gen validate scope (verified 2026-09-08)
 
 The token-endpoint contexts reach the same two maps through
@@ -1171,6 +1547,27 @@ there was no formatted line to read. Open question: what makes IDM ship script
 log output. Until that is answered, an IDM formatting surprise lands as a
 compile error in a client workspace, and this paragraph is the thing to read.
 
+### `logger` argument count and value text — next-gen (verified 2026-11-06)
+
+E19 live probe, next-gen scripted decision (`AUTHENTICATION_TREE_DECISION_NODE`,
+`evaluatorVersion 2.0`), a throwaway script and journey created and deleted
+the same day. Each call ran in its own `try`/`catch`; lines read back from
+`am-core` with `aic logs tx`. Control for "a refusal would be visible":
+`openidm.read(path, null, [], "extra")` (no four-argument overload) threw
+the catchable `InternalError: Can't find method …IdmIntegrationServiceScriptWrapper.read(string,null,object,string).`
+
+- **`info`, `error`, `warn` and `debug` are true varargs.** 4, 5 and 6
+  arguments returned normally at every level, and each line reached
+  `am-core` at its level with every argument bound to a `{}`
+  (`ZZEMU-L T6 warn A B C D E`). The `(format, [A, B, C])` form binds the
+  array's elements too. `debug` lines do reach the log on the sandbox.
+  `trace` was not probed.
+- **A JS number argument prints as a Java `Double`** and an object as
+  `[object Object]`: `(1, true, null, {k: "v"})` logged
+  `1.0 true null [object Object]`.
+- **`logger.warning` does not exist** on next-gen: a catchable
+  `TypeError: Cannot find function warning`, with 1 argument or 5.
+
 ### Legacy access-token modification: the whole binding surface (verified 2026-08-27)
 
 `OAUTH2_ACCESS_TOKEN_MODIFICATION` (evaluatorVersion `1.0`). Until this run
@@ -1243,11 +1640,13 @@ Callable, and what they return on a plain `client_credentials` token:
 | `getCustomFields`                                                | `{subname, expires_in}`                     |
 | `toMap`                                                          | `access_token, scope, token_type, expires_in` |
 | `getTokenInfo`                                                   | object                                      |
-| `getNonce`, `getAct`, `getMayAct`, `getPermissions`, `getClaims`, `getAuthLevel`, `getConfirmationKey` | **`null`** |
-| `getField("<unset>")`                                            | **`null`**                                  |
+| `getNonce`, `getClaims`, `getAuthLevel` | **`null`** |
+| `getAct`, `getMayAct`, `getPermissions`, `getConfirmationKey`, `getField("<unset>")` | an **object** that prints `null`, `size()` 0 — not JS `null` (corrected 2026-11-10, stateless token; see below) |
 
 Writers that work: `setField`, `setFields`, `setNonce`, `setRealm`, `setClaims`,
-`setAuthLevel`, `addExtraData`, `addExtraJsonData`, `setClientId`,
+`setAuthLevel`, `addExtraData`, `addExtraJsonData` (argument types not
+recorded; **`(string, string)` is refused** with `Can't find method`, corrected
+2026-11-10), `setClientId`,
 `setResourceOwnerId`, `setTokenName`, `setTokenType`, `setGrantType`,
 `setAuthGrantId`, `setAuditTrackingId`, `setExpiryTime`, `setAuthTime`, and
 every `remove*` (`removeRealm`, `removeNonce`, `removeClaims`,
@@ -1264,8 +1663,9 @@ would have gotten wrong:
   flavours by flipping `statelessTokensEnabled`, so it is the context and not
   the implementation: the error names `StatelessAccessToken` in one run and
   `StatefulAccessToken` in the other. `setMayAct` **is** callable in
-  `OAUTH2_MAY_ACT_NEXT_GEN`, which is the only context that is meant to stamp
-  the claim — and stamping it is not decoration. `may_act` is what makes an
+  `OAUTH2_MAY_ACT_NEXT_GEN` (a plain object) and in legacy `OAUTH2_MAY_ACT`
+  (a `JsonValue`; 2026-11-10, the may-act section below) — and stamping it is
+  not decoration. `may_act` is what makes an
   RFC 8693 token exchange legal at all: without a claim naming the acting
   client, every exchange is refused with `400 invalid_request "Invalid token
   exchange."`, the same message four unrelated causes produce. See
@@ -1362,6 +1762,189 @@ Absent (`typeof undefined`, or a call that threw): `getType`, `getValue`,
 > and the `legacy-access-token` leaf in `scripts/type-tests/`, whose reject
 > fixture asserts that each next-gen-only member is a compile error here.
 
+### Access-token modification on both engines: the emulator's probes (verified 2026-11-10)
+
+`OAUTH2_ACCESS_TOKEN_MODIFICATION` (legacy, `1.0`) and
+`OAUTH2_ACCESS_TOKEN_MODIFICATION_NEXT_GEN` (`2.0`), measured for the
+rhino-local token context. **Method.** One throwaway confidential client
+(`zzemuC-atm`, `statelessTokensEnabled: true`, scopes `zzemuc-probe` and
+`zzemuc-other`) pointed in turn at a legacy and a next-gen script, and a
+`client_credentials` grant per probe. Each probe writes its record into the
+token with `accessToken.setField("aicprobe", …)`, so the JWT carries the result
+and the claims and response body show what the script changed. The six probe
+scripts and their sanitised captures are committed as
+`packages/rhino-local/test/fixtures/oauth2-atm/`, and
+`test/bindings/oauth2-access-token.e2e.test.ts` runs the same scripts in the
+emulator and requires the same record. Client and scripts were deleted
+afterwards. `identity.getAttributes()` was never called.
+
+#### Next-gen top-level bindings
+
+| Binding | Present | Notes |
+| --- | --- | --- |
+| `accessToken` | yes | `AccessTokenScriptWrapper`. Getters return JS strings and numbers: `getClientId() === "<id>"` is `true`. |
+| `identity` | yes | `ScriptedIdentityScriptWrapper`: `getName`, `getUniversalId`, `exists()`, `getAttributeValues` (a list; `[]` for an attribute it lacks). `getAttribute` and `isExists` are `Cannot find function`. |
+| `session` | **no** | Not bound at all: reading it is `ReferenceError: "session" is not defined.`, where legacy binds `null`. |
+| `scopes` | yes | A Java list: `size()`, `contains()`, `scopes[0]` and `length` work, and `add()` mutates it. |
+| `requestProperties` | yes | Four entries (`size()` is 4): `realm`, `requestHeaders`, `requestParams`, `requestUri`. Param and header values are lists; headers answer to lower and Title case. `requestParams` renders as JSON (`{ "grant_type": [ … ] }`). |
+| `clientProperties` | yes | Six entries: `clientId`, `allowedGrantTypes`, `allowedScopes`, `allowedResponseTypes`, `customProperties`, `redirectUris`. **Reading any of the three `allowed*` sets throws** `Access to Java class "java.util.HashSet"` (`TreeSet`, `LinkedHashSet`) `is prohibited.` |
+| `logger`, `httpClient`, `systemEnv`, `openidm`, `secrets`, `utils`, `require`, `cookieName`, `emailService`, `jwtAssertion`, `jwtValidator`, `policy`, `realm`, `scriptName` | yes | `typeof` only, except `realm` (`/alpha`). |
+| `nodeState`, `action`, `callbacksBuilder`, `requestHeaders`, `existingSession`, `idRepository`, … | no | `typeof` is `undefined`. |
+
+`String(identity)` is the wrapper's Java `toString` (`…ScriptedIdentityScriptWrapper@<hash>`),
+but `identity.toString()` is `TypeError: Cannot find function toString`.
+
+#### Next-gen `accessToken`
+
+Getters on a plain `client_credentials` token: `getCustomFields()` is
+`{ "subname": "<client>", "expires_in": 3599 }` (JSON-rendered),
+`getExpiryTime() - getAuthTimeSeconds() * 1000` is `3600000`, `getField` of an
+unset key and `getNonce`/`getAct`/`getMayAct`/`getPermissions`/`getClaims`/
+`getAuthLevel`/`getConfirmationKey` are `null`. `getType`, `getValue` and
+`getExpiresIn` are `undefined`. `getField` reads back what `setField` stored as
+a JS value (`42`, not `42.0`). `getField()` and `setField(key)` with the wrong
+argument count are `Can't find method …AccessTokenScriptWrapper.getField().`
+
+Writers measured: `setField`, `setFields`, `setNonce`, `setClaims`,
+`setAuthLevel`, `setAct`, `setMayAct`, `setPermissions` (all return
+`undefined`), `addExtraData(k, v)` and `addExtraJsonData(k, "<json>")`, which
+both land in the **token endpoint's response body** rather than the JWT — the
+JSON one as the string given, not parsed. `setScope` takes a JS array or the
+`scopes` list; the token copies it, so a later `scopes.add()` does not reach the
+token. `accessToken.getScope().add(…)` throws `InternalError: null`.
+`setExpiryTime(auth + 600000)` shortens both the JWT and the body's `expires_in`
+(599).
+
+#### Legacy additions to the 2026-08-27 surface
+
+- `getClientId() === "<id>"` is **`false`** and `==` is `true`: the getters
+  return `JavaString`s, so strict equality against a literal fails. The token,
+  audit and grant ids are `object` too; `getAuthTimeSeconds` and
+  `getExpiryTime` are numbers.
+- They are real `java.lang.String`s (measured 2026-11-10, `zzemuC3`
+  client_credentials token): inside a function, `identity.getName() ==
+  accessToken.getClientId()` of the same text is `true` and `===` is `false`;
+  `identity.getName() === identity.getName()` is `true` (AMIdentity returns the
+  same object each call); the tag is `[object JavaObject]`, `length` is a
+  method and `name + ""` is a JS string. **A top-level `var` reads back as a JS
+  string**: after `var n = identity.getName();` at script top level, `typeof n`
+  is `"string"` and `n === "<id>"` is `true`, while the same assignment inside a
+  function, or the value passed as an argument, stays `object`. A probe that
+  stores a getter result in a top-level variable before testing it therefore
+  measures the JS string, not the getter.
+- `getAct()`, `getMayAct()`, `getPermissions()` and `getConfirmationKey()` render as `null` but are objects with
+  `size()` 0, not JS `null`, on a stateless token. `getField` of an unset key
+  is the same.
+- `getField` of a value set by `setField` is a JSON value rendered with Java
+  doubles (`42.0`, `[ "a", 2.0, false ]`); `Object.prototype.toString` calls it
+  `[object JavaObject]`, and its members cannot be read as properties
+  (`v.a` is `undefined`).
+- `addExtraJsonData("<k>", "<json string>")` is `Can't find method
+  …StatelessAccessToken.addExtraJsonData(string,string).` The 2026-08-27 list
+  above calls it working without recording the argument types, so the
+  `(string, string)` shape is the one measured refusal.
+- `clientProperties` has five entries (no `redirectUris`), and the `allowed*`
+  sets are readable: `allowedScopes` rendered `[zzemuc-other, zzemuc-probe]`.
+- `accessToken.getScope().add(…)` returns `true` and does not change the
+  token.
+
+#### Both engines
+
+- **`removeScopes()` returns, and then AM cannot issue the token**: the token
+  endpoint answers `500 server_error` with `error_description`
+  `Cannot invoke "java.util.Collection.size()" because "c" is null`.
+- **An uncaught throw** is `500 server_error`,
+  `Error running access token modification plugin`, with nothing of the
+  script's message.
+- **The JWT's `expires_in` claim is `3600` while the custom field and the
+  response body say `3599`.**
+
+### OIDC claims on both engines: the emulator's probes (verified 2026-11-10)
+
+`OIDC_CLAIMS` (legacy, `1.0`) and `OIDC_CLAIMS_NEXT_GEN` (`2.0`), measured for
+the rhino-local OIDC claims context.
+
+**Method.** The probe setup was one throwaway managed user and one throwaway
+client (`zzemuC2-oidc`, password grant, scopes `openid profile email
+zzemuc2-probe zzemuc2-other`). The client's override block set
+`oidcClaimsPluginType: SCRIPTED` and pointed in turn at a legacy and a next-gen
+script. Each probe made a password-grant token request, then a `GET
+/oauth2/realms/root/realms/alpha/userinfo` with the access token.
+
+- The script runs on both calls.
+- The id token carries the script's claims, because the sandbox realm has
+  `alwaysAddClaimsToToken: true`.
+- Each probe returns its own record as an `aicprobe` claim.
+
+The five probe scripts, twelve one-line result scripts and their sanitised
+captures are committed as `packages/rhino-local/test/fixtures/oidc-claims/`.
+`test/bindings/oidc-claims.e2e.test.ts` runs the same scripts in the emulator
+and requires the same record. The user, client and scripts were deleted
+afterwards. `identity.getAttributes()` was never called.
+
+#### What AM does with the result
+
+The result is the script's **completion value** (its last expression), not a
+`return`.
+
+| Completion value | Legacy | Next-gen |
+| --- | --- | --- |
+| `new org.forgerock.oauth2.core.UserInfoClaims(values, compositeScopes)` (`values` a Java map, `compositeScopes` a Java map or `null`) | 200, claims emitted | not tried |
+| `{ values: {…}, compositeScopes: {…} }`, `compositeScopes` optional | 500 `Error running OIDC claims plugin` | 200, claims emitted |
+| a `java.util.LinkedHashMap` | 500 `Cannot cast java.util.LinkedHashMap to org.forgerock.oauth2.core.UserInfoClaims` | not tried |
+| a plain object with no `values` | not tried | 200, no script claims |
+| `undefined` | 200, no script claims | 200, no script claims |
+| an uncaught `throw` (legacy: also `InvalidRequestException`) | 500 `Error running OIDC claims plugin` | 500, same |
+
+**Emission.**
+
+- **Userinfo body**: the returned values verbatim. A null value is kept as
+  `null`, and there is no `sub` unless the script returns one.
+- **Id token**: AM's own claims plus the values, with nulls dropped.
+- **Subject rule**: when the values hold `sub`, the id token takes `sub` from
+  them, and `subname` too (absent if the values lack it). Otherwise AM's `sub`
+  and `subname` win, and a returned `subname` is ignored in the token.
+- **`compositeScopes` filters nothing**: a claim mapped to a scope the token
+  was not granted is still emitted.
+- **Numbers**: a returned `42` is `42.0` in both outputs, on both engines.
+
+#### The `claims` binding
+
+On both engines `claims` is a copy of AM's `{sub, subname}`, both holding the
+user's id. Changing it (`put`, `remove`, assignment) changes nothing unless the
+script returns it.
+
+| Probe | Legacy | Next-gen |
+| --- | --- | --- |
+| class | `java.util.LinkedHashMap` (`{sub=…, subname=…}`) | script-friendly map (`{ "sub": …, "subname": … }`) |
+| `claims.sub === identity.getName()` / `==` | `false` / `true` (Java strings) | `true` / `true` |
+| `Object.keys`, `in`, `hasOwnProperty` | `sub,subname`, true, true | same |
+| `JSON.stringify(claims)` | `{"sub":…,"subname":…}` | `{"subname":…,"sub":…}` (note the order) |
+| `put(k, v)` returns / `get(missing)` | `null` / `null` | `null` / `null` |
+| `remove("sub")` | returns the value; key gone | same |
+| `delete claims.subname` | `false`, key kept | `false`, key kept |
+
+#### Top-level bindings
+
+| | Legacy | Next-gen |
+| --- | --- | --- |
+| bound | `claims`, `claimObjects`, `claimsLocales`, `requestedClaims`, `requestedTypedClaims`, `identity`, `scopes`, `session`, `requestProperties`, `clientProperties`, `realm`, `scriptName`, `logger`, `httpClient`, `systemEnv`, `JavaImporter` | `claims`, `claimsLocales`, `requestedClaims`, `identity`, `scopes`, `requestProperties`, `clientProperties`, `realm`, `scriptName`, `cookieName`, `logger`, `httpClient`, `openidm`, `utils`, `secrets`, `systemEnv`, `jwtAssertion`, `jwtValidator`, `policy`, `emailService`, `require`, `JavaImporter` |
+| unbound (`typeof` `undefined`) | `accessToken`, `openidm`, `utils`, `secrets`, `require`, `cookieName`, `emailService`, `jwtAssertion`, `jwtValidator`, `policy`, every decision-node binding | `session`, `claimObjects`, `requestedTypedClaims`, `accessToken`, every decision-node binding |
+| `session` | bound, `null` on a password grant | unbound |
+| `logger` | Debug: `message`, `warning`, `error`, `messageEnabled`, `warningEnabled` (`true`), `errorEnabled`, `getName`; no `info` | slf4j: `info`, `warn`, `error`, `debug`, `trace`, `isDebugEnabled`, `getName`; no `message` |
+| `identity` | `AMIdentity`: `getName()`/`getUniversalId()` Java strings, `isExists()` `true`, `getAttribute(name)` a `HashSet` (empty for an absent name); no `exists`, no `getAttributeValues` | `getName()`/`getUniversalId()` JS strings, `exists()` `true`, `getAttributeValues(name)` a list of JS strings (empty for an absent name); no `getAttribute`, no `isExists` |
+| `scopes` | `HashSet`: `size()`, `contains()`, `toArray()`; `scopes[0]` is `InternalError` | list: `length`, `[i]`, `contains()`, `toArray()` |
+| `claimsLocales` | Java list; `claims_locales=fr-CA en` gives `[fr-CA, en]` at the token endpoint, empty at userinfo | same, JS strings |
+| `requestedClaims` | empty map, renders `{}`, `get(x)` `null` | empty map, renders `{  }`, `get(x)` `null` |
+| `requestedTypedClaims` / `claimObjects` | empty list (`toArray()` `[]`) / two `Claim`s, `sub -> {values: [<id>], essential: false}` and the same for `subname` | unbound |
+| `requestProperties` | `realm`, `requestHeaders`, `requestParams`, `requestUri`; `password` and `client_secret` filtered out of the params; params empty at userinfo | same |
+| `clientProperties` | five keys (`allowedGrantTypes`, `allowedResponseTypes`, `allowedScopes`, `clientId`, `customProperties`), the `allowed*` readable `HashSet`s | six keys (adds `redirectUris`, a list); every `allowed*` member is `Access to Java class "java.util.{HashSet,LinkedHashSet,TreeSet}" is prohibited`, as in access-token modification |
+
+`requestedClaims` and `requestedTypedClaims` could be measured only empty. The
+`claims` request parameter is ignored because the realm has
+`claimsParameterSupported: false`, and the client override block has no such
+field. Measuring a populated one needs a realm-wide change, which was not made.
+
 ### `AMIdentity.getAttribute` returns a HashSet (verified 2026-09-10)
 
 The 2026-08-27 sweep proved the two getters **resolve**. It never asked what
@@ -1404,6 +1987,12 @@ things the old declaration promised — `.length`, `[0]`, `.get(0)`, `.includes(
 — all throw. The `legacy-access-token` accept fixture had been demonstrating
 `.get(0)` since `TEMPLATES_VERSION` 86.
 
+**Since measured through an OIDC flow (2026-11-10):** legacy
+`identity.getAttribute("mail")` is a one-element set, `[zzemuc2@example.com]`
+with `size()` 1 and no `length`, and an absent name is an empty set, as above.
+See "OIDC claims on both engines". `getAttributes()` was not called. The
+original caveat follows.
+
 Not measured through an OIDC flow: `oidc-claims.d.ts` was changed on the
 grounds that it binds the same `com.sun.identity.idm.AMIdentity` on the same
 engine (`evaluatorVersion 1.0`, Rhino 1.7.14), which is the class and the
@@ -1418,6 +2007,323 @@ fixtures are `.cjs` under `checkJs`, where tsc does not raise the implicit-any
 element-access error, so `identity.getAttribute("mail")[0]` and `scopes[0]`
 type-check and throw. `reject.cjs` records this rather than pretending to gate
 it.
+
+### Social IdP profile transformation on both engines: the emulator's probes (verified 2026-11-10)
+
+`SOCIAL_IDP_PROFILE_TRANSFORMATION` (legacy, `1.0`) and
+`SOCIAL_IDP_PROFILE_TRANSFORMATION_NEXT_GEN` (`2.0`), measured for the
+rhino-local social IdP context.
+
+**Method.** A headless social login inside the sandbox tenant:
+
+- **Provider.** A throwaway OAuth2 client in `bravo`, with a `bravo` login
+  journey and one throwaway `bravo_user`.
+- **Consumer.** A throwaway social identity provider (`oauth2Config`) in
+  `alpha`, pointing at that client. Its `transform` script was set in turn to
+  a legacy and a next-gen probe.
+- **Journey.** An `alpha` journey of `SelectIdPNode` →
+  `SocialProviderHandlerNodeV2` → a scripted decision node that recorded what
+  the handler left in the node state. The legacy runs also set the handler's
+  own `script` to a probe of `normalizedProfile`.
+
+The login was driven over REST. `SelectIdPNode` auto-selects a single
+provider, so the first response is the `RedirectCallback`. The `bravo` login
+and the authorize request give a `code`. The journey resumes by POSTing the
+previous step's JSON to `authenticate?…&code&state&iss&client_id`. Posting
+`{}` instead fails with `/state: Expecting a value`.
+
+The probe returns its record inside the profile (`aicprobe`). The probes,
+eight one-line result scripts per engine, and their sanitised captures are
+committed as `packages/rhino-local/test/fixtures/social-idp/`.
+`test/bindings/social-idp.e2e.test.ts` runs the same scripts in the emulator
+and requires the same record. Every object was deleted afterwards and its
+deletion confirmed by re-read. The login created no `alpha_user`.
+
+The context descriptor (`GET /am/json/realms/root/realms/alpha/contexts/SOCIAL_IDP_PROFILE_TRANSFORMATION_NEXT_GEN`)
+is committed as `docs/api/bindings/social-idp-profile-transformation-next.json`.
+Its three `allowLists` entries are the same as `SOCIAL_PROVIDER_HANDLER_NODE`'s.
+
+#### What AM does with the result
+
+The result is the script's **completion value**. It is the same on both
+engines except where noted.
+
+| Completion value | Outcome |
+| --- | --- |
+| a plain object (`{}` included) | accepted; the handler receives it |
+| legacy: `new org.forgerock.json.JsonValue(m)`, `m` a `java.util.LinkedHashMap` | accepted |
+| `undefined`, `null`, a string | journey fails, 401 `Login failure` |
+| an uncaught `throw` | journey fails, 401 |
+
+- **Numbers become doubles**: `4` reaches the handler as `4.0`, and
+  `[1, "b"]` as `[1.0, "b"]`.
+- **A top-level `undefined` property** arrives as `null`. A `null` stays
+  `null`.
+- **Node-state writes persist** to later nodes: `nodeState.putShared`,
+  `nodeState.putTransient`, and on legacy `sharedState.put`.
+- **Legacy `org.forgerock.json.JsonValue.json(...)`** fails with
+  `Access to Java class "java.lang.Class" is prohibited`.
+
+#### Bindings
+
+| Binding | Legacy | Next-gen |
+| --- | --- | --- |
+| `rawProfile` | a JsonValue (`[object JavaObject]`). `.sub` is `undefined`; `get("sub")` is a JsonValue printing `"…"` (quoted), whose `getObject()` is a Java string; `get(missing)` prints `null`; `isDefined()` a boolean; `getObject()` a `[object JavaMap]` printing `{k=v, …}`; `keys()` a `[object JavaObject]` printing `[k, …]`; `size()` a number. `for...in` lists the JsonValue's Java members. `JSON.stringify` gives its rendering as a JSON string | a Java map (`[object JavaMap]`). `.sub` and `get("sub")` are JS strings; `.missing` is `undefined`; `get(missing)` is `null`; `keys()` a `[object JavaList]`; `size()` a number; `for...in` lists the keys; `getObject` and `isDefined` are not functions. `JSON.stringify` gives the object, keys in hash order |
+| `selectedIdp` | JS string, `=== "<provider>"` true | same |
+| `nodeState` | `get("selectedIdp")` a JsonValue printing `"…"`; `putShared` works; `keys()` listed `expectProfileInformation,selectedIdp` and not a key the script had just put | `get` a JS string; `putShared` works; `keys()` throws `Access to Java class "java.util.HashSet" is prohibited` |
+| `sharedState`, `transientState`, `callbacks` | bound (`object`) | `undefined` |
+| `httpClient`, `openidm`, `secrets`, `utils`, `require`, `emailService`, `jwtAssertion`, `jwtValidator`, `policy`, `cookieName` | `undefined` | bound |
+| `existingSession` | `ReferenceError` | `ReferenceError`, although the descriptor lists it |
+| `requestHeaders`, `requestParameters` | bound (21 and 5 keys on this flow) | same |
+| `realm`, `scriptName`, `systemEnv`, `logger` | bound; `realm` is `/alpha` | same |
+| `logger.getName()` | a Java string, `scripts.SOCIAL_IDP_PROFILE_TRANSFORMATION.<script id>.(<script name>)` | a JS string, `scripts.SOCIAL_IDP_PROFILE_TRANSFORMATION_NEXT_GEN.<script id>.(<script name>)` |
+| `normalizedProfile`, `action`, `outcome`, `identity`, `session`, `callbacksBuilder`, `idRepository` | `undefined` | `undefined` |
+
+**The handler node's own script (legacy).** It runs under the same legacy
+context id and binds `normalizedProfile`, a JsonValue holding the
+transformation's result. `normalizedProfile.givenName` is `undefined`, and
+`normalizedProfile.get("givenName")` is a JsonValue. `nodeState`,
+`sharedState` and `transientState` are bound. Returning
+`new JsonValue(LinkedHashMap)` sets the managed object's attributes: the
+captured `givenName` reached the handler's `objectAttributes`. The emulator
+does not run this invocation.
+
+### Config provider node on both engines: the emulator's probes (verified 2026-11-10)
+
+`CONFIG_PROVIDER_NODE` (legacy, `1.0`) and `CONFIG_PROVIDER_NODE_NEXT_GEN`
+(`2.0`), measured for the rhino-local config provider context. Both exist: the
+`ConfigProviderNode` schema's `script` choice lists scripts of both contexts,
+and a journey runs either. The node's own settings are `nodeType`, `script`
+and `scriptInputs` (default `["*"]`).
+
+**Method.** A throwaway `alpha` journey: a next-gen scripted decision node
+that seeds the node state (`putShared` of a string, the number `42`, a nested
+object and a boolean, `putTransient` of a string), then a `ConfigProviderNode`
+with `nodeType` `MessageNode` and the probe as its script, then a scripted
+decision node that reads the node state back. The journey was driven over
+REST with one request header and one query parameter of the probe's own. The
+probe carries its record out as the MessageNode's message. Thirty-one one-line
+`config` scripts per engine pin what AM does with each kind of value: the
+message and buttons the MessageNode showed, or the HTTP status. The probes
+and their sanitised captures are committed as
+`packages/rhino-local/test/fixtures/config-provider/`;
+`test/bindings/config-provider.e2e.test.ts` runs the same scripts in the
+emulator. Every object was deleted afterwards and its deletion confirmed by
+re-read. No user was created.
+
+The context descriptor (`GET /am/json/realms/root/realms/alpha/contexts/CONFIG_PROVIDER_NODE_NEXT_GEN`)
+is committed as `docs/api/bindings/config-provider-node-next.json`. Its
+bindings are `SCRIPTED_DECISION_NODE`'s less `cacheManager`, with the same
+wrapper classes; its `allowLists` are `PromiseImpl`, `Promises$*` and
+`java.lang.Object`. The legacy id returns 0 bindings.
+
+#### What AM does with `config`
+
+AM reads the script's **`config` global after the script ends**. It is the
+same on both engines except where noted.
+
+| `config` | Outcome |
+| --- | --- |
+| a plain object (`{}` included; `var config = …`, or assigned inside a function) | accepted; the wrapped node is configured from it. `{}` gives the MessageNode's defaults |
+| changed after assignment (`config.message.en = …`) | accepted; the final value is used |
+| legacy: a `java.util.HashMap` | accepted |
+| never assigned, `undefined`, `null`, a string, a number, a boolean, an array, a function | journey fails, HTTP 500 with an empty body; AM logs `Script must set 'config' to a Map.` |
+| not assigned, but the script evaluates to a plain object | journey fails, HTTP 500 |
+| an uncaught `throw` | journey fails, HTTP 500 |
+
+- **Values inside the map.** Unknown keys are accepted. Numbers become
+  doubles: the MessageNode shows `42` as `42.0`. A nested object is shown as
+  `[object Object]`, a boolean as `true`. A `null` or `undefined` property
+  (measured at depths one and two) arrives as `null`. An array of a number
+  and a string is accepted.
+- **Next-gen `new java.util.HashMap()`** is `TypeError: [JavaPackage
+  java.util.HashMap] is not a function`.
+- **The script runs on every request through the node.** Submitting the
+  MessageNode's callbacks runs it again. In that run the previous request's
+  transient values are gone (`null`), next-gen `callbacks.isEmpty()` is
+  `false`, and a next-gen node-state object comes back as `[object JavaMap]`
+  printing doubles.
+
+#### Bindings
+
+| Binding | Legacy | Next-gen |
+| --- | --- | --- |
+| `config` before assignment | `ReferenceError` | `ReferenceError` |
+| `nodeState.get` | a JsonValue (`[object JavaObject]`): String gives `"hello"` (quoted, `=== "hello"` false), `42.0`, `{ "a": 1.0, "b": [ 1.0, 2.0 ], "c": { "d": "e" } }`, `true`; `.a` is `undefined`; `JSON.stringify` gives the rendering as a JSON string; transient values visible; absent key `null` | plain JS values: `=== "hello"` true, the number `42`, a plain object (`.a` is `1`), `true`; transient values visible; absent key `null` |
+| `nodeState.keys()` | a Java set, **live**: lists a key `putShared` added earlier in the script, transient keys, and AM's own (`authLevel`, `maxAuthenticationSessionDuration`, `realm`, `username`) | throws `Access to Java class "java.util.HashSet" is prohibited` |
+| `nodeState.isDefined`, `putShared`, `putTransient` | work; writes reach the next node | same |
+| `sharedState`, `transientState`, `outcome` | `undefined` | `undefined` |
+| `callbacks` | `undefined` | bound; `isEmpty()` is `true` on the first request |
+| `callbacksBuilder` | `undefined` | bound; `textOutputCallback(0, "…")` throws nothing and adds nothing to what the MessageNode shows |
+| `action` | `undefined` | bound; `goTo("false")` throws nothing |
+| `idRepository` | bound; `for...in` lists `addAttribute`, `getAttribute`, `setAttribute`, `getIdentity`, `createUser`, … | bound; `for...in` lists `createUser`, `getIdentity`, `identity`, … |
+| `requestHeaders`, `requestParameters` | bound; `get(name)` a `[object JavaList]` printing `[v1]`; `get(absent)` `null` | same |
+| `requestCookies`, `openidm`, `utils`, `emailService`, `jwtAssertion`, `jwtValidator`, `policy`, `cookieName`, `journey`, `oauthApplication`, `samlApplication`, `locales`, `resumedFromSuspend`, `require` | `undefined` | bound (`requestCookies` empty, `resumedFromSuspend` `false`) |
+| `existingSession` | `ReferenceError` | `ReferenceError` on this flow (no session cookie), although the descriptor lists it |
+| `identity`, `session`, `auditEntryDetail`, `properties`, `cacheManager` | `undefined` | `undefined` |
+| `realm`, `scriptName`, `httpClient`, `secrets`, `systemEnv`, `logger` | bound; `realm` is `/alpha` | same |
+| `logger.getName()` | a Java string, `scripts.CONFIG_PROVIDER_NODE.<script id>.(<script name>)` | a JS string, `scripts.CONFIG_PROVIDER_NODE_NEXT_GEN.<script id>.(<script name>)` |
+| `context` | `Access to Java class "javax.script.SimpleScriptContext" is prohibited` | same |
+
+### OAuth2 validate scope on both engines: the emulator's probes (verified 2026-11-10)
+
+`OAUTH2_VALIDATE_SCOPE` (legacy, `1.0`) and `OAUTH2_VALIDATE_SCOPE_NEXT_GEN`
+(`2.0`), measured for the rhino-local validate scope context. Both exist: a
+client's `overrideOAuth2ClientConfig.validateScopeScript` (with
+`validateScopePluginType: "SCRIPTED"`) accepts a script of either context, and
+AM runs either.
+
+**Method.** A throwaway `alpha` client with `statelessTokensEnabled`, scopes
+`zzemuc5-a`, `zzemuc5-b` and `zzemuc5-c`, default scope `zzemuc5-c`, and the
+probe as its validate scope script. Each probe was one `client_credentials`
+token request asking for `zzemuc5-a zzemuc5-b` unless noted. The surface probe
+carries its record out as the `throwInvalidScope` message on next-gen and as
+an `InvalidScopeException` message on legacy, so it arrives as the 400's
+`error_description`. Twenty-nine one-line result scripts (thirty-four requests on
+next-gen and thirty-one on legacy, counting the scope variants) pin what AM does with each kind of result:
+the issued token's `scope`, or the error AM answers. The probes and their
+sanitised captures are committed as
+`packages/rhino-local/test/fixtures/oauth2-validate-scope/`;
+`test/bindings/oauth2-validate-scope.e2e.test.ts` runs the same scripts in the
+emulator. Both scripts and the client were deleted afterwards and their
+deletion confirmed by re-read. No user was created.
+
+#### What AM does with the result
+
+AM runs the body, then calls the global `validateAccessTokenScope` with **no
+arguments** (a parameter is `undefined`; `var validateAccessTokenScope =
+function …` works as well as a declaration; declaring
+`validateRefreshTokenScope` and `validateAuthorizationScope` beside it changes
+nothing on this grant). Same on both engines except where noted.
+
+| `validateAccessTokenScope()` returns or does | Token request |
+| --- | --- |
+| a JS array of scope strings | `200`; `scope` is **exactly** that list, duplicates removed |
+| a list wider than the request (`zzemuc5-c` added) | `200`, **widened**: `zzemuc5-a zzemuc5-b zzemuc5-c`; with only `zzemuc5-a` requested, `zzemuc5-a zzemuc5-c` |
+| a scope the client does not hold (`zzemuc5-nope`) | `200`, granted: `zzemuc5-a zzemuc5-nope` |
+| `requestedScopes` itself | `200`, the request |
+| `requestedScopes` after `requestedScopes.add("zzemuc5-c")` | `200`, `zzemuc5-a zzemuc5-b zzemuc5-c` |
+| `[]`, `null`, `undefined` | `403 authorization_declined`, "The user has declined authorization" |
+| the request unchanged when no `scope` parameter was sent | `403`: `requestedScopes` is empty; the client's default scope is not in it |
+| a string (one scope, or two joined by a space), a plain object | `500 server_error`, "Error while running validate scope script" |
+| a list holding a number | `500`, `class java.lang.Double cannot be cast to class java.lang.String …` |
+| no `validateAccessTokenScope` (a top-level body only, or one evaluating to a list) | `500`, "Error while running validate scope script" |
+| `throw new Error(…)`, at the top level or in the function | `500`, `class org.mozilla.javascript.NativeError cannot be cast to class org.mozilla.javascript.NativeJavaObject …` |
+| `throw "…"` | `500`, `class java.lang.String cannot be cast to class org.mozilla.javascript.NativeJavaObject …` |
+| next-gen: `scopeValidatorHelper.throwInvalidScope("zz denied")` | `400 invalid_scope`, `error_description` "zz denied" |
+| next-gen: `throwInvalidScope(7)` / `throwInvalidScope(null)` | `400`, "7" / "The requested scope is invalid, unknown, or malformed." |
+| next-gen: `throwInvalidScope()` | `500`, "Error while running validate scope script" |
+| next-gen: `throwInvalidScope` inside `try`, the `catch` returning a list | `200`, the `catch`'s list |
+| legacy: `throw new org.forgerock.oauth2.core.exceptions.InvalidScopeException("zz java")` | `400 invalid_scope`, "zz java" |
+| next-gen: the same `InvalidScopeException` | `500` (the class is not reachable) |
+| legacy: `scopeValidatorHelper.throwInvalidScope(…)` | `500`: `scopeValidatorHelper` is not bound |
+
+#### Bindings
+
+| Binding | Legacy | Next-gen |
+| --- | --- | --- |
+| `requestedScopes` | `java.util.HashSet` (`[object JavaObject]`); `size()`, `contains()`, `isEmpty()`, `String(v)` `[zzemuc5-a, zzemuc5-b]`; `toArray()` not a JS array, items Java strings (`typeof` `object`); `forEach` hands JS strings; `JSON.stringify` a JSON array; `[0]` is `Java class "java.util.HashSet" has no public instance field or method named "0"`; `add()` returns `true` and grows it; `iterator()` answers a Java iterator whose members were not read | `[object JavaList]` of JS strings; `length`, `size()`, `[i]`, `contains()`, `indexOf()`, `isEmpty()`, `forEach`, `toArray()` (not a JS array), `JSON.stringify`, `[].concat(v)`, `Array.prototype.slice.call(v)`; `add()` returns `true` and grows it (`String(v)` shows the addition); `iterator()` is `Access to Java class "java.util.ArrayList$Itr" is prohibited`; `join` is `Cannot find function join` |
+| `allowedScopes` | `java.util.TreeSet`, otherwise as `requestedScopes`; `iterator()` is `Access to Java class "java.util.TreeMap$KeyIterator" is prohibited` | as `requestedScopes`: the client's scopes |
+| `availableScopes` | `ReferenceError` | as `requestedScopes`, `add()` not called: the client's scopes |
+| `defaultScopes` | `java.util.TreeSet`: the client's default scopes | as `availableScopes` |
+| `scopeValidatorHelper` | `ReferenceError` | `[object JavaObject]`, `String` `…ScopeValidatorScriptHelper@<hash>`; `toString()` is `Cannot find function toString`; `inheritAccessTokenScopesOnRefresh()` returns `undefined` |
+| `identity` | `ReferenceError` | `…ScriptedIdentityScriptWrapper@<hash>`; on `client_credentials` `exists()` is `false`, `getName()` throws `Cannot invoke "com.sun.identity.idm.AMIdentity.getName()" because "this.amIdentity" is null` |
+| `requestProperties` | `ReferenceError` | `[object JavaMap]` of four keys, `realm`, `requestHeaders` (nineteen, case-insensitive `get`, values `[object JavaList]`), `requestParams` (`client_id`, `grant_type`, `scope`; `get("absent")` `null`, a missing key `undefined`) and `requestUri` (a string: the token endpoint) |
+| `clientProperties` | `ReferenceError` | `[object JavaMap]` of six keys: `clientId`, `customProperties` (an empty `[object JavaMap]`), `redirectUris` (an empty `[object JavaList]`); reading `allowedGrantTypes`, `allowedScopes` or `allowedResponseTypes` is `Access to Java class "java.util.HashSet"` / `"java.util.TreeSet"` / `"java.util.LinkedHashSet" is prohibited` |
+| `logger.getName()` | a Java string, `scripts.OAUTH2_VALIDATE_SCOPE.<script id>.(<script name>)` | a JS string, `scripts.OAUTH2_VALIDATE_SCOPE_NEXT_GEN.<script id>.(<script name>)` |
+| `realm`, `scriptName`, `systemEnv` | bound; `realm` is `/alpha` | same |
+| `cookieName`, `httpClient`, `secrets`, `openidm`, `utils`, `emailService`, `jwtAssertion`, `jwtValidator`, `policy`, `require` | `undefined` | bound |
+| `requestHeaders`, `requestParameters`, `nodeState`, `sharedState`, `transientState`, `callbacks`, `action`, `outcome`, `idRepository`, `existingSession`, `session`, `accessToken`, `token`, `claims`, `scopes`, `cacheManager` | `undefined` | `undefined` |
+| `this` in the function | `object` | `object` |
+
+Two rows here overturn earlier text. The 2026-07-29 note in this file that a
+returned extra scope "did **not** widen the grant" does not hold on this
+client: the widening rows above were measured on both engines with the scope
+in and out of the client's list. And
+[13-script-contexts.md](13-script-contexts.md) lists legacy
+`OAUTH2_VALIDATE_SCOPE` among the contexts with 0 bindings; that is the
+context descriptor, and the legacy runtime binds the seven globals above
+(`docs/api/99-quirks-and-open-questions.md`, 2026-11-10).
+
+### OAuth2 may act on both engines: the emulator's probes (verified 2026-11-10)
+
+`OAUTH2_MAY_ACT` (legacy, `1.0`) and `OAUTH2_MAY_ACT_NEXT_GEN` (`2.0`),
+measured for the rhino-local may-act context. Both exist: a client's
+`overrideOAuth2ClientConfig.accessTokenMayActScript` accepts a script of
+either context, and AM runs either. There is no plugin-type companion; the
+script id is enough (`docs/api/05-oauth2-oidc.md`).
+
+**Method.** A throwaway `alpha` client with `statelessTokensEnabled`, scopes
+`zzemuc6-a` and `zzemuc6-b`, default scope `zzemuc6-a`, and the probe as its
+may-act script. Each probe was one `client_credentials` token request. The
+surface probe carries its record out inside the issued `may_act` claim. 38
+result cases (29 on next-gen, 19 on legacy; some are one engine only) pin
+what AM stamps: the issued token's `may_act` and `act`, its `scope`, or the
+error AM answers. `<absent>` in the captures is a missing claim, which is
+not JSON null. The probes and their sanitised captures are
+`packages/rhino-local/test/fixtures/oauth2-may-act/`;
+`test/bindings/oauth2-may-act.e2e.test.ts` runs the same scripts in the
+emulator. Both scripts and the client were deleted afterwards and their
+deletion confirmed by re-read. No user was created.
+
+#### What AM does with the script
+
+AM runs the body. The top-level value is ignored. If the script returns, AM
+stamps `may_act` and `act` from the token and issues the access token. A
+throw is HTTP 500 and discards a claim set earlier in the same script. The
+generic refusal is `Error running may_act script`.
+
+| The script | Next-gen | Legacy |
+| --- | --- | --- |
+| does not call `setMayAct` | `200`; both claims `<absent>`; `scope` is the request (`zzemuc6-a`) | same |
+| `setMayAct({ client_id })` | `200`; `may_act` is that object, held by reference (a later write to the same object is in the claim) | `500`, the generic refusal: a plain object is not a `java.util.Map` |
+| `setMayAct(null)` | `200`; `may_act` is JSON null | `200`; `may_act` is `<absent>` (cleared, not JSON null) |
+| `setMayAct(new JsonValue(null))` | not this call | `200`; `may_act` is JSON null |
+| `setMayAct(new JsonValue("…"))` | not this call | `200`; `may_act` is that string |
+| `setMayAct(new JsonValue(linkedHashMap))` | not this call | `200`; `may_act` is the map, held by reference |
+| `setMayAct({})` | `200`; `may_act` is `{}` | `500`, as for any plain object |
+| `setMayAct("…")`, `setMayAct(7)`, `setMayAct([…])`, `setMayAct()` | `500`, the generic refusal | a string is the same `500`; the other three were not separate legacy cases |
+| `setMayAct` of a `java.util.HashMap` | `500`: constructing `java.util.HashMap` is the class shutter | `500`: `Can't find method setMayAct(java.util.HashMap)`, uncaught |
+| a `Date` as a direct property of the object | the script returns; the request is then `500`, `Failed to write json: … JsonMappingException: No Context associated with current Thread` through `may_act` → that `Date` | not measured |
+| `NaN` as a property | `200`; that property is the string `"NaN"` | not measured |
+| `undefined` as a property | `200`; that property is JSON null | not measured |
+| `throw`, including after `setMayAct` succeeded | `500`, the generic refusal; the earlier set is discarded | a top-level `throw` is the same |
+| two `setMayAct` calls | `200`, the last object | `200`, the last JsonValue |
+| `setAct({ sub })` | `200`; `act` is that object; `may_act` stays `<absent>` | a plain object throws, so it does not stamp `act`; `setAct(new JsonValue(…))` does |
+| `token.setScope(new java.util.HashSet(…))` | `setScope` is not a function | `200`; the issued `scope` is that set. The `scopes` binding keeps the request's scopes |
+
+A `Date`, a function or a `RegExp` passed *as* the `setMayAct` argument (not
+as a property) faults in the emulator: those shapes were not what the
+captures called. `Infinity` inside an object was not measured and faults.
+
+#### Bindings
+
+| Binding | Legacy | Next-gen |
+| --- | --- | --- |
+| `token` | `org.forgerock.oauth2.token.stateless.StatelessAccessToken`. `String(token)` is 1300 characters, prefix `eyJ`, two dots; `toString` is a function. `getMayAct()` / `getAct()` of an absent claim is a null JsonValue (`String` `null`, `size()` `0`), not JS `null`. `getField` of `client_id`, `sub`, `grant_type`, `expires_in`, `realm` answers; `getField("scope")` is a JsonValue of the live scope. `getField(null)` is `JavaException` `java.lang.NullPointerException`. `for...in` throws the class shutter for `org.forgerock.oauth2.core.ResourceOwner`. `setField` is a function whose call was not measured (it faults here). `removeField` is `undefined`. Other methods (`getClientId`, `addExtraData`, …) are functions whose calls fault | `org.forgerock.openam.oauth2.token.ExchangeableTokenScriptWrapper`. Five methods only: `getField`, `getAct`, `getMayAct`, `setAct`, `setMayAct`. `setField` and `toString` are absent (`Cannot find function`). `String(token)` is `class@<8 hex>`. `getMayAct()` of an absent claim and of JSON null are both JS `null`. `getField("scope")` is `Access to Java class "java.util.TreeSet" is prohibited`. `getField("client_id")` and `getField("sub")` are the client id; `grant_type` is `client_credentials`; `expires_in` is `3600`; `realm` is `/alpha`. `getField(null)` is `InternalError` whose message is `null`. `getField(7)`, `getField({})` and an absent key are JS `null`. `for...in` lists Java bean members; the emulator does not reproduce that list |
+| `scopes` | `java.util.HashSet`. `String` `[zzemuc6-a]` (no spaces). `[0]` is `Java class "java.util.HashSet" has no public instance field or method named "0"`. No `length`. `forEach` hands JS strings. `contains` wants a string. `toArray()` items are Java strings (`typeof` `object`). `iterator()` is a Java object, `String` `java.util.HashMap$KeyIterator@<hash>`. `JSON.stringify` is a JSON array. `setScope` replaces the token's scope, not this set | `[object JavaList]` of JS strings. `length`, `size()`, `[i]`, `contains(string)`, `forEach` of JS strings, `toArray()` (not a JS array), `JSON.stringify`, `String` `[zzemuc6-a]`. `iterator()` is `Access to Java class "java.util.ArrayList$Itr" is prohibited`. `add()` was not measured and faults |
+| `identity` | bound. `exists` is not a function (`Cannot call property exists`). `String(identity)` is the universal id `id=<clientId>,ou=agentonly,o=alpha,ou=services,ou=am-config` | `exists()` is `true`; `getName()` is the client id; the same universal id |
+| `requestProperties` | a Java map. `requestUri` and `grant_type[0]` are Java strings, so `===` against the literal is `false`. The default request's parameters are `client_id` and `grant_type` | a Java map. `requestUri` and `grant_type[0]` are JS strings (`===` the literal). Same default parameters |
+| `clientProperties` | a Java map of five keys: `redirectUris` is not one of them (reading it is `undefined`). `String` of an empty `customProperties` is `{}` | a Java map that includes `redirectUris`. `String` of an empty `customProperties` is `{  }`. Reading `allowedGrantTypes`, `allowedScopes` or `allowedResponseTypes` is the class shutter (`HashSet`, `TreeSet`, `LinkedHashSet`) |
+| `logger.getName()` | a Java string, `scripts.OAUTH2_MAY_ACT.<script id>.(<script name>)` | a JS string, `scripts.OAUTH2_MAY_ACT_NEXT_GEN.<script id>.(<script name>)` |
+| `realm`, `scriptName`, `systemEnv` | bound; `realm` is `/alpha` | same |
+| `session` | `typeof` `object`. The capture does not show `null` against some other object | `undefined` |
+| `cookieName` | `undefined` | `typeof` `string`. The value was not read |
+| `httpClient`, `secrets`, `openidm`, `utils`, `emailService`, `jwtAssertion`, `jwtValidator`, `policy`, `require` | `undefined` | bound (the decision-node host set; their may-act behaviour was not re-measured here) |
+| `accessToken`, `nodeState`, `sharedState`, `callbacks`, `requestHeaders`, `requestParameters`, `existingSession` | `undefined` | `undefined` |
+| `context` | `Access to Java class "javax.script.SimpleScriptContext" is prohibited` | same |
+| `org.forgerock.json.JsonValue` | a constructor the overlay installs. `new` is required, with one argument: `null`, a string, or a `java.util.Map`. `size()` of null and of a string is `0`; of a list, its length. `get(string)` on a null value is JS `null`. `isString()` is `true` for a string. `getObject()` of a string is a Java string. `String` of a null value is `null`. `[0]` is the no-public-field error. `size()` of a map or a number was not measured and faults | not installed. `java.util` is behind the class shutter, so a script cannot construct one |
+
+Two rows here overturn earlier text. `docs/api/22-token-exchange.md` and
+`docs/api/04-scripts.md` say the same JS body on legacy `OAUTH2_MAY_ACT`
+fails. A plain object does, and that is what those notes called. A
+`JsonValue` does not: the legacy rows above issued the claim.
+`docs/api/13-script-contexts.md` lists legacy `OAUTH2_MAY_ACT` among the
+contexts whose descriptor has 0 bindings, which is true of the descriptor.
+At runtime it binds the globals in this table, and its `token` is a
+`StatelessAccessToken`, not the next-gen five-method wrapper. The next-gen
+descriptor's five names are what the runtime binds: `setField` and `toString`
+are absent (`docs/api/99-quirks-and-open-questions.md`, 2026-11-10).
 
 ### Library `require()` from next-gen access-token modification (verified 2026-07-29)
 
@@ -1455,14 +2361,29 @@ issued).
 
 Consequences:
 
-- Context-specific bindings (`accessToken`, and by the same rule `identity`,
-  `scopes`, `requestProperties`, `clientProperties`) stay **outside** library
-  scope — same behaviour already recorded for the scripted-decision globals.
+- Context-specific bindings stay **outside** library scope. Measured for
+  `accessToken` only; `identity`, `scopes`, `requestProperties` and
+  `clientProperties` are inferred by the same rule, not probed. The
+  scripted-decision globals (`nodeState`, `callbacksBuilder`, `action`, …) are
+  _typed_ as absent from library scope (`library.d.ts`), which is consistent
+  with this measurement but is a typing decision, not a probe of its own.
   Pass them in as arguments, or have the library return a value the caller
   applies with `accessToken.setField(...)`.
-- The library's own next-gen common bindings (`openidm`, `httpClient`, `logger`,
-  `secrets`, `utils`, …) are available, so shared code that reads managed
-  objects or calls out over HTTP works unchanged in a token-mod call path.
+- `openidm` and `httpClient` are measured available in library scope, so
+  shared code that reads managed objects or calls out over HTTP works unchanged
+  in a token-mod call path. The other next-gen common bindings (`logger`,
+  `secrets`, `utils`, `systemEnv`, `cacheManager`, `idRepository`) are
+  **assumed** available, not probed; so are nested `require` from inside a
+  library and whether caller and library share builtins (`Array.prototype`).
+  **Corrected 2026-11-11**
+  ([Library scope when required](#library-scope-when-required-verified-2026-11-11)).
+  `logger`, `secrets`, `utils` and `systemEnv` are bound. `cacheManager` and
+  `idRepository` are not. A nested `require()` sees the top-level caller's
+  `scriptName` and `logger.getName()`, not the inner library's name.
+  `nodeState` from a decision node and `accessToken` from token modification
+  are both unbound inside the library, which is a probe now, not only a
+  typing decision. Caller and library sharing `Array.prototype` is still
+  unprobed.
 - To use a library from an existing token-mod script you must first migrate that
   script to the `…_NEXT_GEN` context (`evaluatorVersion 2.0`) — the two contexts
   are separate ids, so this is a rewrite of the script's bindings, not a flag
@@ -1497,6 +2418,60 @@ afterwards.
 So `require()` is confirmed on every next-gen context that can currently be
 reached: scripted decision, library-to-library, token mod, validate scope,
 evaluate scope, may-act.
+
+### Library scope when required (verified 2026-11-11)
+
+Question: when a next-gen script `require()`s a library, which bindings does
+the library see, and do they depend on the caller? One `LIBRARY` body was
+required from a next-gen decision node and from next-gen token modification,
+validate scope, may-act and evaluate scope. Legacy decision and legacy token
+modification have no `require()` (`ReferenceError: "require" is not defined.`).
+The probe recorded `typeof eval(name)`, so an unbound name is `throw` (a
+`typeof` of an unbound name would have been `"undefined"`, which is what the
+2026-07-29 token-mod note recorded for `accessToken`). Module scope and the
+body of the export saw the same names on every next-gen caller.
+
+Present on every next-gen caller: `require` and `JavaImporter` (functions);
+`exports`, `module`, `logger`, `httpClient`, `openidm`, `secrets`, `systemEnv`,
+`utils`, `emailService`, `jwtAssertion`, `jwtValidator` and `policy` (objects);
+`realm` (`/alpha`), `scriptName` (the **caller's** script name) and `cookieName`
+(a string; the capture keeps the length, 15, and that it is not
+`iPlanetDirectoryPro`). `logger.getName()` is
+`scripts.<caller context id>.<script id>.(<caller script name>)` at module
+scope, inside the export, and inside a nested `require()`. `systemEnv.getProperty`
+of a key that is not declared is `null`. `utils.base64.encode("zz")` is `eno=`.
+`openidm.read` of a missing managed id is `null`. `this` inside an export called
+as a method is the object `require()` returned. Replacing `module.exports` is
+what `require()` returns. `echo(undefined)` returns `undefined`; `echo(null)`
+returns `null`. `throw new Error("…")` is an object named `Error` whose
+`String` is `Error: …`. A thrown string has `typeof` `string`, an empty name,
+and `String` equal to the string. A throw at the top of the library body
+rejects the `require()` with that error.
+
+Unbound on every next-gen caller: `accessToken`, `action`, `allowedScopes`,
+`auditEntryDetail`, `availableScopes`, `cacheManager`, `callbacks`,
+`callbacksBuilder`, `claims`, `clientProperties`, `config`, `console`,
+`context`, `defaultScopes`, `existingSession`, `idRepository`, `identity`,
+`journey`, `locales`, `nodeState`, `oauthApplication`, `outcome`, `process`,
+`properties`, `rawProfile`, `requestCookies`, `requestHeaders`,
+`requestParameters`, `requestProperties`, `requestedScopes`,
+`resumedFromSuspend`, `samlApplication`, `scopeValidatorHelper`, `scopes`,
+`selectedIdp`, `session`, `sharedState`, `token`, `transientState`. A local
+`var` in the caller is also absent. `context`'s `throw` may be the class
+shutter rather than a missing `var`; either way the library cannot use it.
+
+The only differences across those five callers are `scriptName`, the logger
+name, and `new java.util.HashSet()`. The decision-node caller constructs a
+`HashSet` (`size()` 1 after one `add`). Each OAuth caller refuses it. The
+message was not captured. `ArrayList` was not probed. The 11-name library
+metadata does not list `emailService`, `jwtAssertion`, `jwtValidator` or
+`policy`, which are present. It does not list `cacheManager` or `idRepository`
+as absent, which they are.
+
+OIDC claims, the social IdP profile transformation and the config provider node
+were not used as callers. `OAUTH2_AUTHORIZE_ENDPOINT_DATA_PROVIDER` was not
+reached. `OAUTH2_SCRIPTED_JWT_ISSUER` still has no configuration hook.
+
 
 **Next-gen scripted decision sends callbacks by accumulation, not by an
 `action.send` (2026-08-25).** There is no `send` on the `action` binding at all;
@@ -1553,7 +2528,10 @@ Other observations worth keeping:
   `[aicedit-probe, vsd-from-library]` (the extra one configured on the client
   and present in `availableScopes`), the issued token's `scope` claim was still
   just `["aicedit-probe"]`. AM appears to intersect with what was requested for
-  this grant type.
+  this grant type. **Not reproduced 2026-11-10:** on another
+  `client_credentials` client AM granted exactly the returned list, widened
+  scopes included (see "OAuth2 validate scope on both engines" below and
+  `docs/api/99`, 2026-11-10).
 - `availableScopes` reflects live client config — adding a scope to the client
   showed up in the next call's binding value.
 - evaluate-scope's returned map lands in the **`/oauth2/tokeninfo` response as a
@@ -1767,6 +2745,19 @@ cookie would measure the completed session (see `09-journeys.md`).
   which `get` then returns as a Java map (it prints `{ "rlOa": 1.0 }`, where a
   `putShared` object prints `[object Object]`). `mergeTransient` refuses a
   nested object with the same message.
+- **`mergeShared` with a non-object is a catchable `InternalError`, and
+  state is unchanged** (verified 2026-11-06, E19 live probe; controls: a flat
+  merge and `putShared` both landed and survived every refusal):
+  `"x"`, `42`, `true`, `undefined` and no argument give
+  `Can't find method org.forgerock.openam.auth.node.api.NodeStateScriptWrapper.mergeShared(<type>).`
+  with `string`, `number`, `boolean`, `org.mozilla.javascript.Undefined` and
+  nothing as the type; `null` gives `InternalError: null` (a wrapped Java
+  NPE, no line suffix); an array gives
+  `Cannot convert org.mozilla.javascript.NativeArray@<hash> to java.util.Map`,
+  and adds no `"0"` key. `mergeTransient("x")` is the same refusal naming
+  `mergeTransient(string)`; its other shapes were not probed (rhino-local
+  takes the overload and conversion refusals from `mergeShared`, and keeps
+  `mergeTransient(null)`, which fails inside AM's method body, as a fault).
 - `getObject` returns a Java map: it prints as `{ "a": 1.0, … }`, and
   `containsKey`, `size` and `keySet` are functions on it. `keys()` is
   a Java collection, iterated with `iterator()`, that includes **transient**
@@ -1875,7 +2866,35 @@ only way to its values is `values().toArray()` or `map[k]`. A key named `get`,
   in the measured messages either; they carry the reason text (above). So the
   local script tester's injected failures (`openidmFailures`) carry no `code`
   property and put the code in their own message text,
-  `injected ResourceException code <code>`. `getCode()` was not probed.
+  `injected ResourceException code <code>`. `getCode()` was not probed on
+  that error. `e.javaException` was measured on the illegal-assertion 400
+  (below) to be the adapter itself, answering `getCode()` and `getReason()`,
+  so an injected failure's `e.javaException` answers `getCode()` with the
+  stub's code and `getReason()` with CREST's reason for it (a code outside
+  CREST's table faults, `openidm-failure-reason`). The revision-mismatch and
+  `Response is not application/json` errors carry no `e.javaException`
+  locally, because the status this binding reports for them was not
+  captured.
+- **An illegal filter assertion is a catchable `JavaException`, not IDM's
+  `BadRequestException`** (verified 2026-11-06, E19 second probe, next-gen
+  decision node). For `frIndexedInteger1 eq 7.5` (and `frIndexedDate1 eq
+  "notadate"`, same shape): `e.name` is `JavaException`; `e.message` is
+  `org.forgerock.openam.scripting.wrappers.ResourceExceptionScriptAdapter: The request cannot be processed because it contained an illegal filter assertion value &#39;7.5&#39; for field &#39;/frIndexedInteger1&#39;`
+  — **HTML-escaped as over REST** (`&#39;`; the message holds no raw `'`),
+  where an IDM script's `e.message` is
+  `org.forgerock.json.resource.BadRequestException: …` with plain quotes;
+  `String(e)` is `JavaException: ` + the message, with **no
+  `(script#line)` suffix**. `e.javaException` is an object whose string is
+  the message; `getCode()` is `400` and `getReason()` is `Bad Request`, while
+  `getMessage()` and `getClass()` are `TypeError: Cannot find function …`.
+  `e instanceof Error` is true and the enumerable keys are
+  `fileName,lineNumber`. The rows the same binding returns for the field
+  rules match REST's (`docs/api/10`, DS matching rules).
+- **An `InternalError`'s `(script#line)` suffix is inside `e.message`**
+  (same probe, control): `openidm.read(path, null, [], "extra")` threw
+  `InternalError` with `e.message`
+  `Can't find method org.forgerock.openam.scripting.wrappers.IdmIntegrationServiceScriptWrapper.read(string,null,object,string). (<script name>#<line>)`,
+  and `String(e)` is `InternalError: ` + that message.
 
 
 **`systemEnv.getProperty`**

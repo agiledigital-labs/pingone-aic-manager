@@ -1,13 +1,17 @@
 import { relative } from "node:path";
-import { afterAll, afterEach, beforeAll, beforeEach, expect } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, expect, inject } from "vitest";
+import { JVM_POOL_CONTEXT } from "../pool.ts";
 import type { z } from "zod";
 import type {
   RunnerTestFile as File,
   RunnerTestSuite as VitestSuite,
 } from "vitest";
-import { AicFileLease } from "../aic/file-lease.ts";
+// The tenant lane's heavy modules load only when a suite opts into it: a
+// local-only run (every run without AIC_SCRIPT_TESTER_AIC) never pays for
+// them, which matters most under Vitest's default per-file isolation.
+import type { AicFileLease } from "../aic/file-lease.ts";
+import type { chainFromRunResult as ChainFromRunResult } from "../aic/conform.ts";
 import { createLeaseIdentity } from "../aic/lease-identity.ts";
-import { chainFromRunResult } from "../aic/conform.ts";
 import type { AicIo } from "../aic/tenant.ts";
 import type { TenantProvider } from "../aic/provider.ts";
 import { clearAicTrace, takeAicTrace } from "../aic/trace.ts";
@@ -20,6 +24,10 @@ import {
   type LeaseOptions,
   type Suite,
 } from "./lease.ts";
+
+import { useEmulationGuard } from "./emulation-guard.ts";
+export { expectEmulationFailure, expectHarnessFault, useEmulationGuard } from "./emulation-guard.ts";
+export type { EmulationGuardSource } from "./emulation-guard.ts";
 
 export interface UseLeaseAicOptions {
   id: string;
@@ -99,13 +107,14 @@ export function useLease<TSchema extends z.ZodType>(
   const uploadedName = uploadedIdentity === undefined ? undefined : `${uploadedIdentity.treeName}-subject`;
   let runner: RhinoRunner | undefined;
   let aicLease: AicFileLease | undefined;
+  let chainFromRunResult: typeof ChainFromRunResult | undefined;
   let tenantCookieName: string | undefined;
   const lane: LeaseLane | undefined =
     options.aic === undefined
       ? undefined
       : {
           run: ({ result, source, hooks }) => {
-            if (aicLease === undefined) {
+            if (aicLease === undefined || chainFromRunResult === undefined) {
               throw new Error("rhino-local: AIC lease used before beforeAll completed");
             }
             return aicLease.run({ ...chainFromRunResult(result), source, hooks });
@@ -136,10 +145,23 @@ export function useLease<TSchema extends z.ZodType>(
   // Vitest 5 requires fixture destructuring before the suite argument.
   // eslint-disable-next-line no-empty-pattern
   beforeAll(async ({}, scope) => {
-    runner = await RhinoRunner.spawn();
+    // Borrow this worker slot's warm JVM from the reporter's pool when there is
+    // one (src/pool.ts); otherwise start a JVM for this lease, as before. With
+    // no worker slot id a pooled JVM could never be found again, and would sit
+    // idle until the run ended, so spawn and close instead.
+    const pool = inject(JVM_POOL_CONTEXT);
+    runner =
+      pool === undefined || process.env.VITEST_POOL_ID === undefined
+        ? await RhinoRunner.spawn()
+        : await RhinoRunner.borrow(pool);
     lease.open();
     if (options.aic !== undefined) {
       claimAicLeaseForFile(vitestFilePath(scope), options.aic.id);
+      const [{ AicFileLease }, conform] = await Promise.all([
+        import("../aic/file-lease.ts"),
+        import("../aic/conform.ts"),
+      ]);
+      chainFromRunResult = conform.chainFromRunResult;
       aicLease = new AicFileLease({
         id: options.aic.id,
         suiteName: suite.spec.name,
@@ -181,6 +203,9 @@ export function useLease<TSchema extends z.ZodType>(
       }
     });
   });
+
+  // Register before teardown: Vitest's default stack order checks after cleanup.
+  useEmulationGuard(() => runner);
 
   afterEach(async () => {
     await lease.endTest();
