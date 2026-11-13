@@ -1172,7 +1172,8 @@ async fn relationship(command: RelationshipCommand) -> Result<()> {
                     let label = plan.label();
                     let outcome = match send_repo_change(&ok, plan, permit).await {
                         Ok(applied) => {
-                            repair_readback(&label, &repair_check(&plan.object, false), &applied).map(|()| applied)
+                            repair_readback(&label, &repair_check(&plan.object, false), &applied)
+                                .map(|()| applied)
                         }
                         Err(failure) => Err(repair_failure(
                             &label,
@@ -3855,7 +3856,10 @@ mod tests {
             entry.contains("repair thing --empty-entry --dry-run"),
             "{entry}"
         );
-        assert!(!entry.contains("Run `aic managed relationship verify"), "{entry}");
+        assert!(
+            !entry.contains("Run `aic managed relationship verify"),
+            "{entry}"
+        );
         let mapping = repair_readback("thing.owner", &repair_check("thing", false), &applied)
             .unwrap_err()
             .to_string();
