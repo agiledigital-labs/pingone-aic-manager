@@ -2544,6 +2544,58 @@ were not used as callers. `OAUTH2_AUTHORIZE_ENDPOINT_DATA_PROVIDER` was not
 reached. `OAUTH2_SCRIPTED_JWT_ISSUER` still has no configuration hook.
 
 
+
+#### Rebinding `logger` around `require()` (verified 2026-11-14)
+
+Next-gen scripted decision, stored as `AUTHENTICATION_TREE_DECISION_NODE`
+with `evaluatorVersion` `2.0`. Throwaway journey `zzemuR3M-logger`, script
+`zzemuR3M-decision`, library `zzemuR3M-logger-lib` (`LIBRARY`, `2.0`).
+Fixtures `scripts/rhino-script-tester/fixtures/zzemuR3M-logger-*.script.js`
+and `zzemuR3M-logger-lib.lib.js`. The library is
+
+```javascript
+exports.load = function () {
+  return {
+    info: function (m) {
+      logger.info(m);
+    }
+  };
+};
+```
+
+The caller did `var logger = require("zzemuR3M-logger-lib").load();` and
+then `logger.info("zzemuR3M-shadow")`. The journey answered HTTP 200 and the
+hidden-value callback was `{ "ok": true, "result": "returned" }`. `aic logs
+tx` (`am-core`) has that message once, level INFO. The logger name is
+`scripts.AUTHENTICATION_TREE_DECISION_NODE.<decision script id>.(zzemuR3M-decision)`,
+which is the decision script.
+
+The library's `logger` stayed the library binding. `logger.info` wrote that
+one line and returned.
+
+Two controls on the same journey:
+
+- The caller named its variable `log` and called
+  `log.info("zzemuR3M-noshadow")`. HTTP 200, callback
+  `{ "ok": true, "result": "returned" }`. The message was logged once, level
+  INFO, under the same decision-script logger name.
+- The library evaluated `String(nodeState)`. HTTP 200. The callback's `error`
+  is `ReferenceError: "nodeState" is not defined.` and its `name` is
+  `ReferenceError`.
+  That is the unbound-name result already recorded above, so this run was in
+  library scope.
+
+The same rebinding was repeated on next-gen may-act
+(`OAUTH2_MAY_ACT_NEXT_GEN`, script `zzemuR3M-mayact`, fixture
+`fixtures-atm-ng/mayact-logger-shadow.mayact.js`), attached as
+`overrideOAuth2ClientConfig.accessTokenMayActScript` on client `zzemuR3M-atm`.
+The script has no `try`/`catch`. A `client_credentials` grant returned HTTP
+200. The message `zzemuR3M-mayact-shadow` was logged once, level INFO, logger
+`scripts.OAUTH2_MAY_ACT_NEXT_GEN.<may-act script id>.(zzemuR3M-mayact)`. The
+`log` rename and the `nodeState` read were not repeated on may-act. The
+client's access-token modification script for that request was the audience
+baseline, which returns on this grant.
+
 **Next-gen scripted decision sends callbacks by accumulation, not by an
 `action.send` (2026-08-25).** There is no `send` on the `action` binding at all;
 call `callbacksBuilder.<type>(…)` as many times as you like. If any callbacks
