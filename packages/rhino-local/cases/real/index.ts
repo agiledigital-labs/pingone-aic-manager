@@ -695,7 +695,7 @@ export const realCases: RealEntry[] = [
   }, {
     gap: {
       reason:
-        "AIC serialises java.lang.Integer/Long body fields into the request (javaInt, javaLong appear in the echoed body); the local httpClient mock drops them. The echo reply in `given.http` is also a fixed string recorded without those fields, so closing this needs both the mock serialising Java boxed numbers and the reply echoing the request. The same fixed reply stands in for all three requests the probe sends, so the engine-integer rows, the `nodeState.keys()` rows and the engine-held header/state counts also differ locally.",
+        "AIC serialises java.lang.Integer/Long body fields into the request (javaInt, javaLong appear in the echoed body); the local httpClient mock drops them. The echo reply in `given.http` is also a fixed string recorded without those fields, so closing this needs both the mock serialising Java boxed numbers and the reply echoing the request. The same fixed reply stands in for all three requests the probe sends, so the engine-integer rows also differ locally. The `nodeState.keys()` rows and the header/state counts differ because the case seeds no node state or request headers.",
       differs: ["value"],
     },
     http: [{ url: "https://httpbin.org/post", method: "POST", times: 3 }],

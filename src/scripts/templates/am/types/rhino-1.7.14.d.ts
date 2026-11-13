@@ -141,8 +141,7 @@ interface RequestMap {
    * on the next-gen engine, 2026-11-08 and 2026-11-10). The legacy overlays
    * (`device-match.d.ts`, `social-handler.d.ts`) reuse this type, so for them
    * the `concat` overload is a wider claim than the measurement: the legacy
-   * engine's list is unmeasured under `concat`. Kept as is because legacy is
-   * not invested in.
+   * engine's list is unmeasured under `concat`.
    */
   get(key: StringLike): RequestValueList<string> | null;
   containsKey(key: StringLike): boolean;
