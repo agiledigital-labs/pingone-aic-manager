@@ -1523,7 +1523,9 @@ bound. Present: `require`, `JavaImporter`, `exports`, `module`, `logger`,
 `jwtAssertion`, `jwtValidator`, `policy`, `realm`, `scriptName` and
 `cookieName`. The caller's own bindings (`nodeState`, `accessToken`, `scopes`,
 …) are not. `scriptName` and `logger.getName()` are the caller's, including
-inside a nested `require()`. `logger.getName()` is
+inside a nested `require()`. A caller variable named `logger` does not replace
+the library's `logger`: `var logger = require(lib).load(); logger.info(...)`
+logs once, through that logger. `logger.getName()` is
 `scripts.<caller context>.<script id>.(<script name>)`. `systemEnv.getProperty`
 of a missing key is `null`. `utils.base64.encode` and `openidm.read` of a
 missing id behave as they do for a decision node.
