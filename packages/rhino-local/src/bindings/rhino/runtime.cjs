@@ -4843,10 +4843,22 @@ var __rhinoLocalLibUnbound = [
   "selectedIdp", "session", "sharedState", "token", "transientState"
 ];
 
+// Values a required library resolves for itself, taken when the preamble
+// finishes (java/LibraryHost.java). A caller variable of the same name does
+// not replace them. Measured 2026-11-14: var logger = require(lib).load()
+// still logs through the library's own logger. require, exports and module
+// are the loader's parameters, not lookups. Names in __rhinoLocalLibUnbound
+// stay unbound.
+var __rhinoLocalLibOwn = [
+  "JavaImporter", "cookieName", "emailService", "httpClient", "jwtAssertion", "jwtValidator",
+  "logger", "openidm", "policy", "realm", "scriptName", "secrets", "systemEnv", "utils"
+];
+
 // The runner defines __rhinoLocalLibraries for the preamble only
 // (java/LibraryHost.java) and deletes it before the script runs: it answers a
 // declared id with the module's loader, evaluated in a library scope (the
-// bindings bound after the preamble, less the list above) from a compiled form
+// names bound after the preamble, less the unbound list above; the common
+// bindings in __rhinoLocalLibOwn keep the values from that moment) from a compiled form
 // shared across cases, so a library body is compiled once per JVM rather than
 // once per case. A body a direct runner caller seeds in given.libraries is
 // passed to it as source and compiled into the same library scope. Absent

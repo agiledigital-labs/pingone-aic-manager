@@ -1,3 +1,4 @@
+import java.util.Map;
 import java.util.Set;
 import org.mozilla.javascript.NativeObject;
 import org.mozilla.javascript.Scriptable;
@@ -16,10 +17,13 @@ import org.mozilla.javascript.Scriptable;
  *
  * <p>What it does answer: the names bound when the preamble finished
  * ({@code visible}: the shared bindings, {@code require}, {@code scriptName},
- * the harness's own internals) less the measured unbound list, read live from
- * the caller's scope. A name the caller's script declares later is not in
- * {@code visible}. An assignment the library makes to an undeclared name lands
- * here, not in the caller's scope; whether AIC shares those is unmeasured.
+ * the harness's own internals) less the measured unbound list. The common
+ * bindings ({@code own}, from {@code __rhinoLocalLibOwn}) are the values from
+ * that moment, not a later caller variable of the same name. The other visible
+ * names are read live from the caller. A name the caller's script declares
+ * later is not in {@code visible}. An assignment the library makes to an
+ * undeclared name lands here, not in the caller's scope; whether AIC shares
+ * those is unmeasured.
  */
 final class LibraryScope extends NativeObject {
 
@@ -27,10 +31,12 @@ final class LibraryScope extends NativeObject {
 
   private final Scriptable caller;
   private final Set<String> visible;
+  private final Map<String, Object> own;
 
-  LibraryScope(Scriptable caller, Set<String> visible) {
+  LibraryScope(Scriptable caller, Set<String> visible, Map<String, Object> own) {
     this.caller = caller;
     this.visible = visible;
+    this.own = own;
     setPrototype(caller.getPrototype());
     setParentScope(null);
   }
@@ -46,13 +52,16 @@ final class LibraryScope extends NativeObject {
 
   @Override
   public boolean has(String name, Scriptable start) {
-    return super.has(name, start) || delegated(name);
+    return super.has(name, start) || own.containsKey(name) || delegated(name);
   }
 
   @Override
   public Object get(String name, Scriptable start) {
     if (super.has(name, start)) {
       return super.get(name, start);
+    }
+    if (own.containsKey(name)) {
+      return own.get(name);
     }
     return delegated(name) ? caller.get(name, caller) : Scriptable.NOT_FOUND;
   }

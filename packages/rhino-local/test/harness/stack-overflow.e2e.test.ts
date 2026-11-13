@@ -1,9 +1,9 @@
 /**
  * Recursing past the stack is one script fault, not an internal emulator
  * failure. The interpreter says "Exceeded maximum stack depth". A compiled
- * script throws StackOverflowError. Library scoping is unchanged: a library
- * still reads the caller's live `logger`, so the rebound-logger subject
- * recurses.
+ * script throws StackOverflowError. A required library keeps its own logger
+ * (library-logger.e2e.test.ts); rebinding the caller's `logger` no longer
+ * overflows.
  */
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { CaseRunError, runCase } from "../../src/bindings/run.ts";
@@ -47,22 +47,6 @@ describe("stack overflow is a script fault", () => {
       expect: { outcome: "done" },
     }));
     expect(run.message).toMatch(/runtime_error: Exceeded maximum stack depth/);
-  }, 60_000);
-
-  it("names the library that calls the caller's rebound logger", async () => {
-    const run = await fail(defineCase({
-      name: "rebound logger",
-      context: "OAUTH2_MAY_ACT",
-      script: 'var logger = require("logging").load();\nlogger.info("example");',
-      given: {
-        libraries: {
-          logging: "exports.load = function () { return { info: function (m) { logger.info(m); } }; };",
-        },
-      },
-      expect: {},
-    }));
-    expect(run.message).toMatch(/runtime_error: Exceeded maximum stack depth/);
-    expect(run.message).not.toMatch(/internal/);
   }, 60_000);
 
   it("names a compiled script's StackOverflowError", async () => {
