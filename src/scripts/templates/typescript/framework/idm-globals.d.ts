@@ -152,10 +152,15 @@ declare global {
     ? ReadList<RelationshipExpansion>
     : RelationshipExpansion | null;
 
-  // The list type of a query result and a has-many read. A JS array on IDM
-  // (measured 2026-11-14, docs/api/12): `Array.isArray` is true, `.map` is
-  // `Array.prototype.map`, and `size` / `get` are absent. The AM workspace's
-  // copy of this alias is a Java list.
+  // The list type of a query result (`result`) and a has-many read. On IDM it
+  // is a Java-backed array-compatible value, not a native array (measured
+  // 2026-11-14, docs/api/12 and docs/api/24-idm-script-runtime.md). Indexing,
+  // `length` and the array methods work (`Array.isArray` is true, `.map` is
+  // `Array.prototype.map`, `size` / `get` are absent), so `T[]` models that
+  // interface. `JSON.stringify(v)` gives an object, including when empty;
+  // `[].concat(v)` gives a real array. Doc 24 records the other differences
+  // (string conversion and null-slot membership). The AM workspace's copy of
+  // this alias is a Java list.
   type ReadList<T> = T[];
 
   // A selected has-many relationship (an array of references) is a `ReadList`
@@ -228,7 +233,13 @@ declare global {
    * makes that a compile error instead.
    */
   interface OpenIdmQueryResult<T> {
-    /** JS array, measured 2026-11-14 (docs/api/12). `.map()` is valid here. */
+    /**
+     * Java-backed array-compatible value, not a native array (measured
+     * 2026-11-14). Indexing, `length` and the array methods work, so this is
+     * {@link ReadList} (`T[]`). `JSON.stringify(v)` gives an object, including
+     * when empty; `[].concat(v)` gives a real array. Other differences are in
+     * docs/api/24-idm-script-runtime.md. `.map()` is valid here.
+     */
     result: ReadList<T>;
     resultCount: number;
     pagedResultsCookie: string | null;
