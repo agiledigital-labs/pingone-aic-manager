@@ -96,16 +96,16 @@ for fixture in "${fixtures[@]}"; do
     grant_args+=(--data-urlencode "password=$(cat "$PASSWORD_FILE")")
   fi
 
-  status="$(curl -sS -o "$tmp/tok.json" -w '%{http_code}' \
-    -X POST "$BASE/am/oauth2/realms/root/realms/$REALM/access_token" \
-    "${grant_args[@]}" || echo 000)"
-
+  # Keep the response in the pipe; the final line carries HTTP status only.
   # The claim is the result. A 200 with no `aicprobe` means the script threw
   # before setField — AM issues the token anyway, so the status alone lies.
-  # `aud` and the control claim are recorded as shapes. The access token is not.
-  python3 - "$tmp/tok.json" "$RESULTS" "$name" "$status" <<'PY'
+  { curl -sS -w '\n%{http_code}\n' \
+    -X POST "$BASE/am/oauth2/realms/root/realms/$REALM/access_token" \
+    "${grant_args[@]}" || printf '\n000\n'; } |
+  python3 -c "$(cat <<'PY'
 import base64, json, sys
-tok_path, results_path, name, status = sys.argv[1:5]
+results_path, name = sys.argv[1:3]
+response, status = sys.stdin.read().rstrip("\n").rsplit("\n", 1)
 KNOWN = {
     "zzemuR3M-aud", "zzemuR3M-a", "zzemuR3M-b",
     "zzemuR3M-ctl", "ctl-ok",
@@ -134,7 +134,7 @@ def shape(v, ids):
     return type(v).__name__
 
 try:
-    body = json.load(open(tok_path))
+    body = json.loads(response)
 except Exception as exc:
     body = {"_unparseable": str(exc)}
 claim, note = None, ""
@@ -180,6 +180,7 @@ print("  http=%s aud=%s control=%s %s" % (status, aud_shape, ctl_shape, note))
 if claim is not None:
     print(json.dumps(claim, indent=2))
 PY
+)" "$RESULTS" "$name"
 done
 
 echo
