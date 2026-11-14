@@ -996,12 +996,13 @@ The consent plan names **every script-shaped hook** on the object, inline or
 file-backed, for any event name, and labels firing behavior unknown for this
 probe where unmeasured. It names every mapping whose `source` or `target` is
 `managed/<object>`. If either `config/managed` or `config/sync` cannot be
-inventoried, the plan says so and the command **refuses even with `--yes`**;
+inventoried, the plan says so and the command **refuses even with `--force`**;
 unread inventory is never reported as empty. Otherwise the plan requires
-`--yes` or terminal consent. `--yes` is also the production gate. A
-non-interactive run without `--yes` refuses before creating a probe. On
+`--force` or terminal consent. On map, one `--force` approves both conversion
+and the requested probe. `--yes` authorizes only the production environment. A
+non-interactive run without `--force` refuses before creating a probe. On
 `relationship set` the schema write has landed but the per-type entry is not
-added; finish with `relationship map --wait-activation --yes`. On
+added; finish with `relationship map --wait-activation --force`. On
 `relationship map` the switch has not been sent. `--dry-run` writes no probe.
 
 **Promotion (measured 2026-11-02, three real dev → UAT promotions of
