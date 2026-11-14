@@ -14,8 +14,8 @@
 //! removes a `*` the encoder leaves alone and a trailing dot the encoder
 //! leaves as a dot.
 
-use std::fs::OpenOptions;
-use std::io::Write as _;
+mod directory;
+use directory::Directory;
 use std::path::{Component, Path, PathBuf};
 
 use serde::Serialize;
@@ -269,10 +269,12 @@ pub fn am_export_realm(ns: &crate::scripts::Namespace) -> Result<&str> {
 }
 
 pub fn install(req: &Install<'_>) -> Result<Report> {
+    let root = Directory::root(req.config_dir, false)?;
     let mut planned = Vec::new();
     for file in req.files {
-        let path = contained(req.config_dir, &file.relative)?;
-        let existing = read_existing(&path)?;
+        contained(req.config_dir, &file.relative)?;
+        let path = file.relative.clone();
+        let existing = read_existing(root.as_ref(), &path)?;
         planned.push(Planned {
             relative: slash(&file.relative),
             path,
@@ -286,10 +288,12 @@ pub fn install(req: &Install<'_>) -> Result<Report> {
         return Ok(preview_report(req, &planned));
     }
 
+    let root = Directory::root(req.config_dir, true)?
+        .ok_or_else(|| Error::Config("config directory disappeared".into()))?;
     let mut files = Vec::new();
     let mut stopped = None;
     for (index, item) in planned.iter().enumerate() {
-        match write_one(req, item) {
+        match write_one(req, &root, item) {
             Ok(outcome) => files.push(outcome),
             Err(error) => {
                 stopped = Some(error);
@@ -395,8 +399,12 @@ fn refusal_text(refused: &[(String, bool)]) -> String {
     }
 }
 
-fn write_one(req: &Install<'_>, item: &Planned) -> std::result::Result<FileOutcome, String> {
-    let existing = read_existing(&item.path).map_err(|error| error.to_string())?;
+fn write_one(
+    req: &Install<'_>,
+    root: &Directory,
+    item: &Planned,
+) -> std::result::Result<FileOutcome, String> {
+    let existing = read_existing(Some(root), &item.path).map_err(|error| error.to_string())?;
     match existing {
         Existing::Symlink => Err(format!(
             "refusing to replace symlink {}; nothing further was written",
@@ -409,8 +417,8 @@ fn write_one(req: &Install<'_>, item: &Planned) -> std::result::Result<FileOutco
         }),
         Existing::File(have) if req.force => {
             let backup =
-                backup_file(req, &item.relative, &have).map_err(|error| error.to_string())?;
-            write_bytes(&item.path, &item.bytes)
+                backup_file(req, root, &item.relative, &have).map_err(|error| error.to_string())?;
+            write_bytes(root, &item.path, &item.bytes)
                 .map_err(|error| format!("{error}. The previous bytes are in {backup}"))?;
             Ok(FileOutcome {
                 path: item.relative.clone(),
@@ -424,7 +432,7 @@ fn write_one(req: &Install<'_>, item: &Planned) -> std::result::Result<FileOutco
             item.relative
         )),
         Existing::Absent => {
-            write_bytes(&item.path, &item.bytes).map_err(|error| error.to_string())?;
+            write_bytes(root, &item.path, &item.bytes).map_err(|error| error.to_string())?;
             Ok(FileOutcome {
                 path: item.relative.clone(),
                 action: Action::Wrote,
@@ -447,46 +455,76 @@ fn note_landed(files: &[FileOutcome], error: String) -> String {
     }
 }
 
-fn backup_file(req: &Install<'_>, relative: &str, bytes: &[u8]) -> Result<String> {
-    let dir = req.config_dir.join(".aic-backups");
+fn backup_file(
+    req: &Install<'_>,
+    root: &Directory,
+    relative: &str,
+    bytes: &[u8],
+) -> Result<String> {
+    let parent = root
+        .parent(Path::new(".aic-backups/placeholder"), true)?
+        .ok_or_else(|| Error::Config("backup directory disappeared".into()))?;
+    match parent.create_new(Path::new(".gitignore"), b"*\n!.gitignore\n") {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            parent.read(Path::new(".gitignore"))?;
+        }
+        Err(error) => return Err(error.into()),
+    }
+    let component = |value: &str| -> String {
+        value
+            .chars()
+            .map(|ch| {
+                if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.') {
+                    ch
+                } else {
+                    '_'
+                }
+            })
+            .collect()
+    };
     let extension = Path::new(relative)
         .extension()
         .and_then(|ext| ext.to_str())
         .unwrap_or("bin");
-    let path = crate::backup::create_in(
-        &dir,
-        req.backup_kind,
-        req.backup_realm,
-        relative,
-        extension,
-        bytes,
-    )?;
-    Ok(slash(
-        path.strip_prefix(req.config_dir).unwrap_or(path.as_path()),
-    ))
+    loop {
+        let filename = format!(
+            "{}.{}.{}.{}.{}.{}",
+            component(req.backup_kind),
+            component(req.backup_realm),
+            component(relative),
+            chrono::Utc::now().format("%Y%m%dT%H%M%SZ"),
+            uuid::Uuid::new_v4(),
+            component(extension)
+        );
+        match parent.create_new(Path::new(&filename), bytes) {
+            Ok(()) => return Ok(format!(".aic-backups/{filename}")),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error.into()),
+        }
+    }
 }
 
-fn write_bytes(path: &Path, bytes: &[u8]) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let mut options = OpenOptions::new();
-    options.write(true).create(true).truncate(true);
-    let mut file = options.open(path)?;
-    file.write_all(bytes)?;
+fn write_bytes(root: &Directory, path: &Path, bytes: &[u8]) -> Result<()> {
+    let parent = root
+        .parent(path, true)?
+        .ok_or_else(|| Error::Config("export directory disappeared".into()))?;
+    parent.replace(Path::new(path.file_name().expect("validated path")), bytes)?;
     Ok(())
 }
 
-fn read_existing(path: &Path) -> Result<Existing> {
-    match std::fs::symlink_metadata(path) {
+fn read_existing(root: Option<&Directory>, path: &Path) -> Result<Existing> {
+    let Some(root) = root else {
+        return Ok(Existing::Absent);
+    };
+    let Some(parent) = root.parent(path, false)? else {
+        return Ok(Existing::Absent);
+    };
+    match parent.read(Path::new(path.file_name().expect("validated path"))) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Existing::Absent),
+        Err(error) if error.raw_os_error() == Some(libc::ELOOP) => Ok(Existing::Symlink),
         Err(error) => Err(Error::Config(format!("read {}: {error}", path.display()))),
-        Ok(meta) if meta.file_type().is_symlink() => Ok(Existing::Symlink),
-        Ok(meta) if meta.is_dir() => Err(Error::Config(format!(
-            "{} is a directory; an export file cannot replace it",
-            path.display()
-        ))),
-        Ok(_) => Ok(Existing::File(std::fs::read(path)?)),
+        Ok(bytes) => Ok(Existing::File(bytes)),
     }
 }
 
@@ -1103,6 +1141,49 @@ mod tests {
         assert!(refused.error.as_deref().unwrap().contains("symlink"));
         assert_eq!(std::fs::read(&path).unwrap(), b"same");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn parent_and_backup_symlinks_cannot_escape_the_root() {
+        for backup in [false, true] {
+            let dir = std::env::temp_dir().join(format!("aic-fcm-{}", uuid::Uuid::new_v4()));
+            let outside = dir.with_extension("outside");
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::create_dir_all(&outside).unwrap();
+            let relative = PathBuf::from("managed-objects/custom_widget/custom_widget.json");
+            if backup {
+                std::fs::create_dir_all(dir.join(relative.parent().unwrap())).unwrap();
+                std::fs::write(dir.join(&relative), b"old").unwrap();
+            }
+            std::os::unix::fs::symlink(
+                &outside,
+                dir.join(if backup {
+                    ".aic-backups"
+                } else {
+                    "managed-objects"
+                }),
+            )
+            .unwrap();
+            let files = vec![PlannedFile {
+                relative: relative.clone(),
+                bytes: b"new".to_vec(),
+            }];
+            let result = install(&Install {
+                config_dir: &dir,
+                files: &files,
+                dry_run: false,
+                force: true,
+                backup_kind: "managed",
+                backup_realm: "managed",
+            });
+            assert!(result.is_err() || result.unwrap().error.is_some());
+            assert_eq!(std::fs::read_dir(&outside).unwrap().count(), 0);
+            if backup {
+                assert_eq!(std::fs::read(dir.join(relative)).unwrap(), b"old");
+            }
+            std::fs::remove_dir_all(&dir).unwrap();
+            std::fs::remove_dir_all(&outside).unwrap();
+        }
     }
 
     #[test]
