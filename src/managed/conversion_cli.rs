@@ -1349,6 +1349,77 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
+    fn repeated_sigint_after_cleanup_exits_with_stdout_backpressure() {
+        use std::io::{BufRead, BufReader, Write};
+        use std::os::unix::fs::OpenOptionsExt;
+        use std::process::{Command, Stdio};
+        let dir = std::env::temp_dir().join(format!("aic-blocked-report-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&dir).unwrap();
+        let mut child = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "managed::conversion_cli::tests::post_probe_sigint_child",
+                "--nocapture",
+            ])
+            .env("AIC_POST_PROBE_SIGINT_CHILD", "verification")
+            .env("AIC_POST_PROBE_CAPTURE", dir.join("capture.json"))
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut stdout = BufReader::new(child.stdout.take().unwrap());
+        loop {
+            let mut line = String::new();
+            assert_ne!(
+                stdout.read_line(&mut line).unwrap(),
+                0,
+                "no readiness marker"
+            );
+            if line.contains("POST_PROBE_AWAIT_PENDING") {
+                break;
+            }
+        }
+        // Fill the real renderer's pipe without draining or closing its reader.
+        let mut pipe = std::fs::OpenOptions::new()
+            .write(true)
+            .custom_flags(libc::O_NONBLOCK)
+            .open(format!("/proc/{}/fd/1", child.id()))
+            .unwrap();
+        loop {
+            match pipe.write(&[b'x'; 4096]) {
+                Ok(_) => (),
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
+                Err(error) => panic!("fill stdout: {error}"),
+            }
+        }
+        drop(pipe);
+        assert_eq!(unsafe { libc::kill(child.id() as i32, libc::SIGINT) }, 0);
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(
+            child.try_wait().unwrap().is_none(),
+            "report must be blocked"
+        );
+        assert_eq!(unsafe { libc::kill(child.id() as i32, libc::SIGINT) }, 0);
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let status = loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                break Some(status);
+            }
+            if std::time::Instant::now() >= deadline {
+                child.kill().unwrap();
+                child.wait().unwrap();
+                break None;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        // Keep stdout undrained until after the bounded exit check.
+        drop(stdout);
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(status.and_then(|status| status.code()), Some(130));
+    }
+
+    #[test]
     fn stopped_q14_error_does_not_double_config_prefix() {
         let (mut capture, _) = captured(true);
         capture.pending = Some(conversion::Intent {
