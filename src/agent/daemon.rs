@@ -355,10 +355,12 @@ async fn handle(
         Request::GetToken {
             tenant,
             min_ttl_secs,
-        } => match do_get_token(&tenant, min_ttl_secs, state).await {
-            Ok(Some((token, expires_at))) => Response::Token {
+            scopes,
+        } => match do_get_token(&tenant, min_ttl_secs, scopes, state).await {
+            Ok(Some((token, expires_at, scopes))) => Response::Token {
                 access_token: token,
                 expires_at,
+                scopes,
             },
             Ok(None) => Response::Locked,
             Err(e) => Response::Error {
@@ -530,8 +532,9 @@ async fn do_status(state: Arc<RwLock<AgentState>>) -> StatusInfo {
 async fn do_get_token(
     tenant: &str,
     min_ttl_secs: Option<u32>,
+    scopes: Option<Vec<String>>,
     state: Arc<RwLock<AgentState>>,
-) -> Result<Option<(String, i64)>> {
+) -> Result<Option<(String, i64, Option<Vec<String>>)>> {
     let min_ttl = min_ttl_secs.map_or(crate::aic::auth::MIN_TTL_FOR_OUR_OWN_REQUEST, i64::from);
     if !state.read().await.is_unlocked() {
         return Ok(None);
@@ -549,18 +552,34 @@ async fn do_get_token(
         let client = s.clients.get(tenant).cloned();
         drop(s);
         if let Some(client) = client {
-            let token = client.bearer_with_min_ttl(min_ttl).await?;
-            let expires_at = client.token_cache.lock().unwrap().expires_at();
-            return Ok(Some((token, expires_at)));
+            return issue_token(client, min_ttl, scopes).await;
         }
     }
 
     // Slow path: derive the JWK from the refreshed vault cache and retain the
     // AicClient for its token-cache + HTTP-connection-pool benefit.
     let client = build_client(tenant, state.clone()).await?;
+    issue_token(client, min_ttl, scopes).await
+}
+
+/// `scopes` mints a one-off token and leaves the cache alone. The returned
+/// expiry is that mint's, not whatever the cache already holds.
+async fn issue_token(
+    client: Arc<crate::aic::AicClient>,
+    min_ttl: i64,
+    scopes: Option<Vec<String>>,
+) -> Result<Option<(String, i64, Option<Vec<String>>)>> {
+    if let Some(scopes) = scopes {
+        let minted = client.mint_downscoped(&scopes).await?;
+        return Ok(Some((
+            minted.access_token,
+            minted.expires_at,
+            Some(minted.scopes),
+        )));
+    }
     let token = client.bearer_with_min_ttl(min_ttl).await?;
     let expires_at = client.token_cache.lock().unwrap().expires_at();
-    Ok(Some((token, expires_at)))
+    Ok(Some((token, expires_at, None)))
 }
 
 /// Resolve a wire `kind` to its [`VaultArtifact`], erroring on an unknown name.

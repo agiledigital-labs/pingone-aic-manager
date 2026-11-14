@@ -414,8 +414,10 @@ before they get a doc row.
   after upgrading `aic`**. A new CLI talking to a resident old daemon used to
   fail in whatever way that particular change happened to break — verified
   2026-08-06, when a daemon 5 days old replied to one request and closed the
-  connection, giving the next request a broken pipe. The wire protocol (version
-  5 as of 2026-11-09) now turns a detectable mismatch into a message naming
+  connection, giving the next request a broken pipe. The wire protocol
+  (version 6 as of 2026-11-14) carries the requested scope list: an older
+  daemon would ignore that field and hand back a full-scope cached token. It
+  turns a detectable mismatch into a message naming
   `aic session stop` as the remedy; it does not provide compatibility. `stop`
   itself does **not** need the handshake to succeed — it falls back to
   SIGTERMing the pid in `.aic/agent.pid` — because the remedy for "this build

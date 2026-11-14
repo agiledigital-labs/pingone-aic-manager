@@ -141,10 +141,49 @@ pub enum Command {
         tenant: Option<String>,
         #[arg(
             long,
-            help = "Print only the full bearer token for scripting (freshly minted \
-                    unless the cached one still has most of its life left)"
+            help = "Print only the full bearer token for scripting (the cached \
+                    token when it still has at least 840s left, otherwise a \
+                    freshly minted one). With --json the token is one field of \
+                    the object, not the whole of stdout"
         )]
         token: bool,
+        #[arg(
+            long,
+            help = "Print tenant, host, sa, operator, expires_at and expires_in \
+                    as JSON. access_token is included only together with --token, \
+                    so a script can read the expiry without decoding a token"
+        )]
+        json: bool,
+        #[arg(
+            long,
+            value_name = "SECS",
+            help = "Return the cached token only when it has at least this many \
+                    seconds left; otherwise the agent mints a new one, still kept \
+                    in memory. Replaces the 840s floor --token uses on its own, \
+                    including a smaller floor. Refused at or above the issued \
+                    life (898s), which a token is already below the instant it exists"
+        )]
+        min_ttl: Option<u32>,
+        #[arg(
+            long,
+            conflicts_with_all = ["token", "min_ttl", "scope"],
+            help = "Show how IDM sees the service-account token: the component, \
+                    its IDM roles, and the scopes the token requested. Prints no \
+                    token and no key. A management scope is not the IDM admin role"
+        )]
+        idm: bool,
+        #[arg(
+            id = "scope",
+            long = "scope",
+            value_name = "SCOPE",
+            conflicts_with_all = ["idm", "min_ttl"],
+            help = "Mint a token that carries only this scope, repeated for each \
+                    one. Each scope has to be one this install already requests. \
+                    The agent mints it for this call and does not cache it in \
+                    place of the normal token. A scope the service account does \
+                    not hold fails the whole request"
+        )]
+        scopes: Vec<String>,
         #[arg(
             long,
             value_name = "URL-OR-HOST",
@@ -437,7 +476,11 @@ pub(crate) async fn dispatch(
             tenant,
             token,
             host,
-        }) => whoami(tenant, token, host).await,
+            json,
+            min_ttl,
+            idm,
+            scopes,
+        }) => whoami(tenant, token, host, json, min_ttl, idm, scopes).await,
         Some(Command::Esv { command }) => crate::esv::cli::run(command).await,
         Some(Command::Managed { command }) => crate::managed::cli::run(command).await,
         Some(Command::Idm { command }) => crate::idmstore::cli::run(command).await,
@@ -1494,12 +1537,7 @@ async fn print_status_block() -> Result<()> {
         println!("tenants:  {}", info.tenants.join(", "));
     }
     for t in &info.cached_tokens {
-        let ttl = t.expires_at - now;
-        if ttl > 0 {
-            println!("  token {} → {}s remaining", t.tenant, ttl);
-        } else {
-            println!("  token {} → expired", t.tenant);
-        }
+        println!("{}", cached_token_line(&t.tenant, t.expires_at, now));
     }
     Ok(())
 }
@@ -1618,11 +1656,242 @@ async fn ctx(cmd: CtxCommand) -> Result<()> {
 /// more life, because a token is below its own issue TTL the instant it exists.
 const SCRIPTED_TOKEN_MIN_TTL: u32 = 840;
 
+/// Seconds from `now` until `expires_at`. Negative once that instant has passed.
+/// `aic session status` and `aic whoami` both use this subtraction.
+fn remaining_secs(expires_at: i64, now: i64) -> i64 {
+    expires_at - now
+}
+
+/// The `aic session status` line for one cached token.
+fn cached_token_line(tenant: &str, expires_at: i64, now: i64) -> String {
+    let ttl = remaining_secs(expires_at, now);
+    if ttl > 0 {
+        format!("  token {tenant} → {ttl}s remaining")
+    } else {
+        format!("  token {tenant} → expired")
+    }
+}
+
+/// The floor sent to the agent. An explicit `--min-ttl` replaces the 840s
+/// `--token` floor, including a smaller one. Plain `whoami` sends none, so it
+/// reports the cache instead of refreshing it.
+fn token_floor(token_only: bool, min_ttl: Option<u32>) -> Result<Option<u32>> {
+    let Some(secs) = min_ttl else {
+        return Ok(token_only.then_some(SCRIPTED_TOKEN_MIN_TTL));
+    };
+    if i64::from(secs) >= crate::aic::auth::ISSUED_TOKEN_TTL {
+        return Err(Error::Config(format!(
+            "--min-ttl {secs} is at or above the issued token life ({}s); a token \
+             is already below that the instant it exists, so the agent would mint \
+             on every call and still return less life",
+            crate::aic::auth::ISSUED_TOKEN_TTL
+        )));
+    }
+    Ok(Some(secs))
+}
+
+fn operator_text(operator: &ResolvedOperator) -> String {
+    match operator.source {
+        NameSource::Placeholder => format!(
+            "name not set on {} (run `aic settings set operator.name <name>`)",
+            operator.host
+        ),
+        NameSource::Settings => format!("{} on {}", operator.name, operator.host),
+        NameSource::ServiceAccount => format!(
+            "{} on {} (guessed from service account)",
+            operator.name, operator.host
+        ),
+    }
+}
+
+/// Machine form of `whoami`. `access_token` is omitted unless the caller passed
+/// `--token`; the expiry fields are always present, so a script does not have
+/// to decode the token to know when it dies.
+#[derive(Debug, Serialize, PartialEq, Eq)]
+struct WhoamiView {
+    tenant: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    host: Option<String>,
+    sa: String,
+    operator: String,
+    expires_at: i64,
+    expires_in: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    access_token: Option<String>,
+    /// Present when this token was minted for an explicit `--scope` list.
+    /// These are the scopes the token response reported, which on 2026-11-14
+    /// matched the list that was requested.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    scopes: Option<Vec<String>>,
+}
+
+struct WhoamiFacts<'a> {
+    tenant: &'a str,
+    host: Option<&'a str>,
+    sa: &'a str,
+    operator: &'a ResolvedOperator,
+    expires_at: i64,
+    now: i64,
+    access_token: Option<&'a str>,
+    scopes: Option<&'a [String]>,
+}
+
+fn whoami_view(facts: WhoamiFacts<'_>) -> WhoamiView {
+    WhoamiView {
+        tenant: facts.tenant.to_string(),
+        host: facts.host.map(str::to_string),
+        sa: facts.sa.to_string(),
+        operator: operator_text(facts.operator),
+        expires_at: facts.expires_at,
+        expires_in: remaining_secs(facts.expires_at, facts.now),
+        access_token: facts.access_token.map(str::to_string),
+        scopes: facts.scopes.map(|scopes| scopes.to_vec()),
+    }
+}
+
+/// What `GET /openidm/info/login` and `GET /am/oauth2/realms/root/tokeninfo`
+/// say about the service-account bearer. Ids and the echoed access token are
+/// not fields of this view: a management diagnostic must not become a secret dump.
+#[derive(Debug, Serialize, PartialEq, Eq)]
+struct IdmCaller {
+    component: String,
+    roles: Vec<String>,
+    scopes: Vec<String>,
+    /// True only when the role list contains `internal/role/openidm-admin`.
+    admin_role: bool,
+    note: &'static str,
+}
+
+const IDM_ADMIN_ROLE: &str = "internal/role/openidm-admin";
+const IDM_ADMIN_NOTE: &str = "A management scope is not the IDM admin role. \
+     fr:idm:* does not grant openidm-admin.";
+
+fn idm_caller_view(login: &serde_json::Value, tokeninfo: &serde_json::Value) -> Result<IdmCaller> {
+    let component = login
+        .pointer("/authorization/component")
+        .and_then(serde_json::Value::as_str)
+        .filter(|component| !component.is_empty())
+        .ok_or_else(|| Error::Config("openidm/info/login has no authorization.component".into()))?
+        .to_string();
+    let roles_value = login
+        .pointer("/authorization/roles")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| Error::Config("openidm/info/login has no authorization.roles".into()))?;
+    let mut roles = Vec::with_capacity(roles_value.len());
+    for role in roles_value {
+        let Some(role) = role.as_str() else {
+            return Err(Error::Config(
+                "openidm/info/login authorization.roles has a non-string entry".into(),
+            ));
+        };
+        roles.push(role.to_string());
+    }
+    let scopes = tokeninfo_scopes(tokeninfo)?;
+    let admin_role = roles.iter().any(|role| role == IDM_ADMIN_ROLE);
+    Ok(IdmCaller {
+        component,
+        roles,
+        scopes,
+        admin_role,
+        note: IDM_ADMIN_NOTE,
+    })
+}
+
+fn tokeninfo_scopes(tokeninfo: &serde_json::Value) -> Result<Vec<String>> {
+    match tokeninfo.get("scope") {
+        Some(serde_json::Value::Array(items)) => {
+            let mut scopes = Vec::with_capacity(items.len());
+            for scope in items {
+                let Some(scope) = scope.as_str() else {
+                    return Err(Error::Config(
+                        "tokeninfo scope has a non-string entry".into(),
+                    ));
+                };
+                scopes.push(scope.to_string());
+            }
+            Ok(scopes)
+        }
+        Some(serde_json::Value::String(text)) => {
+            Ok(text.split_whitespace().map(str::to_string).collect())
+        }
+        Some(_) => Err(Error::Config(
+            "tokeninfo scope is neither a list nor a string".into(),
+        )),
+        None => Err(Error::Config("tokeninfo has no scope".into())),
+    }
+}
+
+fn render_idm_caller(view: &IdmCaller) -> String {
+    let mut out = format!("component: {}\nroles:\n", view.component);
+    for role in &view.roles {
+        out.push_str(&format!("  {role}\n"));
+    }
+    out.push_str("scopes:\n");
+    for scope in &view.scopes {
+        out.push_str(&format!("  {scope}\n"));
+    }
+    let presence = if view.admin_role { "present" } else { "absent" };
+    out.push_str(&format!("admin role: {presence}\n{IDM_ADMIN_NOTE}\n"));
+    out
+}
+
+async fn load_idm_caller<F, Fut>(mut get: F) -> Result<IdmCaller>
+where
+    F: FnMut(&'static str) -> Fut,
+    Fut: std::future::Future<Output = Result<serde_json::Value>>,
+{
+    let login = get("/openidm/info/login")
+        .await
+        .map_err(|error| idm_diagnostic_error("login lookup", error))?;
+    let tokeninfo = get("/am/oauth2/realms/root/tokeninfo")
+        .await
+        .map_err(|error| idm_diagnostic_error("tokeninfo lookup", error))?;
+    idm_caller_view(&login, &tokeninfo)
+        .map_err(|error| idm_diagnostic_error("response parsing", error))
+}
+
+async fn whoami_idm(tenant: &str, json: bool) -> Result<()> {
+    let view = load_idm_caller(|path| crate::aic::api::get(tenant, path)).await?;
+    if json {
+        print_json(&view)
+    } else {
+        print!("{}", render_idm_caller(&view));
+        Ok(())
+    }
+}
+
+/// Keep this credential-free diagnostic's errors independent of HTTP URLs and
+/// response bodies, both of which can contain tenant identifiers or tokens.
+fn idm_diagnostic_error(step: &str, error: Error) -> Error {
+    match error {
+        Error::Api { status, .. } => {
+            Error::Config(format!("whoami --idm failed during {step} (HTTP {status})"))
+        }
+        _ => Error::Config(format!("whoami --idm failed during {step}")),
+    }
+}
+
 async fn whoami(
     tenant_arg: Option<String>,
     token_only: bool,
     host_arg: Option<String>,
+    json: bool,
+    min_ttl: Option<u32>,
+    idm: bool,
+    scopes: Vec<String>,
 ) -> Result<()> {
+    if idm && (token_only || min_ttl.is_some()) {
+        return Err(Error::Config(
+            "whoami --idm prints no token and does not take --token or --min-ttl".into(),
+        ));
+    }
+    // Before any mint: a floor the tenant cannot satisfy must not touch the agent.
+    // `--scope` mints a one-off token, so it has no cache floor.
+    let min_ttl_secs = if idm || !scopes.is_empty() {
+        None
+    } else {
+        token_floor(token_only, min_ttl)?
+    };
     let cfg =
         ProjectConfig::load()?.ok_or_else(|| Error::Config("no .aic/config.toml here".into()))?;
     let contexts: Vec<(&str, &str)> = cfg
@@ -1650,10 +1919,24 @@ async fn whoami(
     // Checked before anything is minted, so a refusal never prints a token.
     if let Some(requested) = host_arg.as_deref() {
         let base_url = tenant_config.map_or("", |config| config.base_url.as_str());
-        identity::check_host(&tenant, base_url, requested, &contexts, || {
+        let result = identity::check_host(&tenant, base_url, requested, &contexts, || {
             identity::custom_domains(&tenant)
         })
-        .await?;
+        .await;
+        if idm {
+            result.map_err(|error| idm_diagnostic_error("host validation", error))?;
+        } else {
+            result?;
+        }
+    }
+    if idm {
+        return whoami_idm(&tenant, json).await;
+    }
+    if !scopes.is_empty() {
+        let configured = tenant_config.ok_or_else(|| {
+            Error::Config(format!("no tenant named {tenant:?} in .aic/config.toml"))
+        })?;
+        crate::aic::auth::downscoped_tenant(configured, &scopes)?;
     }
     let operator = operator::resolve(&settings, tenant_config, NetworkAccess::Skip).await;
 
@@ -1663,32 +1946,47 @@ async fn whoami(
             tenant: tenant.clone(),
             // `--token` hands the bearer to another process, which then holds it
             // for as long as it likes; the daemon's own 60s floor is far too
-            // short for that, and the caller cannot see how much life is left
-            // because it only ever receives the string. Plain `whoami` sends no
-            // floor on purpose — its job is to REPORT the cache, and a refresh
-            // would make its `expires:` line say the same thing every time.
-            min_ttl_secs: token_only.then_some(SCRIPTED_TOKEN_MIN_TTL),
+            // short for that. `--min-ttl` replaces that 840s floor. Plain
+            // `whoami` sends no floor on purpose — its job is to REPORT the
+            // cache, and a refresh would make its `expires:` line say the same
+            // thing every time.
+            min_ttl_secs,
+            scopes: (!scopes.is_empty()).then_some(scopes),
         })
         .await?
     {
         Response::Token {
             access_token,
             expires_at,
+            scopes: issued,
         } => {
-            let ttl = expires_at - chrono::Utc::now().timestamp();
-            if token_only {
+            let now = chrono::Utc::now().timestamp();
+            // The service account is worth printing even though it's local
+            // config: it's the `iss`/`sub` of the assertion that minted this
+            // token, so it names which of several same-titled accounts in the
+            // console this tenant actually authenticates as.
+            let sa = cfg
+                .tenants
+                .iter()
+                .find(|candidate| candidate.name == tenant)
+                .and_then(|candidate| candidate.sa_id.as_deref())
+                .unwrap_or("(none — log-only tenant)");
+            if json {
+                let host = tenant_config.map(|config| identity::host(&config.base_url));
+                let view = whoami_view(WhoamiFacts {
+                    tenant: &tenant,
+                    host,
+                    sa,
+                    operator: &operator,
+                    expires_at,
+                    now,
+                    access_token: token_only.then_some(access_token.as_str()),
+                    scopes: issued.as_deref(),
+                });
+                print_json(&view)?;
+            } else if token_only {
                 println!("{access_token}");
             } else {
-                // The service account is worth printing even though it's local
-                // config: it's the `iss`/`sub` of the assertion that minted this
-                // token, so it names which of several same-titled accounts in the
-                // console this tenant actually authenticates as.
-                let sa = cfg
-                    .tenants
-                    .iter()
-                    .find(|candidate| candidate.name == tenant)
-                    .and_then(|candidate| candidate.sa_id.as_deref())
-                    .unwrap_or("(none — log-only tenant)");
                 println!("tenant:  {tenant}");
                 if let Some(tenant_config) = tenant_config {
                     println!("host:    {}", identity::host(&tenant_config.base_url));
@@ -1698,20 +1996,11 @@ async fn whoami(
                     identity::custom_domains(&tenant).await.describe()
                 );
                 println!("sa:      {sa}");
-                match operator.source {
-                    NameSource::Placeholder => println!(
-                        "operator: name not set on {} (run `aic settings set operator.name \
-                         <name>`)",
-                        operator.host
-                    ),
-                    NameSource::Settings => {
-                        println!("operator: {} on {}", operator.name, operator.host)
-                    }
-                    NameSource::ServiceAccount => println!(
-                        "operator: {} on {} (guessed from service account)",
-                        operator.name, operator.host
-                    ),
+                println!("operator: {}", operator_text(&operator));
+                if let Some(issued) = &issued {
+                    println!("scopes:  {}", issued.join(" "));
                 }
+                let ttl = remaining_secs(expires_at, now);
                 println!("expires: in {ttl}s (unix {expires_at})");
                 println!("token:   {}", redact(&access_token));
             }
@@ -2079,6 +2368,257 @@ mod tests {
         let floor = i64::from(super::SCRIPTED_TOKEN_MIN_TTL);
         assert!(floor > crate::aic::auth::MIN_TTL_FOR_OUR_OWN_REQUEST);
         assert!(floor < crate::aic::auth::ISSUED_TOKEN_TTL);
+    }
+
+    #[test]
+    fn remaining_life_is_the_same_subtraction_status_prints() {
+        assert_eq!(super::remaining_secs(1_000, 900), 100);
+        assert_eq!(super::remaining_secs(1_000, 1_000), 0);
+        assert_eq!(super::remaining_secs(1_000, 1_050), -50);
+        assert_eq!(
+            super::cached_token_line("sandbox", 1_000, 900),
+            "  token sandbox → 100s remaining"
+        );
+        assert_eq!(
+            super::cached_token_line("sandbox", 1_000, 1_000),
+            "  token sandbox → expired"
+        );
+        assert_eq!(
+            super::cached_token_line("sandbox", 1_000, 1_050),
+            "  token sandbox → expired"
+        );
+    }
+
+    #[test]
+    fn min_ttl_replaces_the_scripted_floor_and_refuses_the_issue_ttl() {
+        assert_eq!(super::token_floor(false, None).unwrap(), None);
+        assert_eq!(
+            super::token_floor(true, None).unwrap(),
+            Some(super::SCRIPTED_TOKEN_MIN_TTL)
+        );
+        // A caller may ask for less than 840s; the flag replaces the floor.
+        assert_eq!(super::token_floor(true, Some(30)).unwrap(), Some(30));
+        assert_eq!(super::token_floor(false, Some(30)).unwrap(), Some(30));
+        let issued = u32::try_from(crate::aic::auth::ISSUED_TOKEN_TTL).unwrap();
+        let err = super::token_floor(true, Some(issued)).unwrap_err();
+        assert!(err.to_string().contains(&issued.to_string()));
+        assert!(super::token_floor(true, Some(issued - 1)).is_ok());
+    }
+
+    #[test]
+    fn whoami_json_carries_expiry_and_the_token_only_when_asked() {
+        let operator = crate::config::operator::ResolvedOperator {
+            name: "ada".into(),
+            host: "workstation".into(),
+            source: crate::config::operator::NameSource::Settings,
+        };
+        let hidden = super::whoami_view(super::WhoamiFacts {
+            tenant: "sandbox",
+            host: Some("tenant.example.com"),
+            sa: "sa-1",
+            operator: &operator,
+            expires_at: 1_700_000_100,
+            now: 1_700_000_000,
+            access_token: None,
+            scopes: None,
+        });
+        let body = serde_json::to_value(&hidden).unwrap();
+        assert!(body.get("access_token").is_none());
+        assert_eq!(body["expires_at"], 1_700_000_100);
+        assert_eq!(body["expires_in"], 100);
+        assert_eq!(body["operator"], "ada on workstation");
+        assert_eq!(body["host"], "tenant.example.com");
+
+        let shown = super::whoami_view(super::WhoamiFacts {
+            tenant: "sandbox",
+            host: None,
+            sa: "sa-1",
+            operator: &operator,
+            expires_at: 1_700_000_000,
+            now: 1_700_000_050,
+            access_token: Some("bearer-for-test"),
+            scopes: None,
+        });
+        let body = serde_json::to_value(&shown).unwrap();
+        assert_eq!(body["access_token"], "bearer-for-test");
+        assert_eq!(body["expires_in"], -50);
+        assert!(body.get("host").is_none());
+        assert!(body.get("scopes").is_none());
+
+        let narrowed_scopes = ["fr:am:*".to_string()];
+        let narrowed = super::whoami_view(super::WhoamiFacts {
+            tenant: "sandbox",
+            host: None,
+            sa: "sa-1",
+            operator: &operator,
+            expires_at: 1_700_000_100,
+            now: 1_700_000_000,
+            access_token: None,
+            scopes: Some(&narrowed_scopes),
+        });
+        let body = serde_json::to_value(&narrowed).unwrap();
+        assert!(body.get("access_token").is_none());
+        assert_eq!(body["scopes"], serde_json::json!(["fr:am:*"]));
+    }
+
+    #[test]
+    fn whoami_json_and_min_ttl_parse() {
+        let cli = Cli::try_parse_from(["aic", "whoami", "--json", "--token", "--min-ttl", "120"])
+            .unwrap();
+        match cli.command {
+            Some(Command::Whoami {
+                json,
+                token,
+                min_ttl,
+                host,
+                tenant,
+                idm,
+                scopes,
+            }) => {
+                assert!(json && token);
+                assert!(!idm);
+                assert!(scopes.is_empty());
+                assert_eq!(min_ttl, Some(120));
+                assert!(host.is_none() && tenant.is_none());
+            }
+            other => panic!("expected whoami, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn whoami_idm_refuses_to_combine_with_a_token_print() {
+        let error = Cli::try_parse_from(["aic", "whoami", "--idm", "--token"]).unwrap_err();
+        let text = error.to_string();
+        assert!(text.contains("--idm") && text.contains("--token"), "{text}");
+        let error = Cli::try_parse_from(["aic", "whoami", "--idm", "--min-ttl", "30"]).unwrap_err();
+        assert!(error.to_string().contains("--min-ttl"));
+        let error =
+            Cli::try_parse_from(["aic", "whoami", "--scope", "fr:am:*", "--idm"]).unwrap_err();
+        assert!(error.to_string().contains("--scope"), "{}", error);
+        let scoped = Cli::try_parse_from([
+            "aic", "whoami", "--token", "--scope", "fr:am:*", "--scope", "fr:idm:*",
+        ])
+        .unwrap();
+        match scoped.command {
+            Some(Command::Whoami { token, scopes, .. }) => {
+                assert!(token);
+                assert_eq!(scopes, ["fr:am:*", "fr:idm:*"]);
+            }
+            other => panic!("expected whoami, got {other:?}"),
+        }
+        let cli = Cli::try_parse_from(["aic", "whoami", "--idm", "--json"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Whoami {
+                idm: true,
+                json: true,
+                token: false,
+                ..
+            })
+        ));
+    }
+
+    #[tokio::test]
+    async fn idm_diagnostic_error_return_hides_transport_details_and_api_bodies() {
+        for (error, fail_second) in [
+            (
+                Error::Transport("https://synthetic.example/path bearer-marker-abc".into()),
+                false,
+            ),
+            (
+                Error::Api {
+                    status: 503,
+                    body: "https://synthetic.example/path bearer-marker-abc".into(),
+                },
+                true,
+            ),
+        ] {
+            let mut calls = 0;
+            let result = load_idm_caller(move |_| {
+                calls += 1;
+                let should_fail = !fail_second || calls == 2;
+                let error = if should_fail {
+                    Some(match error {
+                        Error::Transport(ref message) => Error::Transport(message.clone()),
+                        Error::Api { status, ref body } => Error::Api {
+                            status,
+                            body: body.clone(),
+                        },
+                        _ => unreachable!(),
+                    })
+                } else {
+                    None
+                };
+                async move { error.map_or_else(|| Ok(serde_json::json!({})), Err) }
+            })
+            .await;
+            let safe = result.unwrap_err().to_string();
+            assert!(safe.contains(if fail_second {
+                "tokeninfo lookup"
+            } else {
+                "login lookup"
+            }));
+            assert_eq!(safe.contains("HTTP 503"), fail_second);
+            assert!(!safe.contains("synthetic.example"));
+            assert!(!safe.contains("bearer-marker-abc"));
+        }
+    }
+
+    #[test]
+    fn idm_caller_view_names_the_component_and_drops_ids_and_the_token() {
+        let login = serde_json::json!({
+            "_id": "login-id-should-not-appear",
+            "authenticationId": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+            "authorization": {
+                "component": "managed/svcacct",
+                "id": "ffffffff-1111-2222-3333-444444444444",
+                "roles": [
+                    "internal/role/openidm-svcacct",
+                    "internal/role/openidm-authorized"
+                ]
+            }
+        });
+        let tokeninfo = serde_json::json!({
+            "access_token": "bearer-for-test",
+            "sub": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+            "scope": ["fr:idm:*", "fr:am:*"]
+        });
+        let view = super::idm_caller_view(&login, &tokeninfo).unwrap();
+        assert_eq!(view.component, "managed/svcacct");
+        assert!(!view.admin_role);
+        assert_eq!(view.scopes, ["fr:idm:*", "fr:am:*"]);
+        let body = serde_json::to_string(&view).unwrap();
+        let rendered = super::render_idm_caller(&view);
+        for secret in [
+            "bearer-for-test",
+            "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+            "ffffffff-1111-2222-3333-444444444444",
+            "login-id-should-not-appear",
+        ] {
+            assert!(!body.contains(secret), "{secret} leaked into json");
+            assert!(!rendered.contains(secret), "{secret} leaked into text");
+        }
+        assert!(rendered.contains(
+            "A management scope is not the IDM admin role. fr:idm:* does not grant openidm-admin."
+        ));
+        assert!(rendered.contains("admin role: absent"));
+
+        let admin = serde_json::json!({
+            "authorization": {
+                "component": "internal/user",
+                "roles": ["internal/role/openidm-admin"]
+            }
+        });
+        let from_string = serde_json::json!({ "scope": "fr:idm:*  fr:am:*" });
+        let view = super::idm_caller_view(&admin, &from_string).unwrap();
+        assert!(view.admin_role);
+        assert_eq!(view.scopes, ["fr:idm:*", "fr:am:*"]);
+        assert!(super::render_idm_caller(&view).contains("admin role: present"));
+
+        let missing = serde_json::json!({"authorization": {"roles": []}});
+        assert!(super::idm_caller_view(&missing, &from_string).is_err());
+        let bad_scope = serde_json::json!({"scope": 1});
+        assert!(super::idm_caller_view(&login, &bad_scope).is_err());
     }
 
     use super::*;
