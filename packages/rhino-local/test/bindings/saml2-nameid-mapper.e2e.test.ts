@@ -112,12 +112,12 @@ describe("SAML2 NameID mapper matches the live SSO", () => {
     expect((error as CaseRunError).message).toContain("zzemuR3S-boom");
   }, 60_000);
 
-  it("a non-string completion is a named fault", async () => {
+  it.each(["1;", '"";'])("an unmeasured completion faults: %s", async (script) => {
     expectHarnessFault("saml2-nameid-mapper-unmeasured/result");
     const error = await runCase(runner, defineCase({
       name: "number",
       context: "SAML2_NAMEID_MAPPER",
-      script: "1;",
+      script,
       given,
       expect: { nameId: { value: "unused" } },
     })).then(() => null, (caught: unknown) => caught);
@@ -126,6 +126,10 @@ describe("SAML2 NameID mapper matches the live SSO", () => {
 
   it("createNameIdentifier, a format constant, another attribute and a wrong arity fault", async () => {
     const cases: [string, string][] = [
+      ['session.getProperty("x");', "saml2-nameid-mapper-unmeasured/session.getProperty"],
+      ['try { session.anyMember; } catch (e) {} "caught";', "saml2-nameid-mapper-unmeasured/session.anyMember"],
+      ['identity.store();', "saml2-nameid-mapper-unmeasured/identity.store()"],
+      ['identity.getAttributeValues("mail").size();', 'saml2-nameid-mapper-unmeasured/identity.getAttributeValues("mail").size'],
       ["nameIDScriptHelper.createNameIdentifier();", "saml2-nameid-mapper-unmeasured/nameIDScriptHelper.createNameIdentifier()"],
       ["nameIDScriptHelper.NAMEID_FORMAT_EMAIL;", "saml2-nameid-mapper-unmeasured/nameIDScriptHelper.NAMEID_FORMAT_EMAIL"],
       ['identity.getAttributeValues("uid");', "saml2-nameid-mapper-unmeasured/identity.getAttributeValues()"],

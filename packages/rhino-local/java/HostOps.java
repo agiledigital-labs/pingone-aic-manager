@@ -81,6 +81,35 @@ public final class HostOps extends BaseFunction {
       // a list (java/SequenceFacade.java). A script string is stored as a Java string, so the
       // list's own contains(), indexOf() and toString() answer as Java does; a script object is
       // stored as it is.
+      // A context measured only selected scalar properties of this object.
+      // Unknown reads and writes must be tallied, even if a script catches them.
+      case "measuredView": {
+        final Scriptable target = (Scriptable) args[1];
+        final Function fault = (Function) args[2];
+        final Scriptable callbackScope = scope;
+        ScriptableObject view = new ScriptableObject() {
+          @Override public String getClassName() { return "Object"; }
+          private Object deny(String member) {
+            return fault.call(Context.getCurrentContext(), callbackScope, target,
+                new Object[] {member});
+          }
+          @Override public Object get(String name, Scriptable start) {
+            return target.has(name, target) ? target.get(name, target) : deny(name);
+          }
+          @Override public Object get(int index, Scriptable start) {
+            return target.has(index, target) ? target.get(index, target) : deny("[" + index + "]");
+          }
+          @Override public void put(String name, Scriptable start, Object value) { deny(name); }
+          @Override public void put(int index, Scriptable start, Object value) { deny("[" + index + "]"); }
+          @Override public void delete(String name) { deny(name); }
+          @Override public void delete(int index) { deny("[" + index + "]"); }
+          @Override public Object[] getIds() { deny("enumeration"); return new Object[0]; }
+          @Override public Object getDefaultValue(Class<?> hint) { return deny("valueOf"); }
+        };
+        view.setParentScope(scope);
+        view.setPrototype(null);
+        return view;
+      }
       case "javaList":
         return JavaCollections.list(cx, scope, args.length > 1 ? args[1] : null,
             args.length > 2 && Context.toBoolean(args[2]));

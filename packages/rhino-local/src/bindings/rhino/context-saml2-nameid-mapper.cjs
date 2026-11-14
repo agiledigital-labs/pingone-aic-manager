@@ -71,7 +71,7 @@ function __rhinoLocalNiHelper() {
   var view = __rhinoLocalCtxBare();
   var i;
   __rhinoLocalCtxMethod(view, "nameIDScriptHelper", "nameIDScriptHelper", "getNameIDValue", 0, function () {
-    if (typeof __rhinoLocalNi.mapped !== "string") {
+    if (__rhinoLocalNi.format !== __rhinoLocalNiEmailFormat || typeof __rhinoLocalNi.mapped !== "string") {
       throw __rhinoLocalCtxUnmeasured("nameIDScriptHelper.getNameIDValue()",
         "with no mapped value; the measured call returned the user's one mail value");
     }
@@ -125,7 +125,10 @@ function __rhinoLocalNiIdentity(seed) {
       throw __rhinoLocalCtxUnmeasured("identity.getAttributeValues()",
         "the measured call returned one mail string");
     }
-    return __rhinoLocalCtxList(values.slice());
+    var result = __rhinoLocalCtxBare();
+    result.length = 1;
+    result[0] = values[0];
+    return __rhinoLocalNiView(result, 'identity.getAttributeValues("mail")');
   });
   __rhinoLocalCtxFaulting(view, "identity", ["store", "setAttribute", "addAttribute", "getUniversalId"]);
   __rhinoLocalCtxToJSON(view, "identity");
@@ -136,14 +139,20 @@ function __rhinoLocalNiIdentity(seed) {
   return __rhinoLocalCtxWatch(view, "identity");
 }
 
-function __rhinoLocalNiSession() {
-  var view = __rhinoLocalCtxBare();
-  __rhinoLocalCtxToJSON(view, "session");
-  __rhinoLocalHide(view, "valueOf", function () {
-    throw __rhinoLocalCtxUnmeasured("String(session)");
+// A plain JS object has no hook for an unknown property read. The trusted
+// bridge exposes only these measured properties and faults on every other read
+// or write; it never hands out Java list operations the probe did not call.
+function __rhinoLocalNiView(target, label) {
+  if (!__rhinoLocalCtxHostOp) {
+    throw __rhinoLocalCtxUnmeasured(label, "without the JVM view bridge");
+  }
+  return __rhinoLocalCtxHostOp("measuredView", target, function (member) {
+    throw __rhinoLocalCtxUnmeasured(label + "." + member);
   });
-  __rhinoLocalCtxTag(view, null, "session");
-  return __rhinoLocalCtxWatch(view, "session");
+}
+
+function __rhinoLocalNiSession() {
+  return __rhinoLocalNiView(__rhinoLocalCtxBare(), "session");
 }
 
 function __rhinoLocalSeedNameId(given) {
@@ -176,10 +185,10 @@ function __rhinoLocalNiResult(completion) {
   if (completion === undefined) {
     return { accepted: false, value: null, format: __rhinoLocalNi.format, refusal: __rhinoLocalNiRefusal };
   }
-  if (typeof completion !== "string") {
+  if (typeof completion !== "string" || completion === "") {
     throw __rhinoLocalCtxUnmeasured("result",
       "(the script evaluated to " + __rhinoLocalArgShape([completion]) +
-      "; only a string and undefined were measured)");
+      "; only a nonempty string and undefined were measured)");
   }
   return { accepted: true, value: completion, format: __rhinoLocalNi.format, refusal: null };
 }

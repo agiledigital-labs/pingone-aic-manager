@@ -310,8 +310,10 @@ const CONTEXTS = {
     ],
   },
   SAML2_NAMEID_MAPPER: {
-    types: { nameIDScriptHelper: "NameIdScriptHelper" },
-    omit: { Identity: ["store", "setAttribute", "addAttribute", "getUniversalId"] },
+    types: {
+      nameIDScriptHelper: "NameIdScriptHelper", identity: "NameIdIdentity",
+      nameIDFormat: "string", remoteEntityId: "string", hostedEntityId: "string",
+    },
     notes: [
       "`nameIDScriptHelper` is a `NameIdScriptHelper`. The assertion NameID is the script's completion value.",
       "`session` is bound. No member of it was read.",
@@ -322,18 +324,24 @@ const CONTEXTS = {
       "// A completion of `undefined` fails SSO. `createNameIdentifier` is present",
       "// and was not called. `getNameIDFromSession` returned `null` only.",
       "// `shouldPersistNameIDFormat` returned `false` only.",
+      "interface NameIdIdentity {",
+      "  getName(): string;",
+      "  exists(): boolean;",
+      "  getAttributeValues(attributeName: \"mail\"): { readonly length: 1; readonly 0: string };",
+      "}",
+      "",
       "interface NameIdScriptHelper {",
       "  getNameIDValue(): string;",
       "  getNameIDFromSession(): null;",
-      "  shouldPersistNameIDFormat(): boolean;",
-      "  createNameIdentifier(): never;",
+      "  shouldPersistNameIDFormat(): false;",
+      "  createNameIdentifier: unknown;",
       "}",
       "",
     ],
     trailer: [
       "// Bound in the measured SSO (typeof \"object\") even though the binding",
       "// descriptor does not list it. No member was read.",
-      "declare const session: object;",
+      "declare const session: unknown;",
     ],
   },
   CONFIG_PROVIDER_NODE_NEXT_GEN: {
@@ -487,7 +495,9 @@ const emit = (out) => {
 function perContext(jsonPath, skip) {
   const ctx = JSON.parse(readFileSync(jsonPath, "utf8"));
   const cfg = CONTEXTS[ctx._id] ?? {};
-  const ifaces = interfaceBindings(ctx, skip).map((binding) => pascal(binding.name));
+  const ifaces = interfaceBindings(ctx, skip)
+    .filter((binding) => !cfg.types?.[binding.name])
+    .map((binding) => pascal(binding.name));
   const out = [
     `// GENERATED from docs/api/bindings/${basename(jsonPath)} by`,
     `// scripts/gen-binding-types.mjs — do not edit by hand. Context: ${ctx._id}.`,
