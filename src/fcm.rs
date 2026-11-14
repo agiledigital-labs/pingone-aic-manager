@@ -269,6 +269,12 @@ pub fn am_export_realm(ns: &crate::scripts::Namespace) -> Result<&str> {
 }
 
 pub fn install(req: &Install<'_>) -> Result<Report> {
+    install_with(req, |_| {})
+}
+
+/// The callback runs after preflight, immediately before each entry's re-read.
+/// Production supplies a no-op; tests inject edits into the real batch loop.
+fn install_with(req: &Install<'_>, mut before_entry: impl FnMut(usize)) -> Result<Report> {
     let root = Directory::root(req.config_dir, false)?;
     let mut planned = Vec::new();
     for file in req.files {
@@ -293,6 +299,7 @@ pub fn install(req: &Install<'_>) -> Result<Report> {
     let mut files = Vec::new();
     let mut stopped = None;
     for (index, item) in planned.iter().enumerate() {
+        before_entry(index);
         match write_one(req, &root, item) {
             Ok(outcome) => files.push(outcome),
             Err(error) => {
@@ -330,6 +337,7 @@ struct Planned {
     existing: Existing,
 }
 
+#[derive(PartialEq, Eq)]
 enum Existing {
     Absent,
     File(Vec<u8>),
@@ -405,6 +413,12 @@ fn write_one(
     item: &Planned,
 ) -> std::result::Result<FileOutcome, String> {
     let existing = read_existing(Some(root), &item.path).map_err(|error| error.to_string())?;
+    if existing != item.existing {
+        return Err(format!(
+            "{} changed after export preflight; nothing further was written (even with --force)",
+            item.relative
+        ));
+    }
     match existing {
         Existing::Symlink => Err(format!(
             "refusing to replace symlink {}; nothing further was written",
@@ -1183,6 +1197,70 @@ mod tests {
             }
             std::fs::remove_dir_all(&dir).unwrap();
             std::fs::remove_dir_all(&outside).unwrap();
+        }
+    }
+
+    #[test]
+    fn edits_between_entries_stop_the_real_installer_even_when_forced() {
+        // Existing file edited, absent file created, existing file deleted,
+        // and a file changed to the export's bytes all count as drift.
+        for (before, after) in [
+            (Some(b"approved".as_slice()), Some(b"edited".as_slice())),
+            (None, Some(b"created".as_slice())),
+            (Some(b"approved".as_slice()), None),
+            (Some(b"approved".as_slice()), Some(b"remote".as_slice())),
+        ] {
+            let dir = std::env::temp_dir().join(format!("aic-fcm-{}", uuid::Uuid::new_v4()));
+            std::fs::create_dir_all(&dir).unwrap();
+            if let Some(bytes) = before {
+                std::fs::write(dir.join("later.json"), bytes).unwrap();
+            }
+            let files: Vec<_> = ["first.json", "later.json", "last.json"]
+                .into_iter()
+                .map(|path| PlannedFile {
+                    relative: PathBuf::from(path),
+                    bytes: b"remote".to_vec(),
+                })
+                .collect();
+            let report = install_with(
+                &Install {
+                    config_dir: &dir,
+                    files: &files,
+                    dry_run: false,
+                    force: true,
+                    backup_kind: "managed",
+                    backup_realm: "managed",
+                },
+                |index| {
+                    if index == 1 {
+                        assert_eq!(std::fs::read(dir.join("first.json")).unwrap(), b"remote");
+                        if let Some(bytes) = after {
+                            std::fs::write(dir.join("later.json"), bytes).unwrap();
+                        } else {
+                            std::fs::remove_file(dir.join("later.json")).unwrap();
+                        }
+                    }
+                },
+            )
+            .unwrap();
+            assert_eq!(
+                report
+                    .files
+                    .iter()
+                    .map(|file| file.action)
+                    .collect::<Vec<_>>(),
+                [Action::Wrote, Action::Refused, Action::Skipped]
+            );
+            let error = report.error.unwrap();
+            assert!(
+                error.contains("later.json changed after export preflight"),
+                "{error}"
+            );
+            assert!(error.contains("Already written: first.json"), "{error}");
+            assert_eq!(std::fs::read(dir.join("later.json")).ok().as_deref(), after);
+            assert!(!dir.join("last.json").exists());
+            assert!(!dir.join(".aic-backups").exists());
+            std::fs::remove_dir_all(dir).unwrap();
         }
     }
 
