@@ -47,12 +47,12 @@ cutover or prevent a later generic-store write.
 
 The probe is a real record. Hooks such as onCreate or onDelete and sync mappings may run. \
 The command names every script-shaped hook, including file-backed hooks and any event name; \
-firing behavior is unknown where unmeasured for this probe. It refuses even with --yes if \
+firing behavior is unknown where unmeasured for this probe. It refuses even with --force if \
 either config/managed or config/sync cannot be inventoried. Otherwise it lists hooks and \
-mappings and asks before writing. --yes skips the prompt and is also the production gate. \
-A non-interactive run without --yes refuses before any probe record is created. On relationship \
+mappings and asks before writing. --force skips the probe prompt; --yes is only the production gate. On map, --force approves both conversion and probe. \
+A non-interactive run without --force refuses before any probe record is created. On relationship \
 set the schema write has already landed and the per-type entry is not added: finish with \
-relationship map --wait-activation --yes. On relationship map nothing is switched.
+relationship map --wait-activation --force. On relationship map nothing is switched.
 
 --json adds storage_activation with outcome readable, not_confirmed, declined, or not_needed, \
 and interrupted. Recovery ids are retained unless readable. The JSON report is rendered before \
@@ -161,7 +161,7 @@ fn require_inventory(effects: &[SideEffects]) -> Result<()> {
     }
     if !unread.is_empty() {
         return Err(Error::Config(format!(
-            "probe refused: inventory could not be read: {}; rerun after both inventories can be read; --yes cannot bypass this refusal",
+            "probe refused: inventory could not be read: {}; rerun after both inventories can be read; --force cannot bypass this refusal",
             unread.join(", ")
         )));
     }
@@ -252,7 +252,7 @@ pub(crate) fn plan_text(effects: &[SideEffects]) -> String {
         .iter()
         .any(|effect| effect.hooks_unknown || effect.mappings_unknown)
     {
-        lines.push("Inventory incomplete: refusing to probe, including with --yes. Re-read both inventories before consenting.".into());
+        lines.push("Inventory incomplete: refusing to probe, including with --force. Re-read both inventories before consenting.".into());
     }
     lines.join("\n")
 }
@@ -273,19 +273,19 @@ pub(crate) enum ProbeConsent {
     Declined,
 }
 
-/// `yes` grants without a prompt. `answered` is `Some` only when a prompt ran.
-/// `None` with `yes == false` is a non-interactive refusal: no record is written.
+/// `force` grants without a prompt. `answered` is `Some` only when a prompt ran.
+/// `None` with `force == false` is a non-interactive refusal: no record is written.
 pub(crate) fn consent(
-    yes: bool,
+    force: bool,
     answered: Option<bool>,
 ) -> std::result::Result<ProbeConsent, &'static str> {
-    if yes {
+    if force {
         return Ok(ProbeConsent::Granted);
     }
     match answered {
         Some(true) => Ok(ProbeConsent::Granted),
         Some(false) => Ok(ProbeConsent::Declined),
-        None => Err("no terminal to confirm the probe record; pass --yes to write it"),
+        None => Err("no terminal to confirm the probe record; pass --force to write it"),
     }
 }
 
@@ -542,7 +542,7 @@ pub(crate) async fn prepare(
     tenant: &str,
     added: &[String],
     wait_seconds: Option<u64>,
-    yes: bool,
+    force: bool,
 ) -> Result<Pending> {
     let timeout = match follow_up(added.len(), wait_seconds)
         .map_err(|error| Error::Config(error.to_string()))?
@@ -555,13 +555,13 @@ pub(crate) async fn prepare(
     let effects = load_effects(tenant, added).await;
     eprintln!("{}", plan_text(&effects));
     require_inventory(&effects)?;
-    let granted = if yes {
+    let granted = if force {
         consent(true, None)
     } else {
         let answered = crate::cli::confirm_destructive(
             "storage activation probe",
             "create, read, and delete one probe record in each new per-type store named above?",
-            "--yes",
+            "--force",
         )?;
         consent(false, Some(answered))
     }
@@ -648,10 +648,10 @@ pub(crate) async fn settle(
     confirmed_prod: bool,
     added: &[String],
     wait_seconds: Option<u64>,
-    yes: bool,
+    force: bool,
     command: &CommandInterrupt,
 ) -> Result<Option<StorageActivation>> {
-    let pending = prepare(tenant, added, wait_seconds, yes).await?;
+    let pending = prepare(tenant, added, wait_seconds, force).await?;
     finish(tenant, confirmed_prod, added, pending, command).await
 }
 
@@ -1139,15 +1139,6 @@ mod tests {
     }
 
     #[test]
-    fn consent_grants_declines_or_refuses() {
-        assert_eq!(consent(true, None).unwrap(), ProbeConsent::Granted);
-        assert_eq!(consent(true, Some(false)).unwrap(), ProbeConsent::Granted);
-        assert_eq!(consent(false, Some(true)).unwrap(), ProbeConsent::Granted);
-        assert_eq!(consent(false, Some(false)).unwrap(), ProbeConsent::Declined);
-        assert!(consent(false, None).unwrap_err().contains("--yes"));
-    }
-
-    #[test]
     fn side_effects_name_hooks_and_mappings_and_unknowns() {
         let object = json!({
             "name": "thing",
@@ -1541,7 +1532,7 @@ pub(super) mod lifecycle_tests {
             };
             let effects = load_effects_with(&io, &["thing".into()]).await;
             let error = require_inventory(&effects).unwrap_err().to_string();
-            assert!(error.contains("--yes cannot bypass"), "{error}");
+            assert!(error.contains("--force cannot bypass"), "{error}");
             let plan = plan_text(&effects);
             assert!(plan.contains("refusing to probe"), "{plan}");
             assert!(

@@ -727,7 +727,7 @@ pub async fn map(
                     return Err(Error::Config("column allocation changed since the capture; inspect before retrying with a new plan".into()));
                 }
                 let added = activation::added_type_names(plan.addition());
-                let pending = activation::prepare(ok.tenant, &added, flags.wait_activation, flags.yes).await?;
+                let pending = activation::prepare(ok.tenant, &added, flags.wait_activation, flags.force).await?;
                 conversion::switch_with(&mut capture, &permit,
                     async |capture| file.save(capture).await,
                     async || { conversion::exact(&pair, &generic_snapshot(ok.tenant, &pair).await?)?; guard(ok.tenant, &pair, storage::Mode::Generic).await?; Ok(()) },
