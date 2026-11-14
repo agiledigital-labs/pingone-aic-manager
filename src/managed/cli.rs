@@ -60,6 +60,22 @@ pub enum ManagedCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Write one managed object the way `fr-config-pull managed-objects` does.
+    Export {
+        name: String,
+        /// Root of the fr-config-manager tree (`managed-objects/` is created under it).
+        #[arg(long, value_name = "DIR")]
+        config_dir: crate::config::UserPath,
+        #[arg(long, help = "Tenant to target")]
+        tenant: Option<String>,
+        #[arg(long, help = "Print the result as JSON")]
+        json: bool,
+        #[arg(long, help = "List the paths and write nothing")]
+        dry_run: bool,
+        /// Overwrite a file that differs, after backing the old bytes up.
+        #[command(flatten)]
+        force: OperationForce,
+    },
     /// Create, rename, or delete managed object definitions.
     Object {
         #[command(subcommand)]
@@ -477,6 +493,14 @@ pub async fn run(cmd: ManagedCommand) -> Result<()> {
             tenant,
             json,
         } => managed_diff(name, file, strict, tenant, json).await,
+        ManagedCommand::Export {
+            name,
+            config_dir,
+            tenant,
+            json,
+            dry_run,
+            force,
+        } => export_object(name, config_dir, tenant, json, dry_run, force).await,
         ManagedCommand::Get {
             name,
             fields,
@@ -498,6 +522,37 @@ pub async fn run(cmd: ManagedCommand) -> Result<()> {
         ManagedCommand::Hook { command } => hook(command).await,
         ManagedCommand::Relationship { command } => relationship(command).await,
     }
+}
+
+async fn export_object(
+    name: String,
+    config_dir: crate::config::UserPath,
+    tenant: Option<String>,
+    json: bool,
+    dry_run: bool,
+    force: OperationForce,
+) -> Result<()> {
+    let tenant = tenant_for(tenant)?;
+    let (doc, object) = api::get_managed_with_object(&tenant, &name).await?;
+    let copies = api::objects(&doc)?
+        .iter()
+        .filter(|candidate| candidate.get("name").and_then(Value::as_str) == Some(name.as_str()))
+        .count();
+    if copies != 1 {
+        return Err(crate::Error::Config(format!(
+            "{copies} managed objects are named {name:?}"
+        )));
+    }
+    let files = crate::fcm::managed_object_files(&object)?;
+    let report = crate::fcm::install(&crate::fcm::Install {
+        config_dir: config_dir.as_ref(),
+        files: &files,
+        dry_run,
+        force: force.operation(),
+        backup_kind: "managed",
+        backup_realm: "managed",
+    })?;
+    crate::fcm::present(&report, json)
 }
 
 async fn get(
