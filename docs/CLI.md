@@ -3052,6 +3052,15 @@ differs is refused unless `--force`, which backs the old bytes up under
 An IDM ref (`endpoint/`, `schedule/`, `managed/`, `sync/`) is refused: that
 layout is one AM realm script.
 
+Both export commands accept parent-relative roots such as `--config-dir ../fr-config`
+and symlinks in the selected root path. Generated paths beneath that root refuse
+`..` and symlinks. Output is staged before checking for local changes; a change
+stops the batch and the report names files already written. Forced replacement
+checks the authorized bytes again after backup. New destinations use Linux's
+atomic no-replace rename, so a concurrent creation is refused. If the platform,
+kernel or filesystem lacks that operation, installing a new file fails without
+replacing the destination.
+
 `aic script delete` removes the script from the tenant, keeps the local file, and forgets its sync record.
 
 When `sync` finds a synced script missing on the tenant, it prompts to skip,
