@@ -14,6 +14,7 @@ use serde_json::{Value, json};
 
 use super::{api, state, storage};
 use crate::{Error, Result};
+use std::sync::Arc;
 
 pub(crate) const MAX_TIMEOUT_SECS: u64 = 3600;
 const POLL: Duration = Duration::from_millis(500);
@@ -249,21 +250,6 @@ pub(crate) struct ProbeFacts {
     pub delete_confirmed: bool,
 }
 
-/// Create: 4xx is final. Anything else, including a transport failure (`None`),
-/// may be retried until the deadline.
-#[derive(Debug, PartialEq, Eq)]
-pub(crate) enum CreateClass {
-    Reject(u16),
-    Retry,
-}
-
-pub(crate) fn classify_create(status: Option<u16>) -> CreateClass {
-    match status {
-        Some(status) if (400..500).contains(&status) => CreateClass::Reject(status),
-        _ => CreateClass::Retry,
-    }
-}
-
 /// Read-back: 404 keeps polling (the record may not be visible yet). Another
 /// 4xx stops. 5xx and transport failures keep polling.
 #[derive(Debug, PartialEq, Eq)]
@@ -306,6 +292,16 @@ pub(crate) fn classify_confirm(status: Option<u16>) -> ConfirmClass {
 }
 
 pub(crate) fn judge(facts: &ProbeFacts) -> (&'static str, Option<String>) {
+    if let Some(id) = &facts.id
+        && !facts.delete_confirmed
+    {
+        return (
+            "not_confirmed",
+            Some(format!(
+                "record {id} was not confirmed deleted; create or cleanup unresolved; remove it by hand"
+            )),
+        );
+    }
     match &facts.create {
         CreateAttempt::Rejected { status } => (
             "not_confirmed",
@@ -616,111 +612,117 @@ async fn load_effects(tenant: &str, added: &[String]) -> Vec<SideEffects> {
         .collect()
 }
 
+/// The lifecycle uses this seam in production and in fault-injection tests.
+trait ProbeIo: Send + Sync + 'static {
+    fn request(
+        &self,
+        method: &'static str,
+        path: String,
+        body: Option<Value>,
+    ) -> impl std::future::Future<Output = Result<Value>> + Send;
+}
+
+struct TenantIo {
+    tenant: String,
+    confirmed_prod: bool,
+}
+
+impl ProbeIo for TenantIo {
+    async fn request(
+        &self,
+        method: &'static str,
+        path: String,
+        body: Option<Value>,
+    ) -> Result<Value> {
+        let mut call = crate::aic::api::ApiCall::new(&self.tenant, method, &path)
+            .confirmed_prod(self.confirmed_prod);
+        if let Some(body) = body {
+            call = call.body(body);
+        }
+        call.send().await
+    }
+}
+
 async fn probe_object(
     tenant: &str,
     confirmed_prod: bool,
     object: &str,
     deadline: Instant,
 ) -> ObjectProbe {
+    probe_with(
+        Arc::new(TenantIo {
+            tenant: tenant.into(),
+            confirmed_prod,
+        }),
+        object,
+        deadline,
+    )
+    .await
+}
+
+async fn probe_with(io: Arc<impl ProbeIo>, object: &str, deadline: Instant) -> ObjectProbe {
     let started = Instant::now();
     let mut facts = ProbeFacts {
-        create: CreateAttempt::GaveUp,
+        create: CreateAttempt::NotStarted,
         id: None,
         read_back: false,
         delete_attempted: false,
         delete_confirmed: false,
     };
     if Instant::now() >= deadline {
-        facts.create = CreateAttempt::NotStarted;
         return object_probe(object, &facts, started.elapsed().as_secs_f64());
     }
-    let create_path = format!(
-        "/openidm/managed/{}?_action=create",
+    // POST with an explicit _id is the documented create-only request, without
+    // PUT's upsert fallback. Never repeat a create, even after an uncertain reply.
+    let id = uuid::Uuid::new_v4().to_string();
+    let base = format!(
+        "/openidm/managed/{}",
         crate::idmstore::api::path_segment(object)
     );
-    loop {
-        match crate::aic::api::post(tenant, &create_path, json!({}), confirmed_prod).await {
-            Ok(body) => {
-                facts.create = match body.get("_id").and_then(Value::as_str) {
-                    Some(id) => {
-                        facts.id = Some(id.to_string());
-                        eprintln!("probe managed/{object} id {id}");
-                        CreateAttempt::Created
-                    }
-                    None => CreateAttempt::GaveUp,
-                };
-                break;
-            }
-            Err(error) => match classify_create(api_status(&error)) {
-                CreateClass::Reject(status) => {
-                    facts.create = CreateAttempt::Rejected { status };
-                    break;
-                }
-                CreateClass::Retry if Instant::now() < deadline => pause(deadline).await,
-                CreateClass::Retry => {
-                    facts.create = CreateAttempt::GaveUp;
-                    break;
-                }
-            },
+    let create_path = format!("{base}?_action=create");
+    let record_path = format!("{base}/{id}");
+    let read_path = format!("{record_path}?_fields=_id");
+    facts.id = Some(id.clone());
+    eprintln!("probe managed/{object} id {id}");
+    facts.create = match io
+        .request("POST", create_path, Some(json!({"_id": id})))
+        .await
+    {
+        Ok(_) => CreateAttempt::Created,
+        Err(error) if api_status(&error).is_some_and(|s| (400..500).contains(&s)) => {
+            facts.id = None;
+            facts.create = CreateAttempt::Rejected {
+                status: api_status(&error).unwrap(),
+            };
+            return object_probe(object, &facts, started.elapsed().as_secs_f64());
         }
-    }
-    let Some(id) = facts.id.clone() else {
-        return object_probe(object, &facts, started.elapsed().as_secs_f64());
+        Err(_) => CreateAttempt::GaveUp,
     };
-    let read_path = format!(
-        "/openidm/managed/{}/{}?_fields=_id",
-        crate::idmstore::api::path_segment(object),
-        crate::idmstore::api::path_segment(&id)
-    );
-    loop {
-        match crate::aic::api::get(tenant, &read_path).await {
+    while Instant::now() < deadline {
+        match io.request("GET", read_path.clone(), None).await {
             Ok(_) => {
+                facts.create = CreateAttempt::Created;
                 facts.read_back = true;
                 break;
             }
             Err(error) => match classify_read(api_status(&error)) {
-                ReadClass::Found => {
-                    facts.read_back = true;
-                    break;
-                }
                 ReadClass::Stop => break,
-                ReadClass::Missing | ReadClass::Retry => {
-                    if Instant::now() >= deadline {
-                        break;
-                    }
-                    pause(deadline).await;
-                }
+                _ => pause(deadline).await,
             },
         }
     }
     facts.delete_attempted = true;
-    let delete_path = format!(
-        "/openidm/managed/{}/{}",
-        crate::idmstore::api::path_segment(object),
-        crate::idmstore::api::path_segment(&id)
-    );
-    // A failed delete still falls through to the confirm read. The id stays in
-    // the outcome when that read is not a 404.
-    let _ = crate::aic::api::delete(tenant, &delete_path, confirmed_prod).await;
-    loop {
-        match crate::aic::api::get(tenant, &read_path).await {
-            Ok(_) => {
-                if Instant::now() >= deadline {
-                    break;
-                }
-                pause(deadline).await;
+    let _ = io.request("DELETE", record_path, None).await;
+    while Instant::now() < deadline {
+        match io.request("GET", read_path.clone(), None).await {
+            Err(error) if classify_confirm(api_status(&error)) == ConfirmClass::Gone => {
+                // A missing read cannot settle an uncertain create: it might
+                // still land later. Keep its known identity for manual recovery.
+                facts.delete_confirmed = facts.create == CreateAttempt::Created;
+                break;
             }
-            Err(error) => match classify_confirm(api_status(&error)) {
-                ConfirmClass::Gone => {
-                    facts.delete_confirmed = true;
-                    break;
-                }
-                ConfirmClass::Stop => break,
-                ConfirmClass::Retry | ConfirmClass::Present if Instant::now() < deadline => {
-                    pause(deadline).await;
-                }
-                ConfirmClass::Retry | ConfirmClass::Present => break,
-            },
+            Err(error) if classify_confirm(api_status(&error)) == ConfirmClass::Stop => break,
+            _ => pause(deadline).await,
         }
     }
     object_probe(object, &facts, started.elapsed().as_secs_f64())
@@ -966,10 +968,6 @@ mod tests {
 
     #[test]
     fn status_classes_match_the_retry_rules() {
-        assert_eq!(classify_create(Some(400)), CreateClass::Reject(400));
-        assert_eq!(classify_create(Some(404)), CreateClass::Reject(404));
-        assert_eq!(classify_create(Some(500)), CreateClass::Retry);
-        assert_eq!(classify_create(None), CreateClass::Retry);
         assert_eq!(classify_read(Some(404)), ReadClass::Missing);
         assert_eq!(classify_read(Some(200)), ReadClass::Found);
         assert_eq!(classify_read(Some(400)), ReadClass::Stop);
@@ -994,5 +992,92 @@ mod tests {
         let two = readable_note(&["thing".into(), "owner".into()], 2.0);
         assert!(two.contains("managed/thing and managed/owner"), "{two}");
         assert!(two.contains("were readable"), "{two}");
+    }
+}
+
+#[cfg(test)]
+mod lifecycle_tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    #[derive(Default)]
+    struct Fake {
+        calls: Mutex<Vec<(&'static str, String, Option<Value>)>>,
+        record: Mutex<Option<String>>,
+        lost_create_reply: bool,
+        reject_create: bool,
+    }
+
+    fn api_error(status: u16) -> Error {
+        Error::Api {
+            status,
+            body: "injected".into(),
+        }
+    }
+
+    impl ProbeIo for Fake {
+        async fn request(
+            &self,
+            method: &'static str,
+            path: String,
+            body: Option<Value>,
+        ) -> Result<Value> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push((method, path, body.clone()));
+            match method {
+                "POST" => {
+                    if self.reject_create {
+                        return Err(api_error(400));
+                    }
+                    let id = body.unwrap()["_id"].as_str().unwrap().to_string();
+                    *self.record.lock().unwrap() = Some(id.clone());
+                    if self.lost_create_reply {
+                        return Err(Error::Transport("response lost after commit".into()));
+                    }
+                    Ok(json!({"_id": id}))
+                }
+                "GET" => match self.record.lock().unwrap().as_ref() {
+                    Some(id) => Ok(json!({"_id": id})),
+                    None => Err(api_error(404)),
+                },
+                "DELETE" => {
+                    *self.record.lock().unwrap() = None;
+                    Ok(json!({}))
+                }
+                _ => panic!("unexpected method"),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn lost_create_reply_recovers_one_known_identity_and_deletes_it() {
+        let io = Arc::new(Fake {
+            lost_create_reply: true,
+            ..Fake::default()
+        });
+        let result = probe_with(io.clone(), "thing", Instant::now() + Duration::from_secs(1)).await;
+        assert_eq!(result.outcome, "readable");
+        assert!(io.record.lock().unwrap().is_none());
+        let calls = io.calls.lock().unwrap();
+        assert_eq!(
+            calls.iter().map(|c| c.0).collect::<Vec<_>>(),
+            ["POST", "GET", "DELETE", "GET"]
+        );
+        let id = calls[0].2.as_ref().unwrap()["_id"].as_str().unwrap();
+        assert!(uuid::Uuid::parse_str(id).is_ok());
+        assert!(calls[1..].iter().all(|c| c.1.contains(id)));
+    }
+
+    #[tokio::test]
+    async fn rejected_create_is_never_retried_or_deleted() {
+        let io = Arc::new(Fake {
+            reject_create: true,
+            ..Fake::default()
+        });
+        let result = probe_with(io.clone(), "thing", Instant::now() + Duration::from_secs(1)).await;
+        assert_eq!(result.outcome, "not_confirmed");
+        assert_eq!(io.calls.lock().unwrap().len(), 1);
     }
 }
