@@ -12,7 +12,7 @@
 import { spawn } from "node:child_process";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { loadavg, tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildIdentity } from "../src/paths.ts";
 import { summarizeTiming } from "../src/timing.ts";
@@ -30,7 +30,8 @@ function count(args: readonly string[]): number {
   }
 }
 
-const load = readFileSync("/proc/loadavg", "utf8").trim();
+// os.loadavg() is portable; it reads zeros on Windows, where there is no load average.
+const load = loadavg().map((n) => n.toFixed(2)).join(" ");
 const quiet = {
   load,
   java: count(["-x", "java"]),
@@ -71,7 +72,7 @@ console.log(`\nbench: ${JSON.stringify({
   harness: buildIdentity,
   exit: code,
   wallMs: Math.round(wallMs),
-  jvms: javas.size,
+  jvms: javas === undefined ? "unavailable (no /proc)" : javas.size,
   workers,
   jobs: summary.jobs,
   faultedJobs: summary.faultedJobs,
@@ -97,7 +98,7 @@ line("host wait", sum("jvm.hostWaitMs"));
 line("transport", sum("job.transportMs"));
 line("stringify", sum("job.stringifyMs"));
 line("round trip", sum("job.roundTripMs"));
-line("line bytes", sum("job.lineBytes"));
+console.log(`  ${"line bytes".padEnd(22)} ${sum("job.lineBytes").toFixed(0).padStart(9)} bytes`);
 line("spawn to ready", sum("spawn.spawnToReadyMs"));
 line("audit publish", sum("publish.publishMs"));
 console.log(`  cache hits ${sum("jvm.cacheHits")}  misses ${sum("jvm.cacheMisses")}  subject hits ${sum("jvm.subjectCacheHits")} misses ${sum("jvm.subjectCacheMisses")}`);

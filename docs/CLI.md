@@ -651,7 +651,7 @@ aic managed field rename custom_widget.code external_code [--yes] [--json]
 aic managed field delete custom_widget.external_code [--yes] [--json]
 aic managed hook add custom_widget onCreate [--yes] [--json]
 aic managed hook delete custom_widget onCreate [--yes] [--json]
-aic managed relationship set custom_widget.owner --target alpha_user --forward one [--reverse none|one|many] [--reverse-key widgets] [--check] [--wait-activation[=SECONDS]] [--yes] [--json]
+aic managed relationship set custom_widget.owner --target alpha_user --forward one [--reverse none|one|many] [--reverse-key widgets] [--check] [--force] [--wait-activation[=SECONDS]] [--yes] [--json]
 aic managed relationship delete custom_widget.owner [--remove-mapping [--force]] [--yes] [--json]
 aic managed relationship verify custom_widget[.owner] [--sample 5] [--scan 200] [--probe [--force] [--yes]] [--json]
 aic managed relationship relink custom_widget.owner [--dry-run] [--force] [--yes] [--json]
@@ -876,11 +876,13 @@ Before writing, the plan names all script-shaped hooks (inline and file-backed,
 any event) and every sync mapping whose source or target is `managed/<object>`.
 Hook firing behavior is labeled unknown where unmeasured for this probe;
 hooks and mappings may have side effects on create/delete. If either inventory
-cannot be read, the command refuses even with `--yes`, and never calls that
-inventory empty. Otherwise `--yes` skips the prompt and is the production gate.
-Without a terminal or `--yes`, refusal creates no probe: on `relationship set`
+cannot be read, the command refuses even with `--force`, and never calls that
+inventory empty. Otherwise `--force` skips the probe prompt; `--yes` authorizes
+only the production environment. On map, one `--force` approves both conversion
+and the requested probe, as operation consent. Without a terminal or `--force`,
+refusal creates no probe: on `relationship set`
 the schema write has landed and the per-type entry has not, so finish with
-`relationship map --wait-activation --yes`; on `relationship map` nothing is
+`relationship map --wait-activation --force`; on `relationship map` nothing is
 switched. `--dry-run` writes no probe.
 
 `--json` adds `storage_activation`, including `interrupted`. `readable` means
@@ -3167,9 +3169,10 @@ and symlinks in the selected root path. Generated paths beneath that root refuse
 `..` and symlinks. Output is staged before checking for local changes; a change
 stops the batch and the report names files already written. Forced replacement
 checks the authorized bytes again after backup. New destinations use Linux's
-atomic no-replace rename, so a concurrent creation is refused. If the platform,
-kernel or filesystem lacks that operation, installing a new file fails without
-replacing the destination.
+atomic no-replace rename, or an atomic hard-link install followed by staging-file
+unlink on other Unix platforms. A concurrent creation is refused. If the kernel
+or filesystem lacks the required operation, installation fails without replacing
+the destination.
 
 `aic script delete` removes the script from the tenant, keeps the local file, and forgets its sync record.
 
