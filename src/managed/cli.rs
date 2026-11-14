@@ -1035,6 +1035,17 @@ async fn relationship(command: RelationshipCommand) -> Result<()> {
             )
             .await?;
             confirmation(&format!("relationship {source_object}.{key} set"));
+            if let Some((mapping, Some(storage))) = &mapped
+                && storage.interrupted
+            {
+                let mut body = serde_json::json!({
+                    "changed": changed_objects(&doc, &updated)?,
+                    "mapping_verification": mapping,
+                });
+                activation::attach(&mut body, Some(storage))?;
+                output(json, &body)?;
+                return activation::check_interrupted(Some(storage));
+            }
             let activation = wait_for_ends(&tenant, ends).await;
             let one_sided = match relink::reverse_added(&doc, &updated, &source_object, &key) {
                 Some((far, far_key)) => {

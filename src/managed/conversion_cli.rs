@@ -703,6 +703,9 @@ pub async fn map(
                     async || { conversion::exact(&pair, &generic_snapshot(ok.tenant, &pair).await?)?; guard(ok.tenant, &pair, storage::Mode::Generic).await?; Ok(()) },
                     async || write_plan(&ok, &pair, &plan, storage::Mode::Generic).await).await?;
                 storage_activation = activation::finish(ok.tenant, ok.confirmed_prod, &added, pending).await?;
+                if storage_activation.as_ref().is_some_and(|a| a.interrupted) {
+                    return Ok(());
+                }
                 let records = api::present_records(ok.tenant, &object, &key).await?;
                 storage::no_orphans(&object, &key, column(&pair), &records).map_err(Error::Config)?;
             },
@@ -728,9 +731,11 @@ pub async fn map(
         )
         .await?;
     }
-    let mut body = json!({"capture": path, "links": capture.count(), "complete": true});
+    let interrupted = storage_activation.as_ref().is_some_and(|a| a.interrupted);
+    let mut body = json!({"capture": path, "links": capture.count(), "complete": !interrupted});
     activation::attach(&mut body, storage_activation.as_ref())?;
-    output(&flags, &body)
+    output(&flags, &body)?;
+    activation::check_interrupted(storage_activation.as_ref())
 }
 
 async fn read_promotion(lower: &str, upper: &str) -> Result<conversion::PromotionRead> {
