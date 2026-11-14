@@ -410,53 +410,99 @@ fn refusal_text(refused: &[(String, bool)]) -> String {
     }
 }
 
+#[cfg(test)]
+type ReplacementHook = Box<dyn FnMut(&str)>;
+
+#[cfg(test)]
+thread_local! {
+    static REPLACEMENT_HOOK: std::cell::RefCell<Option<ReplacementHook>> =
+        std::cell::RefCell::new(None);
+}
+
+#[cfg(test)]
+fn replacement_hook(phase: &str) {
+    REPLACEMENT_HOOK.with_borrow_mut(|hook| {
+        if let Some(hook) = hook {
+            hook(phase);
+        }
+    });
+}
+
 fn write_one(
     req: &Install<'_>,
     root: &Directory,
     item: &Planned,
 ) -> std::result::Result<FileOutcome, String> {
-    let existing = read_existing(Some(root), &item.path).map_err(|error| error.to_string())?;
+    // Equal files require no staging; still check for drift before reporting.
+    let unchanged = matches!(&item.existing, Existing::File(have) if have == &item.bytes);
+    let parent = root
+        .parent(&item.path, !unchanged)
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "export directory disappeared".to_string())?;
+    let staged = if unchanged {
+        None
+    } else {
+        Some(
+            parent
+                .stage(&item.bytes)
+                .map_err(|error| error.to_string())?,
+        )
+    };
+    #[cfg(test)]
+    if staged.is_some() {
+        replacement_hook("after staging");
+    }
+    let leaf = Path::new(item.path.file_name().expect("validated path"));
+    let existing = match parent.read(leaf) {
+        Ok(bytes) => Existing::File(bytes),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Existing::Absent,
+        Err(error) => return Err(error.to_string()),
+    };
     if existing != item.existing {
         return Err(format!(
             "{} changed after export preflight; nothing further was written (even with --force)",
             item.relative
         ));
     }
-    match existing {
-        Existing::Symlink => Err(format!(
-            "refusing to replace symlink {}; nothing further was written",
-            item.relative
-        )),
-        Existing::File(have) if have == item.bytes => Ok(FileOutcome {
+    if unchanged {
+        return Ok(FileOutcome {
             path: item.relative.clone(),
             action: Action::Unchanged,
             backup: None,
-        }),
-        Existing::File(have) if req.force => {
-            let backup =
-                backup_file(req, root, &item.relative, &have).map_err(|error| error.to_string())?;
-            write_bytes(root, &item.path, &item.bytes)
-                .map_err(|error| format!("{error}. The previous bytes are in {backup}"))?;
-            Ok(FileOutcome {
-                path: item.relative.clone(),
-                action: Action::BackedUp,
-                backup: Some(backup),
-            })
-        }
-        Existing::File(_) => Err(format!(
-            "{} differs from the export; nothing further was written. \
-             Re-run with --force to back up the existing file and overwrite it",
-            item.relative
-        )),
-        Existing::Absent => {
-            write_bytes(root, &item.path, &item.bytes).map_err(|error| error.to_string())?;
-            Ok(FileOutcome {
-                path: item.relative.clone(),
-                action: Action::Wrote,
-                backup: None,
-            })
-        }
+        });
     }
+    let backup = match &existing {
+        Existing::File(have) if req.force => {
+            Some(backup_file(req, root, &item.relative, have).map_err(|error| error.to_string())?)
+        }
+        Existing::Absent => None,
+        _ => return Err(format!("refusing to replace {}", item.relative)),
+    };
+    #[cfg(test)]
+    replacement_hook("after backup");
+    let expected = match &existing {
+        Existing::File(have) => Some(have.as_slice()),
+        _ => None,
+    };
+    staged
+        .expect("changed output was staged")
+        .install(leaf, expected)
+        .map_err(|error| match &backup {
+            Some(backup) => format!(
+                "{}: {error}. The previous bytes are in {backup}",
+                item.relative
+            ),
+            None => format!("{}: {error}", item.relative),
+        })?;
+    Ok(FileOutcome {
+        path: item.relative.clone(),
+        action: if backup.is_some() {
+            Action::BackedUp
+        } else {
+            Action::Wrote
+        },
+        backup,
+    })
 }
 
 fn note_landed(files: &[FileOutcome], error: String) -> String {
@@ -520,14 +566,6 @@ fn backup_file(
             Err(error) => return Err(error.into()),
         }
     }
-}
-
-fn write_bytes(root: &Directory, path: &Path, bytes: &[u8]) -> Result<()> {
-    let parent = root
-        .parent(path, true)?
-        .ok_or_else(|| Error::Config("export directory disappeared".into()))?;
-    parent.replace(Path::new(path.file_name().expect("validated path")), bytes)?;
-    Ok(())
 }
 
 fn read_existing(root: Option<&Directory>, path: &Path) -> Result<Existing> {
@@ -1265,6 +1303,161 @@ mod tests {
             assert!(!dir.join(".aic-backups").exists());
             std::fs::remove_dir_all(dir).unwrap();
         }
+    }
+
+    #[test]
+    fn staging_boundary_changes_stop_the_real_install() {
+        // The final case creates the file after the absence check, proving
+        // that the rename itself must refuse replacement.
+        for (phase, before, after, force) in [
+            ("after staging", None, Some(b"created".as_slice()), false),
+            (
+                "after staging",
+                Some(b"approved".as_slice()),
+                Some(b"edited".as_slice()),
+                true,
+            ),
+            (
+                "after backup",
+                Some(b"approved".as_slice()),
+                Some(b"edited".as_slice()),
+                true,
+            ),
+            ("after backup", Some(b"approved".as_slice()), None, true),
+            ("before rename", None, Some(b"created".as_slice()), false),
+        ] {
+            let dir =
+                std::env::temp_dir().join(format!("aic-fcm-boundary-{}", uuid::Uuid::new_v4()));
+            std::fs::create_dir(&dir).unwrap();
+            if let Some(bytes) = before {
+                std::fs::write(dir.join("later.json"), bytes).unwrap();
+            }
+            let files: Vec<_> = ["first.json", "later.json", "last.json"]
+                .into_iter()
+                .map(|path| PlannedFile {
+                    relative: path.into(),
+                    bytes: b"remote".to_vec(),
+                })
+                .collect();
+            let hook_dir = dir.clone();
+            let mut entries = 0;
+            REPLACEMENT_HOOK.with_borrow_mut(|hook| {
+                *hook = Some(Box::new(move |at| {
+                    if at == "after staging" {
+                        entries += 1;
+                    }
+                    if entries == 2 && at == phase {
+                        assert!(std::fs::read_dir(&hook_dir).unwrap().any(|entry| {
+                            entry
+                                .unwrap()
+                                .file_name()
+                                .to_string_lossy()
+                                .starts_with(".aic-export-")
+                        }));
+                        if phase == "after backup" {
+                            assert!(hook_dir.join(".aic-backups").is_dir());
+                        }
+                        if let Some(bytes) = after {
+                            std::fs::write(hook_dir.join("later.json"), bytes).unwrap();
+                        } else {
+                            std::fs::remove_file(hook_dir.join("later.json")).unwrap();
+                        }
+                    }
+                }))
+            });
+            let result = install(&Install {
+                config_dir: &dir,
+                files: &files,
+                dry_run: false,
+                force,
+                backup_kind: "managed",
+                backup_realm: "managed",
+            });
+            REPLACEMENT_HOOK.with_borrow_mut(|hook| *hook = None);
+            let report = result.unwrap();
+            // Clean our fixture even when a deliberately reverted fix fails.
+            let actual = std::fs::read(dir.join("later.json")).ok();
+            let last_exists = dir.join("last.json").exists();
+            let staging_left = std::fs::read_dir(&dir).unwrap().any(|entry| {
+                entry
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".aic-export-")
+            });
+            if phase == "after backup" {
+                let backups: Vec<_> = std::fs::read_dir(dir.join(".aic-backups"))
+                    .unwrap()
+                    .map(|entry| entry.unwrap().path())
+                    .filter(|path| path.file_name().unwrap() != ".gitignore")
+                    .collect();
+                assert_eq!(backups.len(), 1);
+                assert_eq!(std::fs::read(&backups[0]).unwrap(), b"approved");
+            }
+            std::fs::remove_dir_all(&dir).unwrap();
+            assert_eq!(
+                report
+                    .files
+                    .iter()
+                    .map(|file| file.action)
+                    .collect::<Vec<_>>(),
+                [Action::Wrote, Action::Refused, Action::Skipped],
+                "{phase}: {report:?}"
+            );
+            assert!(
+                report
+                    .error
+                    .unwrap()
+                    .contains("Already written: first.json")
+            );
+            assert_eq!(actual.as_deref(), after, "{phase}");
+            assert!(!last_exists && !staging_left);
+        }
+    }
+
+    #[test]
+    fn operator_root_accepts_parent_relative_and_symlink_paths() {
+        let dir = std::env::temp_dir().join(format!("aic-fcm-root-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(dir.join("child")).unwrap();
+        std::fs::create_dir(dir.join("existing")).unwrap();
+        std::os::unix::fs::symlink(dir.join("existing"), dir.join("link")).unwrap();
+        let files = vec![PlannedFile {
+            relative: "nested/output.json".into(),
+            bytes: b"export".to_vec(),
+        }];
+        for (root, destination) in [
+            (dir.join("child/../existing"), dir.join("existing")),
+            (
+                dir.join("child/../missing/deeper"),
+                dir.join("missing/deeper"),
+            ),
+            (dir.join("link"), dir.join("existing")),
+            (dir.join("link/new"), dir.join("existing/new")),
+        ] {
+            let request = Install {
+                config_dir: &root,
+                files: &files,
+                dry_run: true,
+                force: false,
+                backup_kind: "managed",
+                backup_realm: "managed",
+            };
+            assert!(install(&request).unwrap().error.is_none());
+            if destination.ends_with("deeper") {
+                assert!(!destination.exists());
+            }
+            let report = install(&Install {
+                dry_run: false,
+                ..request
+            })
+            .unwrap();
+            assert!(report.error.is_none(), "{root:?}: {report:?}");
+            assert_eq!(
+                std::fs::read(destination.join("nested/output.json")).unwrap(),
+                b"export"
+            );
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
