@@ -23,7 +23,7 @@ const given = {
   realm: "/alpha",
   scriptName: SCRIPT_NAME,
   loggerScriptId: SCRIPT_ID,
-  identity: { name: "subject-id", exists: true, attributes: { mail: [MAIL] } },
+  identity: { name: "subject-id", exists: true, attributes: { mail: [MAIL] as [string] } },
   nameId: { format: EMAIL, remoteEntityId: REMOTE, hostedEntityId: HOSTED },
 };
 
@@ -124,6 +124,48 @@ describe("SAML2 NameID mapper matches the live SSO", () => {
     expect(error).toBeInstanceOf(CaseRunError);
   }, 60_000);
 
+  it.each([
+    ['typeof nameIDScriptHelper.setNameIDValue; "ok";', "nameIDScriptHelper.setNameIDValue"],
+    ['typeof identity.getAttributes; "ok";', "identity.getAttributes"],
+    ['try { typeof nameIDScriptHelper.setNameIDValue; } catch (e) {} "ok";', "nameIDScriptHelper.setNameIDValue"],
+    ['try { typeof identity.getAttributes; } catch (e) {} "ok";', "identity.getAttributes"],
+    ['nameIDFormat = "changed"; "ok";', "nameIDFormat"],
+    ['try { nameIDFormat = "changed"; } catch (e) {} "ok";', "nameIDFormat"],
+    [`nameIDFormat = "${EMAIL}"; "ok";`, "nameIDFormat"],
+  ])("unmeasured read or assignment records a fault: %s", async (script, member) => {
+    expectHarnessFault(`saml2-nameid-mapper-unmeasured/${member}`);
+    await expect(runCase(runner, defineCase({
+      name: member, context: "SAML2_NAMEID_MAPPER", script, given,
+      expect: { nameId: { value: "ok" } },
+    }))).rejects.toBeInstanceOf(CaseRunError);
+  }, 60_000);
+
+  it.each(["getNameIDFromSession", "shouldPersistNameIDFormat"])(
+    "refuses %s outside the measured email format", async (method) => {
+      expectHarnessFault(`saml2-nameid-mapper-unmeasured/nameIDScriptHelper.${method}()`);
+      // The review's combined expression must fault whichever operation runs first.
+      const script = method === "shouldPersistNameIDFormat"
+        ? 'String(nameIDScriptHelper.shouldPersistNameIDFormat()) + "|" + String(nameIDScriptHelper.getNameIDFromSession());'
+        : 'String(nameIDScriptHelper.getNameIDFromSession()) + "|" + String(nameIDScriptHelper.shouldPersistNameIDFormat());';
+      await expect(runCase(runner, defineCase({
+        name: method, context: "SAML2_NAMEID_MAPPER", script,
+        given: { ...given, nameId: { format: "urn:oasis:names:tc:SAML:2.0:nameid-format:persistent" } },
+        expect: { nameId: { value: method === "shouldPersistNameIDFormat" ? "false|null" : "null|false" } },
+      }))).rejects.toBeInstanceOf(CaseRunError);
+    }, 60_000,
+  );
+
+  it("keeps every helper member measured as undefined", async () => {
+    const names = ["class", "equals", "getClass", "hashCode", "notify", "notifyAll", "toString", "wait",
+      "nameIDFromSession", "nameIDValue"];
+    const { verdict } = await runCase(runner, defineCase({
+      name: "undefined helper members", context: "SAML2_NAMEID_MAPPER", given,
+      script: names.map((name) => `if (nameIDScriptHelper[${JSON.stringify(name)}] !== undefined) throw "unexpected";`).join("\n") + '\n"ok";',
+      expect: { nameId: { value: "ok" } },
+    }));
+    expect(verdict.pass, verdict.summary).toBe(true);
+  }, 60_000);
+
   it("createNameIdentifier, a format constant, another attribute and a wrong arity fault", async () => {
     const cases: [string, string][] = [
       ['session.getProperty("x");', "saml2-nameid-mapper-unmeasured/session.getProperty"],
@@ -148,3 +190,27 @@ describe("SAML2 NameID mapper matches the live SSO", () => {
     }
   }, 60_000);
 });
+
+// Consuming authoring-API checks, compiled by the package typecheck.
+function authoringTypeChecks() {
+  // @ts-expect-error NameID identity has neither universalId nor uid attributes
+  defineCase({
+    name: "unsupported identity fixture", script: '"ok";', context: "SAML2_NAMEID_MAPPER",
+    given: { identity: { universalId: "id=x", attributes: { uid: ["x"] } } },
+    expect: { nameId: { value: "ok" } },
+  });
+  defineCase({
+    name: "unsupported universalId", script: '"ok";', context: "SAML2_NAMEID_MAPPER",
+    // @ts-expect-error universalId was not measured in this context
+    given: { identity: { universalId: "id=x" } },
+    expect: { nameId: { value: "ok" } },
+  });
+  // @ts-expect-error the measured mail fixture contains exactly one string
+  defineCase({
+    name: "unsupported mail cardinality", script: '"ok";', context: "SAML2_NAMEID_MAPPER",
+    given: { identity: { attributes: { mail: ["x", "y"] } } },
+    expect: { nameId: { value: "ok" } },
+  });
+}
+
+void authoringTypeChecks;

@@ -67,6 +67,13 @@ function __rhinoLocalNiDefaults(given) {
   };
 }
 
+function __rhinoLocalNiRequireEmail(member) {
+  if (__rhinoLocalNi.format !== __rhinoLocalNiEmailFormat) {
+    throw __rhinoLocalCtxUnmeasured("nameIDScriptHelper." + member + "()",
+      "outside the measured email format");
+  }
+}
+
 function __rhinoLocalNiHelper() {
   var view = __rhinoLocalCtxBare();
   var i;
@@ -78,9 +85,11 @@ function __rhinoLocalNiHelper() {
     return __rhinoLocalNi.mapped;
   });
   __rhinoLocalCtxMethod(view, "nameIDScriptHelper", "nameIDScriptHelper", "getNameIDFromSession", 0, function () {
+    __rhinoLocalNiRequireEmail("getNameIDFromSession");
     return null;
   });
   __rhinoLocalCtxMethod(view, "nameIDScriptHelper", "nameIDScriptHelper", "shouldPersistNameIDFormat", 0, function () {
+    __rhinoLocalNiRequireEmail("shouldPersistNameIDFormat");
     return false;
   });
   __rhinoLocalCtxMethod(view, "nameIDScriptHelper", "nameIDScriptHelper", "createNameIdentifier", 0, function () {
@@ -98,12 +107,19 @@ function __rhinoLocalNiHelper() {
       });
     })(__rhinoLocalNiConstants[i]);
   }
+  var undefinedNames = [
+    "class", "equals", "getClass", "hashCode", "notify", "notifyAll", "toString", "wait",
+    "nameIDFromSession", "nameIDValue",
+  ];
+  for (i = 0; i < undefinedNames.length; i += 1) {
+    __rhinoLocalHide(view, undefinedNames[i], undefined);
+  }
   __rhinoLocalCtxToJSON(view, "nameIDScriptHelper");
   __rhinoLocalHide(view, "valueOf", function () {
     throw __rhinoLocalCtxUnmeasured("String(nameIDScriptHelper)");
   });
   __rhinoLocalCtxTag(view, null, "nameIDScriptHelper");
-  return __rhinoLocalCtxWatch(view, "nameIDScriptHelper");
+  return __rhinoLocalNiView(__rhinoLocalCtxWatch(view, "nameIDScriptHelper"), "nameIDScriptHelper");
 }
 
 function __rhinoLocalNiIdentity(seed) {
@@ -136,7 +152,7 @@ function __rhinoLocalNiIdentity(seed) {
     throw __rhinoLocalCtxUnmeasured("String(identity)");
   });
   __rhinoLocalCtxTag(view, null, "identity");
-  return __rhinoLocalCtxWatch(view, "identity");
+  return __rhinoLocalNiView(__rhinoLocalCtxWatch(view, "identity"), "identity");
 }
 
 // A plain JS object has no hook for an unknown property read. The trusted
@@ -175,6 +191,9 @@ function __rhinoLocalSeedNameId(given) {
   nameIDScriptHelper = __rhinoLocalNiHelper();
   identity = __rhinoLocalNiIdentity(d);
   nameIDFormat = d.format;
+  __rhinoLocalCtxHostOp("guardBinding", __rhinoLocalTop, "nameIDFormat", function () {
+    throw __rhinoLocalCtxUnmeasured("nameIDFormat", "assignment or deletion");
+  });
   remoteEntityId = d.remote;
   hostedEntityId = d.hosted;
   session = __rhinoLocalNiSession();

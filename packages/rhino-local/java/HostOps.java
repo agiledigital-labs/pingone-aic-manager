@@ -77,6 +77,12 @@ public final class HostOps extends BaseFunction {
   private Object dispatch(Context cx, Scriptable scope, Object[] args) throws Exception {
     String op = (String) Context.jsToJava(args[0], String.class);
     switch (op) {
+      // A context can refuse unmeasured writes to one of its scalar bindings.
+      case "guardBinding": {
+        ScriptContextScope target = (ScriptContextScope) args[1];
+        target.guardBinding(Context.toString(args[2]), (Function) args[3]);
+        return org.mozilla.javascript.Undefined.instance;
+      }
       // A context measured only selected scalar properties of this object.
       // Unknown reads and writes must be tallied, even if a script catches them.
       case "measuredView": {

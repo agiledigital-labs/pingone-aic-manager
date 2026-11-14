@@ -1233,25 +1233,30 @@ completion, a throw), plus the unmeasured calls. What it approximates or leaves 
   functions and the `java.lang.Object` names (`class`, `equals`, `getClass`,
   `hashCode`, `notify`, `notifyAll`, `toString`, `wait`, plus
   `nameIDFromSession` and `nameIDValue`). A bracket read of each of those
-  names is `undefined`. The emulator's methods are non-enumerable, and it
-  does not install the names that read as `undefined`.
+  names is `undefined`. The emulator's methods and these undefined members
+  are non-enumerable. Other helper member reads fault, including `typeof`
+  capability checks.
 - **`NAMEID_FORMAT_*`.** Not enumerable in the live object, and no probe read
   one. A read faults.
 - **`createNameIdentifier()`.** Present, arity 0, not called. A call faults.
 - **`session`.** Bound as an object. No member was read. Any member read, write or call faults,
   including when the script catches the exception.
 - **`getNameIDFromSession`.** Only `null` was returned. A persisted NameID was
-  not observed (`shouldPersistNameIDFormat()` returned `false`).
+  not observed (`shouldPersistNameIDFormat()` returned `false`). These two
+  methods and `getNameIDValue()` fault outside the measured email format.
 - **`identity.getAttributeValues`.** Only `"mail"` with one string. `.length`
   and `[0]` were read. `.size()` was not and faults; only `.length` and `[0]` are exposed.
   Any other attribute faults. `store`,
   `setAttribute`, `addAttribute` and `getUniversalId` were not called and
-  fault.
+  fault. Other identity member reads, including `typeof identity.getAttributes`,
+  fault too. The authoring identity type omits `universalId` and permits only
+  one mail string.
 - **The completion value.** A non-empty string is the NameID text.
   `undefined` is the refusal `Could not generate NameID`. The empty string,
   `null`, a number and an object were not sent; anything other than a nonempty string
   or `undefined` faults. The assertion's format stayed the format the SP
-  requested. Nothing in the probe changed it.
+  requested. Nothing in the probe changed it; assigning to `nameIDFormat`
+  faults even if caught or assigned the current value.
 - **The AIC lane** runs only decision-node scripts, so a NameID mapper case
   runs locally only.
 

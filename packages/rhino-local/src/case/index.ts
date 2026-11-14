@@ -52,6 +52,7 @@ export type {
   MayActEffect,
   MayActExpect,
   NameIdCaseInit,
+  NameIdIdentitySeed,
   NameIdEffect,
   NameIdExpect,
   NameIdSeed,
