@@ -1059,7 +1059,7 @@ async fn relationship(command: RelationshipCommand) -> Result<()> {
                 });
                 activation::attach(&mut body, Some(storage))?;
                 output(json, &body)?;
-                return activation::check_interrupted(Some(storage));
+                return Err(activation::command_interrupted());
             }
             let remaining = command
                 .run(async {
