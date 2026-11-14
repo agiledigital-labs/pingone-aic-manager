@@ -25,8 +25,9 @@ pub(crate) const WAIT_ACTIVATION_HELP: &str =
 
 pub(crate) const WAIT_ACTIVATION_LONG: &str = "\
 After a write that adds a per-type config/repo.ds entry, create one record in each such type, \
-read it back by id, delete it, and read again to confirm the delete. SECONDS bounds that whole \
-check (default 60, from 1 to 3600).
+read it back by id, delete it, and read again to confirm the delete. SECONDS bounds create/read \
+across all types (default 60, from 1 to 3600). Cleanup has a separate 15-second allowance per \
+started type; each cleanup request waits at most 2 seconds. No create starts after the deadline.
 
 Config read-back is immediate and does not show that the new store is live. On the sandbox \
 (2026-11-14) no read-only check flipped from \"not yet active\" to \"active\" after the entry \
@@ -660,7 +661,29 @@ async fn probe_object(
     .await
 }
 
+#[derive(Clone, Copy)]
+struct ProbeLimits {
+    cleanup: Duration,
+    request: Duration,
+    poll: Duration,
+}
+
+const LIMITS: ProbeLimits = ProbeLimits {
+    cleanup: Duration::from_secs(15),
+    request: Duration::from_secs(2),
+    poll: POLL,
+};
+
 async fn probe_with(io: Arc<impl ProbeIo>, object: &str, deadline: Instant) -> ObjectProbe {
+    probe_with_limits(io, object, deadline, LIMITS).await
+}
+
+async fn probe_with_limits(
+    io: Arc<impl ProbeIo>,
+    object: &str,
+    deadline: Instant,
+    limits: ProbeLimits,
+) -> ObjectProbe {
     let started = Instant::now();
     let mut facts = ProbeFacts {
         create: CreateAttempt::NotStarted,
@@ -684,48 +707,117 @@ async fn probe_with(io: Arc<impl ProbeIo>, object: &str, deadline: Instant) -> O
     let read_path = format!("{record_path}?_fields=_id");
     facts.id = Some(id.clone());
     eprintln!("probe managed/{object} id {id}");
-    facts.create = match io
-        .request("POST", create_path, Some(json!({"_id": id})))
-        .await
-    {
-        Ok(_) => CreateAttempt::Created,
-        Err(error) if api_status(&error).is_some_and(|s| (400..500).contains(&s)) => {
-            facts.id = None;
-            facts.create = CreateAttempt::Rejected {
-                status: api_status(&error).unwrap(),
-            };
+    let create_io = io.clone();
+    // Keep ownership of the response future on timeout. Cancelling a socket
+    // wait does not cancel the daemon's write. Cleanup first waits for this
+    // original request; an unresolved write can never be reported as gone.
+    let mut create = tokio::spawn(async move {
+        if Instant::now() >= deadline {
+            return Err(Error::Config(
+                "probe create not dispatched before deadline".into(),
+            ));
+        }
+        create_io
+            .request("POST", create_path, Some(json!({"_id": id})))
+            .await
+    });
+    let reply = tokio::time::timeout_at(deadline.into(), &mut create).await;
+    let mut create_pending = reply.is_err();
+    if let Ok(reply) = reply {
+        record_create_reply(reply, &mut facts);
+        if matches!(facts.create, CreateAttempt::Rejected { .. }) {
             return object_probe(object, &facts, started.elapsed().as_secs_f64());
         }
-        Err(_) => CreateAttempt::GaveUp,
-    };
-    while Instant::now() < deadline {
-        match io.request("GET", read_path.clone(), None).await {
-            Ok(_) => {
+    } else {
+        facts.create = CreateAttempt::GaveUp;
+    }
+    while !create_pending && Instant::now() < deadline {
+        match request_until(&*io, "GET", &read_path, deadline, limits).await {
+            Ok(_) if Instant::now() < deadline => {
                 facts.create = CreateAttempt::Created;
                 facts.read_back = true;
                 break;
             }
-            Err(error) => match classify_read(api_status(&error)) {
-                ReadClass::Stop => break,
-                _ => pause(deadline).await,
-            },
+            Err(error) if classify_read(api_status(&error)) == ReadClass::Stop => break,
+            _ => pause_with(deadline, limits.poll).await,
         }
     }
+    // Cleanup has its own explicit allowance, even if reading used every
+    // second of the probe deadline. Reserve its last third for deletion.
+    let cleanup_started = Instant::now();
+    let cleanup_deadline = cleanup_started + limits.cleanup;
+    if create_pending {
+        if let Ok(reply) = tokio::time::timeout_at(
+            (cleanup_started + limits.cleanup * 2 / 3).into(),
+            &mut create,
+        )
+        .await
+        {
+            create_pending = false;
+            record_create_reply(reply, &mut facts);
+            if matches!(facts.create, CreateAttempt::Rejected { .. }) {
+                return object_probe(object, &facts, started.elapsed().as_secs_f64());
+            }
+        }
+    }
+    if !create_pending
+        && facts.create == CreateAttempt::GaveUp
+        && request_until(&*io, "GET", &read_path, cleanup_deadline, limits)
+            .await
+            .is_ok()
+    {
+        facts.create = CreateAttempt::Created;
+    }
     facts.delete_attempted = true;
-    let _ = io.request("DELETE", record_path, None).await;
-    while Instant::now() < deadline {
-        match io.request("GET", read_path.clone(), None).await {
+    let _ = request_until(&*io, "DELETE", &record_path, cleanup_deadline, limits).await;
+    while Instant::now() < cleanup_deadline {
+        match request_until(&*io, "GET", &read_path, cleanup_deadline, limits).await {
             Err(error) if classify_confirm(api_status(&error)) == ConfirmClass::Gone => {
-                // A missing read cannot settle an uncertain create: it might
-                // still land later. Keep its known identity for manual recovery.
-                facts.delete_confirmed = facts.create == CreateAttempt::Created;
+                facts.delete_confirmed = !create_pending && facts.create == CreateAttempt::Created;
                 break;
             }
             Err(error) if classify_confirm(api_status(&error)) == ConfirmClass::Stop => break,
-            _ => pause(deadline).await,
+            _ => pause_with(cleanup_deadline, limits.poll).await,
         }
     }
+    if create_pending {
+        // This cancels only our waiter. The id remains explicit recovery
+        // evidence because the daemon/tenant might finish the create later.
+        create.abort();
+    }
     object_probe(object, &facts, started.elapsed().as_secs_f64())
+}
+
+fn record_create_reply(
+    reply: std::result::Result<Result<Value>, tokio::task::JoinError>,
+    facts: &mut ProbeFacts,
+) {
+    facts.create = match reply {
+        Ok(Ok(_)) => CreateAttempt::Created,
+        Ok(Err(error)) if api_status(&error).is_some_and(|s| (400..500).contains(&s)) => {
+            facts.id = None;
+            CreateAttempt::Rejected {
+                status: api_status(&error).unwrap(),
+            }
+        }
+        _ => CreateAttempt::GaveUp,
+    };
+}
+
+async fn request_until(
+    io: &impl ProbeIo,
+    method: &'static str,
+    path: &str,
+    deadline: Instant,
+    limits: ProbeLimits,
+) -> Result<Value> {
+    if Instant::now() >= deadline {
+        return Err(Error::Transport("probe request deadline elapsed".into()));
+    }
+    let until = deadline.min(Instant::now() + limits.request);
+    tokio::time::timeout_at(until.into(), io.request(method, path.to_string(), None))
+        .await
+        .unwrap_or_else(|_| Err(Error::Transport("probe request deadline elapsed".into())))
 }
 
 fn api_status(error: &Error) -> Option<u16> {
@@ -735,12 +827,12 @@ fn api_status(error: &Error) -> Option<u16> {
     }
 }
 
-async fn pause(deadline: Instant) {
+async fn pause_with(deadline: Instant, interval: Duration) {
     let remaining = deadline.saturating_duration_since(Instant::now());
     if remaining.is_zero() {
         return;
     }
-    tokio::time::sleep(POLL.min(remaining)).await;
+    tokio::time::sleep(interval.min(remaining)).await;
 }
 
 #[cfg(test)]
@@ -1006,6 +1098,10 @@ mod lifecycle_tests {
         record: Mutex<Option<String>>,
         lost_create_reply: bool,
         reject_create: bool,
+        create_delay: Duration,
+        hang_create: bool,
+        hang_reads: bool,
+        hang_delete: bool,
     }
 
     fn api_error(status: u16) -> Error {
@@ -1028,6 +1124,10 @@ mod lifecycle_tests {
                 .push((method, path, body.clone()));
             match method {
                 "POST" => {
+                    if self.hang_create {
+                        std::future::pending::<()>().await;
+                    }
+                    tokio::time::sleep(self.create_delay).await;
                     if self.reject_create {
                         return Err(api_error(400));
                     }
@@ -1038,17 +1138,119 @@ mod lifecycle_tests {
                     }
                     Ok(json!({"_id": id}))
                 }
-                "GET" => match self.record.lock().unwrap().as_ref() {
-                    Some(id) => Ok(json!({"_id": id})),
-                    None => Err(api_error(404)),
-                },
+                "GET" => {
+                    if self.hang_reads {
+                        std::future::pending::<()>().await;
+                    }
+                    match self.record.lock().unwrap().as_ref() {
+                        Some(id) => Ok(json!({"_id": id})),
+                        None => Err(api_error(404)),
+                    }
+                }
                 "DELETE" => {
+                    if self.hang_delete {
+                        std::future::pending::<()>().await;
+                    }
                     *self.record.lock().unwrap() = None;
                     Ok(json!({}))
                 }
                 _ => panic!("unexpected method"),
             }
         }
+    }
+
+    const FAST: ProbeLimits = ProbeLimits {
+        cleanup: Duration::from_millis(120),
+        request: Duration::from_millis(15),
+        poll: Duration::from_millis(2),
+    };
+
+    #[tokio::test]
+    async fn expired_deadline_never_dispatches_create() {
+        let io = Arc::new(Fake::default());
+        let result = probe_with_limits(io.clone(), "thing", Instant::now(), FAST).await;
+        assert_eq!(result.outcome, "not_confirmed");
+        assert!(io.calls.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn late_create_is_settled_then_deleted_without_late_success() {
+        let io = Arc::new(Fake {
+            create_delay: Duration::from_millis(35),
+            ..Fake::default()
+        });
+        let result = probe_with_limits(
+            io.clone(),
+            "thing",
+            Instant::now() + Duration::from_millis(10),
+            FAST,
+        )
+        .await;
+        assert_eq!(result.outcome, "not_confirmed");
+        assert!(result.detail.unwrap().contains("it was deleted"));
+        assert!(io.record.lock().unwrap().is_none());
+        assert_eq!(
+            io.calls
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|c| c.0 == "POST")
+                .count(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn hanging_create_preserves_manual_recovery_id_despite_missing_confirm() {
+        let io = Arc::new(Fake {
+            hang_create: true,
+            ..Fake::default()
+        });
+        let result = tokio::time::timeout(
+            Duration::from_millis(500),
+            probe_with_limits(
+                io.clone(),
+                "thing",
+                Instant::now() + Duration::from_millis(10),
+                FAST,
+            ),
+        )
+        .await
+        .unwrap();
+        assert_eq!(result.outcome, "not_confirmed");
+        let value = serde_json::to_value(&result).unwrap();
+        assert!(
+            value["detail"]
+                .as_str()
+                .unwrap()
+                .contains(value["id"].as_str().unwrap())
+        );
+        assert!(io.calls.lock().unwrap().iter().any(|c| c.0 == "DELETE"));
+    }
+
+    #[tokio::test]
+    async fn hanging_reads_and_deletes_respect_probe_plus_cleanup_bound() {
+        let io = Arc::new(Fake {
+            hang_reads: true,
+            hang_delete: true,
+            ..Fake::default()
+        });
+        let started = Instant::now();
+        let result = tokio::time::timeout(
+            Duration::from_millis(500),
+            probe_with_limits(
+                io.clone(),
+                "thing",
+                started + Duration::from_millis(20),
+                FAST,
+            ),
+        )
+        .await
+        .unwrap();
+        assert_eq!(result.outcome, "not_confirmed");
+        assert!(result.id.is_some());
+        assert!(started.elapsed() < Duration::from_millis(300));
+        assert!(io.calls.lock().unwrap().iter().any(|c| c.0 == "DELETE"));
     }
 
     #[tokio::test]
