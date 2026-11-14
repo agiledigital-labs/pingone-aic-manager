@@ -322,7 +322,11 @@ class JvmProcess {
       return Promise.reject(new Error(`rhino-local: duplicate active job id: ${id}`));
     }
     const timed = timingPath() !== undefined;
-    const job = timed ? { ...payload, timing: true } : payload;
+    // `attributionName` is the timing row's name. The JVM compiles under
+    // `sourceName`, which stays in the cache key.
+    const job: Record<string, unknown> = { ...payload };
+    delete job.attributionName;
+    if (timed) job.timing = true;
     let measure: { lineBytes: number; sourceBytes: number; sourcesShipped: number; stringifyMs: number; sentAt: number } | undefined;
     return new Promise<JobResponse>((resolve, reject) => {
       const write = (): void => {
@@ -385,11 +389,17 @@ class JvmProcess {
     if (measure === undefined) return;
     const roundTripMs = since(measure.sentAt);
     const { sentAt: _sentAt, ...sizes } = measure;
+    const attributed =
+      typeof payload.attributionName === "string"
+        ? payload.attributionName
+        : typeof payload.sourceName === "string"
+          ? payload.sourceName
+          : undefined;
     recordTiming({
       type: "job",
       lane: this.lane,
       id,
-      ...(typeof payload.sourceName === "string" ? { sourceName: payload.sourceName } : {}),
+      ...(attributed === undefined ? {} : { sourceName: attributed }),
       engine: typeof payload.engine === "string" ? payload.engine : "am",
       outcome: response.outcome,
       ...faultFlag(response),
@@ -796,6 +806,9 @@ export class RhinoRunner {
     if (job.idmRequire !== undefined) payload.idmRequire = job.idmRequire;
     if (job.sourceName !== undefined) {
       payload.sourceName = job.sourceName;
+    }
+    if (job.attributionName !== undefined) {
+      payload.attributionName = job.attributionName;
     }
     if (job.languageVersion !== undefined) {
       payload.languageVersion = job.languageVersion;

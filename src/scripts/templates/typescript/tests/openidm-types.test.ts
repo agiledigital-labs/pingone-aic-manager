@@ -149,8 +149,17 @@ export function typeTours(): void {
     // `[]` when unset, never null — so no guard, but an index check instead.
     const _first: string | undefined = withRoles.authzRoles[0]?._ref;
     void _first;
+    // Measured 2026-11-14 (docs/api/12): a has-many read is a JS array.
+    const expanded = withRoles.authzRoles.map((role) => role._ref);
+    void expanded;
     // @ts-expect-error it is an array, not a single expansion
     void withRoles.authzRoles._ref;
+  }
+
+  const roleRefs = openidm.read(`${FIXTURE}/${id}`, null, ["authzRoles"]);
+  if (roleRefs !== null && roleRefs.authzRoles !== null) {
+    const refs: string[] = roleRefs.authzRoles.map((role) => role._ref);
+    void refs;
   }
 
   // --- `_meta` is an expansion too ----------------------------------------
@@ -181,6 +190,9 @@ export function typeTours(): void {
   const page = openidm.query(FIXTURE, { _queryFilter: "true" });
   const _first: TypesFixture | undefined = page.result[0];
   void _first;
+  // Measured 2026-11-14 (docs/api/12): an IDM query `result` is a JS array.
+  const mapped: string[] = page.result.map((row) => row._id);
+  void mapped;
 
   // --- query: the third argument projects every row -----------------------
   const thin = openidm.query(FIXTURE, { _queryFilter: "true" }, ["userName"]);

@@ -47,8 +47,14 @@ export interface JobRequest {
    * emulator sets it; it answers from its runtime-script provider (E15).
    */
   idmRequire?: boolean;
-  /** Author's file path; becomes Rhino's source name (not `<eval>`). */
+  /** Author's file path; becomes Rhino's source name (not `<eval>`). Part of the compile cache key. */
   sourceName?: string;
+  /**
+   * Name recorded on the timing row. Not sent to the JVM and not part of the
+   * compile cache key. When set, timing attributes the job to this name (the
+   * case, test, or step) while `sourceName` stays the script file.
+   */
+  attributionName?: string;
   /** Rhino language version. Default 0 (`VERSION_DEFAULT`). */
   languageVersion?: number | string;
   /**

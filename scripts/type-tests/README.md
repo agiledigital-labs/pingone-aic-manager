@@ -62,7 +62,7 @@ weakening the leaf.
 
 ## Leaves
 
-Eleven. The interesting coverage is the conditional types and the
+Twelve. The interesting coverage is the conditional types and the
 generation-split globals, not "the file compiled".
 
 | Leaf                    | Workspace | What it pins                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
@@ -73,9 +73,9 @@ generation-split globals, not "the file compiled".
 | `idm-endpoint`          | idm       | the IDM copy of the managed-record projection (below)                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | `idm-managed-hook`      | idm       | hook overlay + slf4j logger arity                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 
-Six more pin the next-gen OAuth2, OIDC, social and config-provider overlays
-against what a script measured on the sandbox (2026-11-10,
-`docs/api/12-script-bindings-matrix.md`). Each has an accept row for the
+Seven more pin the next-gen OAuth2, OIDC, social, config-provider and SAML
+NameID mapper overlays against what a script measured on the sandbox
+(`docs/api/12-script-bindings-matrix.md`). Each has an accept row for the
 measured call and a reject row for the call the old declaration let through:
 
 - `nextgen-access-token`: `session` is `| undefined` (unbound on a
@@ -91,6 +91,13 @@ measured call and a reject row for the call the old declaration let through:
   grant), `claims` a map, the result shape
   (`OidcClaimsResult`) requires `values`.
 - `nextgen-may-act`: `getMayAct`/`getAct` nullable, `setMayAct(null)` accepted.
+- `nextgen-nameid-mapper` (measured 2026-11-14): `getNameIDValue()` is a
+  string, `getNameIDFromSession()` is `null`, `shouldPersistNameIDFormat()` is
+  `false`, and `session` is `unknown`. `identity.store`, `setAttribute`,
+  `addAttribute` and `getUniversalId` are absent. Calling
+  `createNameIdentifier` is a type error: its signature is unmeasured and
+  the member is `unknown`. The mail result exposes only `.length` and `[0]`;
+  list operations and writes remain unsupported.
 - `nextgen-social-normalize` and `nextgen-config-provider`: the bindings the
   legacy default arm never declared, and absence rows for the legacy-only ones
   (`sharedState`, `outcome`, `identity`, `cacheManager`, `nodeState.keys`).

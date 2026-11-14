@@ -158,8 +158,12 @@ type ManagedField<T> =
 // `result` is a Java list, not a JS array (measured 2026-11-08 on a next-gen
 // scripted decision): copy it with `[].concat(q.result)` before `.map`. The
 // projection kernel below is byte-identical in the IDM workspace, so the list
-// type is this per-workspace `ReadList`: IDM's list was not measured and stays
-// an array there.
+// type is this per-workspace `ReadList`. On IDM the value is a Java-backed
+// array-compatible value, not a native array (measured 2026-11-14, docs/api/12
+// and docs/api/24-idm-script-runtime.md): indexing, `length` and the array
+// methods work, and `T[]` models that interface. `JSON.stringify(v)` gives an
+// object; `[].concat(v)` gives a real array. Doc 24 records the other
+// differences. The IDM alias stays `T[]`.
 type ReadList<T> = OpenidmJavaList<T>;
 
 interface QueryResult<T> {

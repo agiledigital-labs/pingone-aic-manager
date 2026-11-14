@@ -28,7 +28,7 @@ use std::path::{Path, PathBuf};
 
 /// Bump whenever an embedded template below changes. `workspace update`
 /// re-copies the managed files when this exceeds a tree's recorded version.
-pub const TEMPLATES_VERSION: u32 = 107;
+pub const TEMPLATES_VERSION: u32 = 109;
 
 /// Realms an AM tree is scaffolded for. AIC only has `alpha` + `bravo`.
 const REALMS: &[&str] = &["alpha", "bravo"];
@@ -1026,8 +1026,8 @@ mod tests {
     #[test]
     fn every_template_edit_is_covered_by_a_version_bump() {
         const TEMPLATE_RELEASE: (u32, &str) = (
-            107,
-            "97dcbde28f64582bac0ba4f1ac9e7e46b8b1dc77e23435ab9156420d1cc7dd7e",
+            109,
+            "8b3f076a83a8e28296d996a5dd69bfe907980e6288bb0cbe1deb53b14256742b",
         );
         const LOCAL_ARTIFACTS: &[&str] = &[
             "node_modules",
@@ -1363,7 +1363,7 @@ mod tests {
             .1
             .to_string();
 
-        let leaves: [(&str, String); 11] = [
+        let leaves: [(&str, String); 12] = [
             (
                 "legacy-access-token",
                 am::leaf_tsconfig("oauth2-access-token"),
@@ -1387,6 +1387,10 @@ mod tests {
             (
                 "nextgen-config-provider",
                 am::leaf_tsconfig("config-provider-ng"),
+            ),
+            (
+                "nextgen-nameid-mapper",
+                am::leaf_tsconfig("saml-nameid-mapper"),
             ),
             ("idm-endpoint", idm_endpoint),
             (

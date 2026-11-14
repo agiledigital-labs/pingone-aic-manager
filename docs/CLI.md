@@ -206,6 +206,10 @@ binary deliberately does not read passwords from environment variables.
 | `aic ctx rm <tenant>`          | Remove a tenant entry and the local artifacts belonging to it. See below.                                      |
 | `aic whoami [--tenant <name>]` | Mint and print token info plus the local operator name and host for a context.                                 |
 | `aic whoami --token`           | Print **only** the bearer token (for scripting, e.g. `curl -H "Authorization: Bearer $(aic whoami --token)"`). |
+| `aic whoami --json`            | The same identity as plain `whoami`, as JSON: `tenant`, `host`, `sa`, `operator`, `expires_at`, `expires_in`. `access_token` is present only with `--token`. |
+| `aic whoami --min-ttl <secs>`  | Return the cached token only when it has at least `<secs>` left; otherwise the agent mints a new one (still in memory). Replaces `--token`'s 840s floor, including a smaller one. Refused at or above 898. |
+| `aic whoami --idm [--json]`    | Show the IDM component, its roles, and the scopes the service-account token requested. Prints no token and no id. States that a management scope is not the IDM admin role. Cannot be combined with `--token` or `--min-ttl`. |
+| `aic whoami --scope <scope>`   | Repeat for each scope. Mint a token that carries only those, each one this install already requests. The agent does not cache it in place of the normal token. Refuses a scope outside that list. A scope the service account does not hold fails the whole grant. Cannot be combined with `--idm` or `--min-ttl`. |
 | `aic whoami --token --host <url-or-host>` | As `--token`, for the context whose host the URL names (unless `--tenant` is given); refuses — no token printed, non-zero exit — unless the host is that context's own or one of its custom domains. |
 
 `aic ctx current` (or `aic ctx show`) answers "which tenant would a command
@@ -280,6 +284,45 @@ than fourteen minutes, and the cached token is reused only within the first
 minute of its life. Plain `whoami` deliberately sends no floor: its job is to
 report the cache, and refreshing would make `expires:` say the same thing every
 time.
+
+`--json` prints that same report as one object. `expires_at` is the unix
+second the agent stored, and `expires_in` is `expires_at` minus now — the
+subtraction `aic session status` uses for `Ns remaining` (zero or below is
+`expired` there; `--json` keeps the signed number). There is no
+`access_token` field unless `--token` is also set, in which case stdout is
+the object rather than the bare token and stderr stays empty. `--min-ttl`
+applies with or without `--token`: the agent returns the cached token when
+it still has that many seconds left, and otherwise mints a new one into the
+same in-memory cache. A value of 898 or more is refused before `GetToken`,
+because that is the issued life the program records and a token is already
+under it almost immediately. The unlock/status preflight still runs first.
+Verified 2026-11-14: a cached token reported
+`expires_in` 783; `--min-ttl 803` minted, and the following `--json`
+reported 898 with no `access_token`. `--min-ttl 898` exited non-zero and
+printed nothing. `--token` alone stayed one line.
+
+`whoami --idm` reports how IDM authenticates the service-account token. It reads
+`GET /openidm/info/login` and `GET /am/oauth2/realms/root/tokeninfo` and
+prints `component`, `roles`, and `scopes`. `--json` is the same facts plus
+`admin_role` (true only for `internal/role/openidm-admin`) and `note`.
+The note is always: a management scope is not the IDM admin role, and
+`fr:idm:*` does not grant `openidm-admin`. The login ids, and the access
+token that tokeninfo echoes, are not printed. Verified 2026-11-14: component
+`managed/svcacct`, roles `openidm-svcacct` and `openidm-authorized`,
+`admin_role` false, and `fr:idm:*` among the scopes. `--idm --token`
+exits non-zero and prints nothing.
+
+`whoami --scope <scope>` (repeat the flag) asks the agent for a token whose
+`scope` is only that list. Each scope has to be one this install already
+requests; `aic ctx scopes` is the command that shows and edits that list,
+and `--scope` does not write it. The agent mints the token for this call
+and does not store it in the cache the next command would use. `--json`
+includes `scopes` from the token response and still omits `access_token`
+unless `--token` is set. `--token` alone stays one line. Verified
+2026-11-14: requesting `fr:am:*` issued a token whose response `scope`
+and tokeninfo `scope` were exactly that, in that order for a two-scope
+request, and requesting `fr:zzemu:r3n:*` returned 400 `invalid_scope`
+with no token. `--scope` cannot be combined with `--idm` or `--min-ttl`.
 
 Unlike the other `ctx` verbs, `rm` needs an unlocked agent: it reads the vault
 to find out what the tenant owns, and withdraws a signing key from the tenant
@@ -600,19 +643,19 @@ as workspace scripts via `aic script` (`managed/<object>.<hook>`).
 aic managed list [--json]                        # object types with property + hook counts
 aic managed get alpha_user [--fields GLOB] [--hook-sources] [--schema-only | --property NAME] [--json]
 aic managed object create custom_widget [--title T] [--description D] [--yes] [--json]
-aic managed object rename custom_widget custom_gadget [--force] [--yes] [--json]
-aic managed object delete custom_gadget [--force] [--yes] [--json]
+aic managed object rename custom_widget custom_gadget [--yes] [--json]
+aic managed object delete custom_gadget [--yes] [--json]
 aic managed field add custom_widget.code --type string|boolean|number|string[]|object|object[] [--nullable] [--after KEY] [--title T] [--required false] [--enum value[:Title] ...] [--default VALUE] [--yes] [--json]
 aic managed field edit custom_widget.code --searchable true [--enum value[:Title] ... | --clear-enum] [--default VALUE | --clear-default] [--force] [--yes] [--json]
 aic managed field rename custom_widget.code external_code [--yes] [--json]
 aic managed field delete custom_widget.external_code [--yes] [--json]
 aic managed hook add custom_widget onCreate [--yes] [--json]
 aic managed hook delete custom_widget onCreate [--yes] [--json]
-aic managed relationship set custom_widget.owner --target alpha_user --forward one [--reverse none|one|many] [--reverse-key widgets] [--check] [--yes] [--json]
+aic managed relationship set custom_widget.owner --target alpha_user --forward one [--reverse none|one|many] [--reverse-key widgets] [--check] [--force] [--wait-activation[=SECONDS]] [--yes] [--json]
 aic managed relationship delete custom_widget.owner [--remove-mapping [--force]] [--yes] [--json]
 aic managed relationship verify custom_widget[.owner] [--sample 5] [--scan 200] [--probe [--force] [--yes]] [--json]
 aic managed relationship relink custom_widget.owner [--dry-run] [--force] [--yes] [--json]
-aic managed relationship map custom_widget.owner [--capture FILE] [--acknowledge-request-finished] [--dry-run] [--force] [--yes] [--json]
+aic managed relationship map custom_widget.owner [--capture FILE] [--acknowledge-request-finished] [--dry-run] [--force] [--wait-activation[=SECONDS]] [--yes] [--json]
 aic managed relationship capture-links --lower dev --upper uat --output FILE [--new-pair object.key]... [--dry-run] [--force] [--yes] [--json]
 aic managed relationship restore-links FILE [--tenant uat] [--acknowledge-request-finished] [--dry-run] [--force] [--yes] [--json]
 aic managed relationship rollback-map FILE [--tenant dev] [--acknowledge-request-finished] [--dry-run] [--force] [--yes] [--json]
@@ -620,8 +663,20 @@ aic managed relationship repair custom_widget.oldOwner [--dry-run] [--force] [--
 aic managed relationship repair gone_widget --empty-entry [--dry-run] [--force] [--yes] [--json]
 aic managed relationship snapshot custom_widget.owner [--output FILE]
 aic managed relationship restore FILE [--dry-run] [--yes] [--json]
+aic managed export <name> --config-dir DIR [--dry-run] [--force] [--json] [--tenant TENANT] # one object, fr-config-pull layout
 aic managed diff custom_widget repo/managed-objects/custom_widget/custom_widget.json [--strict] [--json]
 ```
+
+`aic managed export` writes that one object the way `fr-config-pull managed-objects`
+does by default (no `--custom-relationships` schema files). The files are
+`DIR/managed-objects/<name>/<name>.json` and one file per inline
+`text/javascript` source that pull splits out. Object-level hooks become
+`<name>.<key>.js` and `actions` entries become `<name>.actions.<key>.js`.
+Property hooks are split only for `onStore`, `onRetrieve` and `onValidate`
+(`<name>.<property>.<hook>.js`). Each split script is removed from the JSON
+and replaced with `"file": "<filename>"`. An empty `source`, or a type other
+than `text/javascript`, stays inline. The same overwrite, backup, `--dry-run`
+and `--json` rules as `script export` apply.
 
 `managed get` prints one object's definition as JSON. Inline hook `source`
 bodies are omitted by default and replaced with the argument `aic script pull`
@@ -652,6 +707,9 @@ unaffected. With `--property`, only that property's pair is shown. The TUI
 relationship editor shows the same line under its title. What neither can show
 is whether the running IDM has *picked up* a `repo.ds` change: `aic` knows of
 no endpoint that reports it, so the line describes configuration, not runtime.
+`relationship set` and `relationship map` can follow a new per-type entry with
+`--wait-activation`, described with the relationship waits below. That probe is
+not what this line shows.
 
 stdout is the definition alone with or without `--json`; the notes above and
 "omitted N inline hook sources" / "showing N of M properties" go to stderr, so
@@ -678,11 +736,9 @@ hook's presence, `type` and `globals` are still compared. `--strict` applies
 neither. It exits non-zero when anything differs; `--json` prints
 `{"object", "normalised", "differences"}`.
 
-`object rename` and `object delete` refuse Ping's realm objects
-(`alpha_`/`bravo_` × `user`, `role`, `group`, `organization`, `application`,
-`assignment`) outright. An object that carries Ping's `"type": "Managed Object"`
-marker under any other name is refused unless `--force` is given, because
-console-created custom objects carry that marker too.
+Object rename and delete protection is based on the object name only. A custom
+object carrying `"type": "Managed Object"` remains renameable and deletable
+without `--force`; Ping-shipped names remain refused.
 
 `--json` on a write prints what it changed, never the whole `config/managed`
 document: `object create`/`object rename`, `field …` and `hook add`/`hook delete` print the
@@ -785,6 +841,60 @@ that has nothing to write still probes them: so re-running after a failed
 passing. No schema-level
 wait exists for a type with no records: nothing measured so far tells a live
 end from a pending one without a record to read through.
+
+That wait is the relationship end. It is separate from a new per-type
+`config/repo.ds` entry. No validated read-only activation signal was found,
+and a pending activation state could not be reproduced on this sandbox
+(2026-11-14). Config read-back was immediate. Query envelopes and `info/ping`
+were unchanged, without a demonstrated pending-state control. Raw repo access
+was blocked (403), and candidate state endpoints were unavailable (404);
+these do not disprove a signal. A generic-create control shows that the
+missing-id OU message cannot establish activation. Records stayed readable
+before and after adding the entry, so immediate readability does not establish
+cutover. The client-reported lag (2026-11-03) was not reproduced here on
+2026-11-09 or 2026-11-14. See `docs/api/10-managed-objects.md`.
+
+`--wait-activation[=SECONDS]` on `relationship set` and `relationship map`
+(default 60, from 1 to 3600) offers a consented probe when a per-type entry is
+added. It sends one create-only POST per type with a caller-chosen UUID in
+`_id`, reads that ID, deletes it, and confirms absence. It prints the UUID
+before dispatch and never retries create. One deadline bounds all create/read
+waits; no create starts after expiry. Each started type gets a separate
+15-second cleanup allowance, including up to ten seconds settling an
+outstanding create. Each cleanup request waits at most two seconds. Transient
+DELETE failures retry, with confirm reads between attempts. An unsettled
+create or unresolved cleanup is explicitly reported with its UUID for manual
+removal. A 404 alone cannot settle an outstanding create. Ctrl-C is latched
+until bounded cleanup finishes, then exits non-zero; repeated Ctrl-C cannot
+skip cleanup. After a normal probe, the same interruption latch covers the
+remaining verification and restoration waits. Interruption exits non-zero;
+map retains the capture and reports each confirmed restored link plus any
+pending request whose outcome is unresolved, in stderr and JSON (`restored`
+and `pending`). Keep link writers paused before inspecting or resuming it.
+
+Before writing, the plan names all script-shaped hooks (inline and file-backed,
+any event) and every sync mapping whose source or target is `managed/<object>`.
+Hook firing behavior is labeled unknown where unmeasured for this probe;
+hooks and mappings may have side effects on create/delete. If either inventory
+cannot be read, the command refuses even with `--force`, and never calls that
+inventory empty. Otherwise `--force` skips the probe prompt; `--yes` authorizes
+only the production environment. On map, one `--force` approves both conversion
+and the requested probe, as operation consent. Without a terminal or `--force`,
+refusal creates no probe: on `relationship set`
+the schema write has landed and the per-type entry has not, so finish with
+`relationship map --wait-activation --force`; on `relationship map` nothing is
+switched. `--dry-run` writes no probe.
+
+`--json` adds `storage_activation`, including `interrupted`. `readable` means
+the probe was read within the deadline and its delete was confirmed; it does
+not establish cutover or prevent a later generic-store write. `not_confirmed`
+covers timeout, a refused create, interruption, or unresolved cleanup. The UUID
+is retained unless the result is `readable`. Ordinary unconfirmed probes keep
+the command successful and print the warning; interruption renders recovery
+details then exits non-zero (map retains its capture). `declined` writes no
+probe and keeps the warning. `not_needed` means no per-type entry was added.
+Without the flag the command only warns and omits `storage_activation`.
+`activation`, above, remains the relationship-end liveness wait.
 
 Adding a reverse to a relationship that already has links leaves every one of
 them one-sided: IDM does not migrate them, so the new reverse end does not list
@@ -1536,6 +1646,7 @@ command makes the caller-chosen id the default name as well.
 aic role list [--json]
 aic role show <id> [--json]
 aic role create <id> [--name <name>] [--description <text>] [--yes]
+aic role edit <id> [--name <name>] [--description <text>] [--dry-run] [--json] [--yes]
 aic role delete <id> [--force] [--yes]
 aic role privilege list <role-id> [--json]
 aic role privilege add <role-id> --path managed/alpha_user --permissions VIEW,UPDATE --attr mail:rw --attr userName:ro [--privilege-name <name>] [--actions action1,action2] [--yes]
@@ -1543,10 +1654,23 @@ aic role privilege rm <role-id> --path managed/alpha_user [--yes]
 ```
 
 `create` refuses an existing id because IDM's `PUT` is a destructive full
-replace; use `role privilege add` to amend privileges. `privilege add` validates
+replace; use `role privilege add` to amend privileges. `role edit` changes
+`name` and `description` only: it sends an IDM patch of those fields with
+`If-Match` set to the revision it just read, then prints the name and
+description from a following read. A value that already matches is left
+unsent. `--dry-run` prints the change and writes nothing. `--json` prints
+`id`, `dry_run`, `changed`, and `changes` (`field`, `before`, `after`); after
+a write it also includes the read-back `name` and `description`. `--yes`
+confirms a production tenant, and a dry run does not ask for it. `privilege add` validates
 the path and attribute names against the tenant's managed-object schema, then
 replaces an existing privilege with the same path or appends a new one. Each
-`--attr` uses `name:ro` or `name:rw`. Known permissions are `VIEW`, `CREATE`,
+`--attr` uses `name:ro` or `name:rw`. `_id` and `_rev` are refused: IDM returns
+both on managed-object reads with no accessFlags entry, so the flag is not how
+they are exposed. `_rev`, `_ref`, `_refProperties`, `_relationship`,
+`_notification`, `_parent` and `_schema` are also refused because IDM rejects
+an accessFlags entry for them. `_meta` is refused too: IDM stored a flag for it
+on `managed/alpha_user` and rejected it on `managed/alpha_organization`. A name
+that is simply not in the object's schema still fails as "not a property". Known permissions are `VIEW`, `CREATE`,
 `UPDATE`, `DELETE`, and `ACTION`; other values warn and proceed because AIC does
 not publish an authoritative enum. Privilege edits use the revision read with
 the role; a concurrent modification is reported and left untouched instead of
@@ -3016,6 +3140,7 @@ aic script create <ref> --context <ctx> [--from FILE] [--language LANG] [--evalu
 aic script copy <src-ref> <dst-ref> [--tenant TENANT] [--yes] [--force=syntax-check]
 aic script rename <realm>/<name> <new-name> [--tenant TENANT] [--yes] [--force=syntax-check] # AM only; keeps the id
 aic script ids <DIR> [--realm REALM] [--tenant TENANT] [--json] # repo vs tenant script UUIDs, read-only
+aic script export <realm>/<name> --config-dir DIR [--dry-run] [--force] [--json] [--tenant TENANT] # one AM script, fr-config-pull layout
 aic script delete <ref> --force [--tenant TENANT] [--yes]
 aic script pull [<ref>] [--unmodified-only] [--force] [--force=backup] # protected pull; no ref → fuzzy picker
 aic script push [<ref>] [--force] [--force=syntax-check] [--yes] # independent convergence/syntax permissions
@@ -3025,6 +3150,31 @@ aic script status [<ref>] [--against FILE] [--check] [--json] # in sync / modifi
 aic script diff [<ref>] [--local-vs-snapshot | --snapshot-vs-remote | --find-in-git REPO]
 aic script who <ref> [--history] [--minutes N] [--json]   # who created/last modified it
 ```
+
+`aic script export` writes that one AM script the way `fr-config-pull scripts` does.
+The files are `DIR/realms/<realm>/scripts/scripts-config/<id>.json` and
+`DIR/realms/<realm>/scripts/scripts-content/<context>/<name>.js`. The JSON is
+the script resource with its base64 `script` replaced by
+`{ "file": "scripts-content/<context>/<name>.js" }`, keys sorted, two-space
+indent, and no trailing newline. The `.js` file is the decoded source, with no
+newline added. Only `language` `JAVASCRIPT` is written. A file that already
+differs is refused unless `--force`, which backs the old bytes up under
+`DIR/.aic-backups/` first. `--dry-run` lists the paths and writes nothing.
+`--json` prints `{ "dry_run", "files": [{ "path", "action", "backup?" }] }`.
+An IDM ref (`endpoint/`, `schedule/`, `managed/`, `sync/`) is refused: that
+layout is one AM realm script.
+
+Both export commands accept parent-relative roots such as `--config-dir ../fr-config`
+and symlinks in the selected root path. Generated paths beneath that root refuse
+`..` and symlinks. Output is staged before checking for local changes; a change
+stops the batch and the report names files already written. Forced replacement
+checks the authorized bytes again after backup. New destinations use Linux's
+atomic no-replace rename, or an atomic hard-link install followed by staging-file
+unlink on other Unix platforms. A concurrent creation is refused. If the kernel
+or filesystem lacks the required operation, installation fails without replacing
+the destination.
+
+`aic script delete` removes the script from the tenant, keeps the local file, and forgets its sync record.
 
 When `sync` finds a synced script missing on the tenant, it prompts to skip,
 re-create from the local source, or forget the sync record while keeping the

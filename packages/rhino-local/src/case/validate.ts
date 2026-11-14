@@ -1,6 +1,8 @@
 import { normaliseIdentitySeeds } from "./identity.ts";
+import { CaseValidationError, validationFaultId } from "./validation-fault.ts";
 import { loadContext } from "../load.ts";
 import { bindingsJsonPath } from "../paths.ts";
+import { recordTiming } from "../timing.ts";
 import {
   ALLOW_UNDECLARED_CHANNELS,
   CASE_KEYS,
@@ -25,6 +27,7 @@ import type {
   ConfigProviderCaseInit,
   ValidateScopeCaseInit,
   MayActCaseInit,
+  NameIdCaseInit,
   LibraryCaseInit,
   Engine,
   Expect,
@@ -65,6 +68,9 @@ import {
   parseValidateScopeExpect,
   parseValidateScopeSeed,
   parseMayActExpect,
+  parseNameIdExpect,
+  parseNameIdSeed,
+  checkNameIdIdentity,
   parseLibraryExpect,
   parseLibrarySeed,
   parseSocialIdpSeed,
@@ -102,16 +108,49 @@ export function defineCase(
     | ConfigProviderCaseInit
     | ValidateScopeCaseInit
     | MayActCaseInit
+    | NameIdCaseInit
     | LibraryCaseInit
 ): Case {
   return validateCase(input);
 }
 
 /**
+ * A validation refusal never reaches a JVM, so it has no timing row unless
+ * this writes one. `defineCase` and `runCase` both arrive here, and this is
+ * the only writer, so one refusal is one row. `--share` hashes `sourceName`;
+ * `faultIds` stays literal.
+ */
+function recordValidationRefusal(input: unknown, error: CaseValidationError): void {
+  const sourceName = isPlainObject(input) && typeof input.name === "string" && input.name !== "" ? input.name : "case";
+  recordTiming({
+    type: "job",
+    sourceName,
+    outcome: "protocol_error",
+    emulationFault: true,
+    faultIds: [error.faultId],
+  });
+}
+
+/**
  * Runtime validation. Dynamic cases (and typos TypeScript never sees) must
- * fail here rather than assert nothing.
+ * fail here rather than assert nothing. A refusal throws
+ * {@link CaseValidationError}: the message is the detailed one, and `name`
+ * carries a stable fault id for the tally.
  */
 export function validateCase(input: unknown): Case {
+  try {
+    return checkCase(input);
+  } catch (error) {
+    if (!(error instanceof Error)) throw error;
+    const refusal = error instanceof CaseValidationError
+      ? error
+      : new CaseValidationError(validationFaultId(error.message), error.message);
+    recordValidationRefusal(input, refusal);
+    throw refusal;
+  }
+}
+
+function checkCase(input: unknown): Case {
   if (!isPlainObject(input)) {
     throw new Error("rhino-local: case is not an object");
   }
@@ -316,6 +355,12 @@ function parseGiven(raw: unknown, path: string, context: ScriptContext): Given {
   if (raw.identity !== undefined) {
     given.identity = parseIdentitySeed(raw.identity, `${path}.identity`);
   }
+  if (raw.nameId !== undefined) {
+    given.nameId = parseNameIdSeed(raw.nameId, `${path}.nameId`);
+  }
+  if (context === "SAML2_NAMEID_MAPPER") {
+    checkNameIdIdentity(given.identity, `${path}.identity`);
+  }
   if (raw.client !== undefined) {
     given.client = parseClientSeed(raw.client, `${path}.client`);
   }
@@ -440,6 +485,9 @@ function parseExpectBody(raw: Record<string, unknown>, path: string, expect: Exp
   }
   if (raw.mayAct !== undefined) {
     expect.mayAct = parseMayActExpect(raw.mayAct, `${path}.mayAct`);
+  }
+  if (raw.nameId !== undefined) {
+    expect.nameId = parseNameIdExpect(raw.nameId, `${path}.nameId`);
   }
   if (raw.returns !== undefined) {
     expect.returns = parseLibraryExpect(raw.returns, `${path}.returns`);
@@ -857,6 +905,8 @@ function parseIdentityAttributes(raw: unknown, path: string): Record<string, Ide
   }
   return out;
 }
+
+export { CaseValidationError } from "./validation-fault.ts";
 
 /** Why a case that names the legacy engine fails. One wording, so every surface says the same. */
 export const LEGACY_ENGINE_REMOVED =

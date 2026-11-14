@@ -3,7 +3,7 @@
 use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value};
+use serde_json::{Map, Value, json};
 
 use crate::{Error, Result};
 
@@ -121,6 +121,39 @@ pub fn object_name(path: &str) -> Result<&str> {
     Ok(name)
 }
 
+/// Why an explicit access flag is refused for a measured system field.
+///
+/// `None` means the name is not one of those fields, so the schema check
+/// decides. Checked before the schema: `_id` is a property of some objects
+/// (alpha_user) and absent from others, and neither case is what exposes it.
+pub fn system_field_refusal(attribute: &str) -> Option<String> {
+    let message = match attribute {
+        "_id" => concat!(
+            "attribute \"_id\" cannot be an access flag: IDM returns `_id` on ",
+            "managed-object reads with no accessFlags entry for it. An explicit ",
+            "flag is not how that field is exposed — omit `--attr _id`"
+        ),
+        "_rev" => concat!(
+            "attribute \"_rev\" cannot be an access flag: IDM returns `_rev` on ",
+            "managed-object reads with no accessFlags entry for it, and rejects ",
+            "an explicit flag (INVALID_ACCESS_FLAG_ATTRIBUTE). Omit `--attr _rev`"
+        ),
+        "_ref" | "_refProperties" | "_relationship" | "_notification" | "_parent" | "_schema" => {
+            return Some(format!(
+                "attribute {attribute:?} cannot be an access flag: IDM rejects it \
+                 (INVALID_ACCESS_FLAG_ATTRIBUTE) and does not take an accessFlags entry for it"
+            ));
+        }
+        "_meta" => concat!(
+            "attribute \"_meta\" cannot be an access flag: IDM stored one on ",
+            "managed/alpha_user and rejected it on managed/alpha_organization ",
+            "(INVALID_ACCESS_FLAG_ATTRIBUTE), so it is not a field this command sets"
+        ),
+        _ => return None,
+    };
+    Some(message.to_string())
+}
+
 /// Validate every access flag against the target object's live properties.
 pub fn validate_attributes(object: &Value, flags: &[AccessFlag], path: &str) -> Result<()> {
     let properties = object
@@ -132,6 +165,9 @@ pub fn validate_attributes(object: &Value, flags: &[AccessFlag], path: &str) -> 
             ))
         })?;
     for flag in flags {
+        if let Some(refusal) = system_field_refusal(&flag.attribute) {
+            return Err(Error::Config(refusal));
+        }
         if !properties.contains_key(&flag.attribute) {
             return Err(Error::Config(format!(
                 "attribute {:?} is not a property of privilege path {path:?}",
@@ -165,6 +201,154 @@ pub fn merge_privilege(role: &Value, privilege: Privilege) -> Result<PrivilegeMe
         amendment: prepare_amendment(role)?,
         replaced,
     })
+}
+
+/// A name and/or description change. `None` leaves that field alone.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RoleTextEdit {
+    pub name: Option<String>,
+    pub description: Option<String>,
+}
+
+/// One field a text edit will replace.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TextChange {
+    pub field: &'static str,
+    pub before: Option<String>,
+    pub after: String,
+}
+
+/// The fields that differ from `role`. An equal value is not a change.
+///
+/// The write is a `PATCH` of these fields only. A `PUT` that omits
+/// `privileges` empties them (measured 2026-11-14, and again on 2026-08-10),
+/// so a name change must not be a full replace.
+pub fn plan_text_edit(role: &Value, edit: &RoleTextEdit) -> Result<Vec<TextChange>> {
+    if !role.is_object() {
+        return Err(Error::Config(
+            "internal role response is not an object".into(),
+        ));
+    }
+    let mut changes = Vec::new();
+    if let Some(name) = &edit.name {
+        push_change(&mut changes, role, "name", name)?;
+    }
+    if let Some(description) = &edit.description {
+        push_change(&mut changes, role, "description", description)?;
+    }
+    Ok(changes)
+}
+
+fn push_change(
+    changes: &mut Vec<TextChange>,
+    role: &Value,
+    field: &'static str,
+    after: &str,
+) -> Result<()> {
+    let before = role_string(role, field)?;
+    if before.as_deref() != Some(after) {
+        changes.push(TextChange {
+            field,
+            before,
+            after: after.to_string(),
+        });
+    }
+    Ok(())
+}
+
+/// IDM patch document. `field` + `operation`, not JSON Patch `path` + `op`:
+/// the JSON Patch spelling is a 400 (measured 2026-11-14).
+pub fn text_patch(changes: &[TextChange]) -> Value {
+    Value::Array(
+        changes
+            .iter()
+            .map(|change| {
+                json!({
+                    "operation": "replace",
+                    "field": format!("/{}", change.field),
+                    "value": change.after,
+                })
+            })
+            .collect(),
+    )
+}
+
+/// `_rev` for `If-Match`. A stale value is a 412 and writes nothing.
+pub fn role_revision(role: &Value) -> Result<String> {
+    role.get("_rev")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .ok_or_else(|| Error::Config("internal role response has no string `_rev`".into()))
+}
+
+/// The edit landed only if a later read shows it. The write response is not
+/// evidence (`.ai/core.md` §5). Privileges are compared as a bag because a
+/// write may reorder them.
+pub fn confirm_text_edit(before: &Value, after: &Value, changes: &[TextChange]) -> Result<()> {
+    if privilege_bag(before)? != privilege_bag(after)? {
+        return Err(Error::Config(
+            "read-back privileges differ from the role that was patched; the name and description were not confirmed"
+                .into(),
+        ));
+    }
+    for change in changes {
+        let got = role_string(after, change.field)?;
+        if got.as_deref() != Some(change.after.as_str()) {
+            return Err(Error::Config(format!(
+                "read-back {} is {}; the edit sent {} and was not confirmed",
+                change.field,
+                display_string(got.as_deref()),
+                display_string(Some(&change.after)),
+            )));
+        }
+    }
+    for field in ["name", "description"] {
+        if changes.iter().any(|change| change.field == field) {
+            continue;
+        }
+        let left = role_string(before, field)?;
+        let right = role_string(after, field)?;
+        if left != right {
+            return Err(Error::Config(format!(
+                "read-back {field} changed from {} to {} though the edit did not set it",
+                display_string(left.as_deref()),
+                display_string(right.as_deref()),
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn display_string(value: Option<&str>) -> String {
+    match value {
+        Some(value) => format!("{value:?}"),
+        None => "<none>".to_string(),
+    }
+}
+
+fn role_string(role: &Value, key: &str) -> Result<Option<String>> {
+    match role.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(value)) => Ok(Some(value.clone())),
+        Some(other) => Err(Error::Config(format!(
+            "internal role `{key}` is {other}, not a string"
+        ))),
+    }
+}
+
+fn privilege_bag(role: &Value) -> Result<Vec<String>> {
+    let Some(privileges) = role.get("privileges") else {
+        return Ok(Vec::new());
+    };
+    let privileges = privileges
+        .as_array()
+        .ok_or_else(|| Error::Config("internal role `privileges` is not an array".into()))?;
+    let mut bag = privileges
+        .iter()
+        .map(serde_json::to_string)
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    bag.sort();
+    Ok(bag)
 }
 
 /// Remove every duplicate of one path while preserving the rest of the role.
@@ -365,6 +549,118 @@ mod tests {
             removal.body.get("temporalConstraints").is_none(),
             "the removal path needs the same strip"
         );
+    }
+
+    #[test]
+    fn text_edit_patches_only_fields_that_differ() {
+        let role = json!({
+            "_id": "zzemuR3N",
+            "_rev": "rev-1",
+            "name": "old-name",
+            "description": "old-desc",
+            "privileges": [{"name":"p","path":"managed/alpha_user","actions":[],"permissions":["VIEW"],"accessFlags":[{"attribute":"userName","readOnly":true}]}],
+            "condition": null,
+            "temporalConstraints": []
+        });
+        let same = plan_text_edit(
+            &role,
+            &RoleTextEdit {
+                name: Some("old-name".into()),
+                description: None,
+            },
+        )
+        .unwrap();
+        assert!(same.is_empty());
+
+        let changes = plan_text_edit(
+            &role,
+            &RoleTextEdit {
+                name: Some("new-name".into()),
+                description: Some("new-desc".into()),
+            },
+        )
+        .unwrap();
+        assert_eq!(changes.len(), 2);
+        assert_eq!(changes[0].before.as_deref(), Some("old-name"));
+        assert_eq!(changes[0].after, "new-name");
+        let patch = text_patch(&changes);
+        assert_eq!(
+            patch,
+            json!([
+                {"operation": "replace", "field": "/name", "value": "new-name"},
+                {"operation": "replace", "field": "/description", "value": "new-desc"}
+            ])
+        );
+        assert!(patch[0].get("op").is_none(), "JSON Patch spelling is a 400");
+        assert_eq!(role_revision(&role).unwrap(), "rev-1");
+
+        let mut after = role.clone();
+        after["name"] = json!("new-name");
+        after["description"] = json!("new-desc");
+        after["_rev"] = json!("rev-2");
+        confirm_text_edit(&role, &after, &changes).unwrap();
+
+        let wiped = json!({
+            "_id": "zzemuR3N",
+            "_rev": "rev-2",
+            "name": "new-name",
+            "description": "new-desc",
+            "privileges": []
+        });
+        let error = confirm_text_edit(&role, &wiped, &changes).unwrap_err();
+        assert!(error.to_string().contains("privileges"));
+
+        let ignored = after.clone();
+        let error = confirm_text_edit(
+            &role,
+            &ignored,
+            &[TextChange {
+                field: "description",
+                before: Some("old-desc".into()),
+                after: "not-what-came-back".into(),
+            }],
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("not confirmed"));
+    }
+
+    #[test]
+    fn system_fields_are_refused_even_when_the_schema_lists_them() {
+        let object = json!({
+            "schema": {"properties": {"userName": {"type": "string"}, "_id": {"type": "string"}}}
+        });
+        let flags = |names: &[&str]| {
+            names
+                .iter()
+                .map(|name| AccessFlag {
+                    attribute: (*name).to_string(),
+                    read_only: true,
+                })
+                .collect::<Vec<_>>()
+        };
+        validate_attributes(&object, &flags(&["userName"]), "managed/alpha_user").unwrap();
+
+        for (attribute, needle) in [
+            ("_id", "returns `_id`"),
+            ("_rev", "returns `_rev`"),
+            ("_ref", "INVALID_ACCESS_FLAG_ATTRIBUTE"),
+            ("_refProperties", "INVALID_ACCESS_FLAG_ATTRIBUTE"),
+            ("_meta", "alpha_organization"),
+        ] {
+            let error = validate_attributes(&object, &flags(&[attribute]), "managed/alpha_user")
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains(needle), "{attribute} refusal was {error}");
+            assert!(
+                !error.contains("not a property"),
+                "{attribute} fell through to the schema check"
+            );
+        }
+
+        let missing = validate_attributes(&object, &flags(&["mail"]), "managed/alpha_user")
+            .unwrap_err()
+            .to_string();
+        assert!(missing.contains("not a property"));
     }
 
     #[test]

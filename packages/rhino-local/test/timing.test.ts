@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { buildIdentity } from "../src/paths.ts";
 import { formatTimingSummary, summarizeTiming } from "../src/timing.ts";
 
 const job = (roundTripMs: number, extra: Record<string, unknown> = {}) =>
@@ -31,7 +32,9 @@ describe("summarizeTiming", () => {
       .toEqual({ jobs: 2, spawns: 1, borrows: 2, publishes: 1, shipped: 1 });
     expect(s.fields.find((r) => r.field === "publish.publishMs")).toMatchObject({ n: 1, sum: 0.5 });
     expect(s.fields.find((r) => r.field === "spawn.spawnToReadyMs")).toMatchObject({ n: 1, sum: 400 });
-    expect(formatTimingSummary(s)).toMatch(/^jobs 2 \(1 shipped source text, 0 with an emulation fault\), spawns 1, borrows 2, publishes 1\n/);
+    expect(s.harness).toBe(buildIdentity);
+    const head = `${buildIdentity}\njobs 2 (1 shipped source text, 0 with an emulation fault), spawns 1, borrows 2, publishes 1\n`;
+    expect(formatTimingSummary(s).startsWith(head)).toBe(true);
   });
 
   it("tallies faulted jobs, library self time and per-source time; --share hashes every name", () => {

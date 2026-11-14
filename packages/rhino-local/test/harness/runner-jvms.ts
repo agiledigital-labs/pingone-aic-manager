@@ -52,7 +52,10 @@ function sample(rootPid: number, seen: Set<number>): void {
 }
 
 /** Start sampling under `rootPid`; `stop()` stops sampling and returns the distinct runner pids seen so far (no final sample: runner JVMs outlive many intervals). */
-export function watchRunnerJvms(rootPid: number, everyMs = 25): { stop: () => Set<number> } {
+export function watchRunnerJvms(rootPid: number, everyMs = 25): { stop: () => Set<number> | undefined } {
+  // Without /proc (macOS) there is nothing to sample; report no census rather
+  // than throwing from the timer.
+  if (!procAvailable) return { stop: () => undefined };
   const seen = new Set<number>();
   const timer = setInterval(() => sample(rootPid, seen), everyMs);
   return {

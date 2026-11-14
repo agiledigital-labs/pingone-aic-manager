@@ -61,7 +61,9 @@ Next-gen (binding metadata captured under `docs/api/bindings/`):
 
 `SCRIPTED_DECISION_NODE` was re-exported on 2026-09-29 (25 → 27 bindings; the
 delta is in `12-script-bindings-matrix.md`, open question 4). The other rows are
-still the 2026-06-04 captures.
+still the 2026-06-04 captures. Runtime behaviour of `SAML2_NAMEID_MAPPER` was
+measured on 2026-11-14 (`12-script-bindings-matrix.md`); that row's artifact
+was not re-exported.
 
 | Context                                   | bindings | artifact                              |
 | ----------------------------------------- | -------- | ------------------------------------- |
