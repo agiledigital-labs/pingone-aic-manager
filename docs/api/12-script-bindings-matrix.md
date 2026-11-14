@@ -1783,7 +1783,7 @@ afterwards. `identity.getAttributes()` was never called.
 | Binding | Present | Notes |
 | --- | --- | --- |
 | `accessToken` | yes | `AccessTokenScriptWrapper`. Getters return JS strings and numbers: `getClientId() === "<id>"` is `true`. |
-| `identity` | yes | `ScriptedIdentityScriptWrapper`: `getName`, `getUniversalId`, `exists()`, `getAttributeValues` (a list; `[]` for an attribute it lacks). `getAttribute` and `isExists` are `Cannot find function`. |
+| `identity` | yes | `ScriptedIdentityScriptWrapper`: `getName`, `getUniversalId`, `exists()`, `getAttributeValues` (a list; `[]` for an attribute it lacks). `getAttribute` and `isExists` are `Cannot find function`. `setAttribute` and `store` on a password grant: verified 2026-11-14, below. |
 | `session` | **no** | Not bound at all: reading it is `ReferenceError: "session" is not defined.`, where legacy binds `null`. |
 | `scopes` | yes | A Java list: `size()`, `contains()`, `scopes[0]` and `length` work, and `add()` mutates it. |
 | `requestProperties` | yes | Four entries (`size()` is 4): `realm`, `requestHeaders`, `requestParams`, `requestUri`. Param and header values are lists; headers answer to lower and Title case. `requestParams` renders as JSON (`{ "grant_type": [ … ] }`). |
@@ -1814,6 +1814,85 @@ JSON one as the string given, not parsed. `setScope` takes a JS array or the
 token. `accessToken.getScope().add(…)` throws `InternalError: null`.
 `setExpiryTime(auth + 600000)` shortens both the JWT and the body's `expires_in`
 (599).
+
+#### `setField("aud")` (verified 2026-11-14)
+
+Next-gen `OAUTH2_ACCESS_TOKEN_MODIFICATION_NEXT_GEN` only, on a
+`client_credentials` grant, stateless token. Throwaway client `zzemuR3M-atm`
+(scope `zzemuR3M-scope`) and script `zzemuR3M-atm`. Fixtures
+`scripts/rhino-script-tester/fixtures-atm-ng/aud-*.script.js`, driven by
+`run-atm-probes.sh`. Each case also called `setField("zzemuR3Mctl", "ctl-ok")`.
+That claim was present on every issued token and every response was HTTP 200,
+so the script ran and a custom claim set the same way is issued.
+
+Before any write, `getField("aud")` is a string equal to the client id and
+`getAudience()` is a one-element JavaList of that same id. The issued `aud`
+is that string. `typeof accessToken.removeField` is `undefined`.
+
+| Call | Throws | Issued `aud` |
+| --- | --- | --- |
+| `setField("aud", "zzemuR3M-aud")` | no; returns `undefined` | the string `zzemuR3M-aud` |
+| `setField("aud", ["zzemuR3M-aud"])` | no; returns `undefined` | a one-element JSON array of that string |
+| `setField("aud", ["zzemuR3M-a", "zzemuR3M-b"])` | no; returns `undefined` | a two-element JSON array, that order |
+| `setField("aud", null)` | no; returns `undefined` | claim absent (not JSON `null`) |
+| `removeField("aud")` | `TypeError: Cannot find function removeField` | unchanged client-id string |
+
+After a string write, `getField("aud")` is that string and `getAudience()` is
+a one-element JavaList of it. After an array write, `getField` is that array
+and `getAudience()` is a JavaList of the same elements in the same order.
+After `null`, `getField` is `null` and `getAudience()` is an empty JavaList.
+`removeField` changes neither.
+
+A string is issued as a string, not wrapped in an array. An array is issued
+as an array. `null` removes the claim. There is no `removeField` method.
+
+In the probe claim, `length` of the array `getField` returns is `1.0` or
+`2.0`, while `getAudience().length` in the same claim is the integer `1` or
+`2`. String lengths in that claim stayed integers.
+
+The string overwrite agrees with the 2026-08-28 exchange measurement in
+`docs/api/22-token-exchange.md`. The array, `null`, and `removeField` cases
+were not part of that run.
+
+The throwaway client `zzemuR3M-atm` and script `zzemuR3M-atm` were deleted
+later the same day. The client re-read was HTTP 404 and the script was not
+on the tenant.
+
+#### `identity.setAttribute` and `identity.store` (verified 2026-11-14)
+
+Next-gen `OAUTH2_ACCESS_TOKEN_MODIFICATION_NEXT_GEN` on a password grant as
+managed user `zzemuR3M-user`, same throwaway client and script as the `aud`
+probe above (`zzemuR3M-atm`, stateless). Fixtures
+`scripts/rhino-script-tester/fixtures-atm-ng/identity-set-nostore.script.js`
+and `identity-set-store.script.js`. The attribute written was `description`.
+Each request also set `zzemuR3Mctl` to `ctl-ok`. Both responses were HTTP 200
+and that claim was present, so the script ran. Issued `aud` stayed the
+client-id string.
+
+`identity.exists()` is `true`. `getName()` is not the user's `userName`; the
+name's length is 36. `typeof identity.setAttribute` and
+`typeof identity.store` are both `"function"`. Before either write,
+`getAttributeValues("description")` is a one-element list
+`["zzemuR3M-baseline"]`.
+
+| Call | Throws | Same wrapper afterwards | Fresh managed read |
+| --- | --- | --- | --- |
+| `setAttribute("description", ["zzemuR3M-nostore"])`, no `store()` | no; returns `undefined` | still `["zzemuR3M-baseline"]` | `description` still `zzemuR3M-baseline`; `accountStatus` `active`; revision unchanged |
+| `setAttribute("description", ["zzemuR3M-stored"])` then `store()` | neither throws; both return `undefined`. Before `store()`, the wrapper still reads the baseline | after `store()`, `["zzemuR3M-stored"]` | `description` is `zzemuR3M-stored`; `accountStatus` `active`; revision changed |
+
+A JSON Patch replacing `/description` with `zzemuR3M-baseline` returned
+HTTP 200. A fresh managed read then showed that baseline, `accountStatus`
+`active`, and a revision that had moved again.
+
+`setAttribute` without `store()` does not persist and is not visible on the
+same wrapper. `store()` writes `description` through to a fresh managed read,
+and the same wrapper then reads the stored value. This is the decision-node
+rule in `docs/api/14-am-identity-attributes.md` (measured 2026-10-01). This
+context had not been measured before.
+
+The managed user `zzemuR3M-user` was deleted the same day, with `description`
+still `zzemuR3M-baseline`. A query for that `userName` returned `resultCount`
+0, and a read of the id returned 404.
 
 #### Legacy additions to the 2026-08-27 surface
 
@@ -2472,6 +2551,62 @@ OIDC claims, the social IdP profile transformation and the config provider node
 were not used as callers. `OAUTH2_AUTHORIZE_ENDPOINT_DATA_PROVIDER` was not
 reached. `OAUTH2_SCRIPTED_JWT_ISSUER` still has no configuration hook.
 
+
+
+#### Rebinding `logger` around `require()` (verified 2026-11-14)
+
+Next-gen scripted decision, stored as `AUTHENTICATION_TREE_DECISION_NODE`
+with `evaluatorVersion` `2.0`. Throwaway journey `zzemuR3M-logger`, script
+`zzemuR3M-decision`, library `zzemuR3M-logger-lib` (`LIBRARY`, `2.0`).
+Fixtures `scripts/rhino-script-tester/fixtures/zzemuR3M-logger-*.script.js`
+and `zzemuR3M-logger-lib.lib.js`. The library is
+
+```javascript
+exports.load = function () {
+  return {
+    info: function (m) {
+      logger.info(m);
+    }
+  };
+};
+```
+
+The caller did `var logger = require("zzemuR3M-logger-lib").load();` and
+then `logger.info("zzemuR3M-shadow")`. The journey answered HTTP 200 and the
+hidden-value callback was `{ "ok": true, "result": "returned" }`. `aic logs
+tx` (`am-core`) has that message once, level INFO. The logger name is
+`scripts.AUTHENTICATION_TREE_DECISION_NODE.<decision script id>.(zzemuR3M-decision)`,
+which is the decision script.
+
+The library's `logger` stayed the library binding. `logger.info` wrote that
+one line and returned.
+
+Two controls on the same journey:
+
+- The caller named its variable `log` and called
+  `log.info("zzemuR3M-noshadow")`. HTTP 200, callback
+  `{ "ok": true, "result": "returned" }`. The message was logged once, level
+  INFO, under the same decision-script logger name.
+- The library evaluated `String(nodeState)`. HTTP 200. The callback's `error`
+  is `ReferenceError: "nodeState" is not defined.` and its `name` is
+  `ReferenceError`.
+  That is the unbound-name result already recorded above, so this run was in
+  library scope.
+
+The same rebinding was repeated on next-gen may-act
+(`OAUTH2_MAY_ACT_NEXT_GEN`, script `zzemuR3M-mayact`, fixture
+`fixtures-atm-ng/mayact-logger-shadow.mayact.js`), attached as
+`overrideOAuth2ClientConfig.accessTokenMayActScript` on client `zzemuR3M-atm`.
+The script has no `try`/`catch`. A `client_credentials` grant returned HTTP
+200. The message `zzemuR3M-mayact-shadow` was logged once, level INFO, logger
+`scripts.OAUTH2_MAY_ACT_NEXT_GEN.<may-act script id>.(zzemuR3M-mayact)`. The
+`log` rename and the `nodeState` read were not repeated on may-act. The
+client's access-token modification script for that request was the audience
+baseline, which returns on this grant.
+
+The journey, its decision node, the library, the decision script and the
+may-act script were deleted the same day. The tree re-read was HTTP 404, the
+node re-read was HTTP 404, and each script was not on the tenant.
 
 **Next-gen scripted decision sends callbacks by accumulation, not by an
 `action.send` (2026-08-25).** There is no `send` on the `action` binding at all;

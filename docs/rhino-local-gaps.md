@@ -965,8 +965,13 @@ leaves out:
   with anything but the measured shapes, the other `remove*`/`set*`,
   next-gen `getResourceOwner`), Object methods on the views, `JSON.stringify` of
   any view, set iterators and streams,
-  next-gen `clientProperties.redirectUris`, overwriting a reserved claim, and
-  the `identity` writers. `identity.getAttributes()` is a fault on purpose: it
+  next-gen `clientProperties.redirectUris`, overwriting a reserved claim other
+  than `setField("aud", …)` (a string, a non-empty array of strings, or `null`,
+  measured 2026-11-14; `setFields` of `aud` is still unmeasured, and there is
+  no `removeField`), and
+  `identity.addAttribute` (`setAttribute` and `store` are measured on this
+  context; they stay faults on the other contexts that share this view).
+  `identity.getAttributes()` is a fault on purpose: it
   returns the client's password (`.ai/core.md` §8).
 - **The AIC lane** runs only decision-node scripts, so a token-context case is
   reported unsupported there and runs locally only.
@@ -1258,8 +1263,14 @@ recorded. What it approximates or leaves out:
   it), but an override of a name a library sees (`logger`, say) does.
 - **Library scope from every caller.** A library `require()`d from any case
   runs in its own scope (`java/LibraryHost.java`, `java/LibraryScope.java`): the
-  names bound after the preamble, less the measured unbound list. A caller's
-  binding on that list, or a `var` the caller declared, is the engine's
+  names bound after the preamble, less the measured unbound list. The common
+  bindings (`logger`, `httpClient`, `openidm`, `secrets`, `systemEnv`, `utils`,
+  `emailService`, `jwtAssertion`, `jwtValidator`, `policy`, `realm`,
+  `scriptName`, `cookieName`, `JavaImporter`) are the values from that moment,
+  so a caller variable of the same name does not replace them (measured
+  2026-11-14: `var logger = require(lib).load()` logs once through the
+  library's own logger). Other visible names are still read live. A caller's
+  binding on the unbound list, or a `var` the caller declared, is the engine's
   `ReferenceError` inside the library, as on AIC. Assignments a library makes to an undeclared name stay in
   that library's scope; whether AIC shares them between libraries or with the
   caller is unmeasured. The `node:vm` unit-test helper evaluates libraries in

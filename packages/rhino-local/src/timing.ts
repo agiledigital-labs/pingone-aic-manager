@@ -32,7 +32,10 @@
  *   `emulationFault` is true when the response carried an emulation failure
  *   (a harness fault, missing behaviour, a protocol error or a timeout) —
  *   `outcome` alone says "ok" for a run whose script caught the refusal —
- *   and `faultIds` lists the harness-fault ids it named.
+ *   and `faultIds` lists the harness-fault ids it named. A `validateCase`
+ *   refusal, including one from `defineCase`, is a job row too
+ *   (`outcome: "protocol_error"`, no `jvm` block). `runCase` validates
+ *   through that same call and does not write a second row.
  * - `publish`: the emulation runner sending a worker's failure-audit delta
  *   to the main process (on every job start and end, and at file
  *   boundaries): `publishMs`, and the send's size as `failures` (entries new
@@ -41,6 +44,11 @@
  *   `outstanding` and `packs` (task results re-sent with it). Only under the
  *   package's Vitest runner.
  *
+ * A job row's `sourceName` is the case, test, or step name when the harness
+ * set one, and the script's compile name for a direct eval. The compile name
+ * stays on the JVM job either way, so the cache key and stack traces still
+ * name the script file.
+ *
  * Every worker appends to the same file; each line is one `appendFileSync`,
  * which Linux and macOS keep whole for lines this size. Rows carry source
  * names and library ids; `aic-script-tester-timing --share` summarises with
@@ -48,6 +56,7 @@
  */
 import { createHash, randomBytes } from "node:crypto";
 import { appendFileSync } from "node:fs";
+import { buildIdentity } from "./paths.ts";
 
 export const TIMING_ENV = "AIC_SCRIPT_TESTER_TIMING";
 
@@ -87,6 +96,8 @@ export interface TimingSummaryRow {
 }
 
 export interface TimingSummary {
+  /** `<version> (<commit>[-dirty])`, or `<version> (commit unknown)` from a checkout. */
+  harness: string;
   jobs: number;
   /** Jobs whose response carried an emulation failure (`emulationFault` rows). */
   faultedJobs: number;
@@ -102,6 +113,8 @@ export interface TimingSummary {
   libraries: TimingSummaryRow[];
   /** Per job `sourceName`: `jvm.totalMs` over that source's jobs, largest sum first. */
   sources: TimingSummaryRow[];
+  /** Fault ids named by job rows (`faultIds`), including case-validation refusals. Not hashed by `--share`. */
+  faults: { id: string; jobs: number }[];
 }
 
 export interface TimingSummaryOptions {
@@ -147,6 +160,7 @@ export function summarizeTiming(text: string, options: TimingSummaryOptions = {}
   const libraries = collector();
   const sources = collector();
   let jobs = 0, faultedJobs = 0, spawns = 0, borrows = 0, publishes = 0, jobsShippingSources = 0;
+  const faultJobs = new Map<string, number>();
   for (const line of text.split("\n")) {
     if (line.trim() === "") continue;
     const row = JSON.parse(line) as Record<string, unknown>;
@@ -158,6 +172,11 @@ export function summarizeTiming(text: string, options: TimingSummaryOptions = {}
       jobs++;
       if (typeof row.sourcesShipped === "number" && row.sourcesShipped > 0) jobsShippingSources++;
       if (row.emulationFault === true) faultedJobs++;
+      if (Array.isArray(row.faultIds)) {
+        for (const id of row.faultIds) {
+          if (typeof id === "string") faultJobs.set(id, (faultJobs.get(id) ?? 0) + 1);
+        }
+      }
     }
     const jvm = row.jvm !== null && typeof row.jvm === "object" ? (row.jvm as Record<string, unknown>) : undefined;
     if (row.type === "job" && typeof row.sourceName === "string") sources.add(name("source", row.sourceName), jvm?.totalMs);
@@ -174,16 +193,20 @@ export function summarizeTiming(text: string, options: TimingSummaryOptions = {}
   }
   const bySum = (a: TimingSummaryRow, b: TimingSummaryRow): number => b.sum - a.sum || a.field.localeCompare(b.field);
   return {
+    harness: buildIdentity,
     jobs, faultedJobs, spawns, borrows, publishes, jobsShippingSources,
     fields: rows(fields.values).sort((a, b) => a.field.localeCompare(b.field)),
     libraries: rows(libraries.values).sort(bySum),
     sources: rows(sources.values).sort(bySum),
+    faults: [...faultJobs.entries()].map(([id, count]) => ({ id, jobs: count })).sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0),
   };
 }
 
 export function formatTimingSummary(summary: TimingSummary, top = 20): string {
   const lines = [
+    summary.harness,
     `jobs ${summary.jobs} (${summary.jobsShippingSources} shipped source text, ${summary.faultedJobs} with an emulation fault), spawns ${summary.spawns}, borrows ${summary.borrows}, publishes ${summary.publishes}`,
+    ...(summary.faults.length === 0 ? [] : [`faults ${summary.faults.map((fault) => `${fault.id} ${fault.jobs}`).join(", ")}`]),
   ];
   const num = (v: number, w: number): string => (Number.isInteger(v) ? String(v) : v.toFixed(3)).padStart(w);
   const table = (title: string, list: TimingSummaryRow[]): void => {

@@ -1,6 +1,6 @@
 {
   "name": "@agiledigital/pingone-aic-script-tester",
-  "version": "0.4.0-emulator.1",
+  "version": "0.4.0-emulator.2",
   "type": "module",
   "description": "Local Rhino harness: mock-surface generator and typed client for the long-lived JVM runner.",
   "license": "MIT OR Apache-2.0",
@@ -91,7 +91,7 @@
     "lint:am": "eslint --config eslint.am.config.js generated src/bindings cases --max-warnings 0",
     "pull-profile": "node bin/pull-profile.ts",
     "show-log": "node bin/show-log.ts",
-    "build": "rm -rf dist && tsc -p tsconfig.build.json && node src/build-classes.ts",
+    "build": "rm -rf dist && tsc -p tsconfig.build.json && node src/build-classes.ts && node src/write-build-identity.ts",
     "prepack": "npm run build",
     "fetch-jar": "node bin/fetch-jar.ts"
   },

@@ -413,6 +413,14 @@ pass, then a callback round trip):
 - A `setAttribute` with **no** `store()` on another wrapper never reaches IDM
   or a later `getIdentity`, even across the callback round trip.
 
+Next-gen access-token modification on a password grant follows the same
+visibility rule (verified 2026-11-14,
+`docs/api/12-script-bindings-matrix.md`): `setAttribute("description", …)`
+without `store()` leaves the managed `description` and the same wrapper's
+`getAttributeValues` unchanged, and `store()` persists it so the same wrapper
+then reads the new value. Neither call throws. Both return `undefined`. The
+fresh managed read of that one-element `description` was a string.
+
 The local lane stores by the layouts below and refuses a write to any other
 attribute name unless the suite declares one (`identityAttributes`).
 

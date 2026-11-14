@@ -1,4 +1,5 @@
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -36,8 +37,12 @@ final class LibraryHost extends BaseFunction {
   /** The runtime's copy of the measured unbound list (runtime.cjs). */
   static final String UNBOUND_NAME = "__rhinoLocalLibUnbound";
 
+  /** Common bindings whose values a library keeps from this snapshot (runtime.cjs). */
+  static final String OWN_NAME = "__rhinoLocalLibOwn";
+
   private final Map<String, String> refs;
   private Set<String> visible = Collections.emptySet();
+  private Map<String, Object> own = Collections.emptyMap();
 
   /** {@code refs}: require() id to source hash, each hash already registered. */
   LibraryHost(Map<String, String> refs) {
@@ -48,6 +53,8 @@ final class LibraryHost extends BaseFunction {
    * After the preamble, before the script: what a library may see is what was
    * bound then, less the measured unbound list. Names the script declares
    * afterwards (a caller's local {@code var}) are therefore not visible.
+   * The common bindings ({@code __rhinoLocalLibOwn}) keep the values bound
+   * now, so a later caller variable of the same name does not replace them.
    */
   void snapshot(Scriptable scope) {
     Set<String> names = new HashSet<String>();
@@ -59,6 +66,17 @@ final class LibraryHost extends BaseFunction {
       for (Object name : (List<?>) unbound) names.remove(Context.toString(name));
     }
     visible = Collections.unmodifiableSet(names);
+    Map<String, Object> pinned = new HashMap<String, Object>();
+    Object owned = ScriptableObject.getProperty(scope, OWN_NAME);
+    if (owned instanceof List) {
+      for (Object nameObj : (List<?>) owned) {
+        String name = Context.toString(nameObj);
+        if (visible.contains(name) && scope.has(name, scope)) {
+          pinned.put(name, scope.get(name, scope));
+        }
+      }
+    }
+    own = Collections.unmodifiableMap(pinned);
   }
 
   @Override
@@ -87,7 +105,7 @@ final class LibraryHost extends BaseFunction {
     }
     phase = Timing.now();
     try {
-      return loader.exec(cx, new LibraryScope(ScriptableObject.getTopLevelScope(this), visible));
+      return loader.exec(cx, new LibraryScope(ScriptableObject.getTopLevelScope(this), visible, own));
     } finally {
       Timing.add("libraryLoaderExec", phase);
     }
