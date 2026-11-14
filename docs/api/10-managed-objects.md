@@ -926,71 +926,83 @@ later. So no activation lag was observable here at any timing, and there is no
 measured interval to wait for; the warning stays. What differs on the reporting
 tenant is unknown.
 
-**No read-only activation signal on the sandbox (2026-11-14).** Nothing that
-can be read without writing a record flipped from "the new per-type entry is
-not yet the live store" to "it is" after the entry was already visible in
-`config/repo.ds`. Each candidate had a state that had to read "not active" and
-one that had to read "active" if it were a signal. Throwaway types
-`zzemuR3A_thing`, `zzemuR3A_ou`, and `zzemuR3A_rec` were created for the
-checks and deleted afterwards; `config/repo.ds` was backed up and restored to
-that backup.
+**No validated read-only activation signal was found (2026-11-14).** A
+pending activation state could not be reproduced on this sandbox. The checks
+did not establish known pending and active runtime controls, so unchanged
+post-write responses cannot exclude a signal that flipped before sampling.
+Throwaway types `zzemuR3A_thing`, `zzemuR3A_ou`, and `zzemuR3A_rec` were
+created for the checks and deleted afterwards; `config/repo.ds` was backed up
+and restored to that backup.
 
 - Config read-back of the new `genericMapping` entry was immediate, for
   `PUT /openidm/config/repo.ds` (0.102 s, 200) and the same PUT with
   `waitForCompletion=true` (0.272 s, 200). The entry was present on the first
-  re-read. Reading it back does not say the store is live.
+  re-read. This establishes config visibility, without identifying the live store.
 - A record created in the generic store before the entry, and one created
   immediately after it (body `{}`), both stayed `GET` 200 by id for the whole
   ~20 s watch. The earlier record stayed readable after the entry was removed.
-  The 2026-11-03 failure mode did not occur, so a successful read is not
-  evidence the new store is the one a later create will use.
-- `_queryFilter=true` (plain, with `totalPagedResultsPolicy=EXACT`, and
-  `_countOnly` with `Accept-API-Version: protocol=2.2,resource=1.0`) kept the
-  same envelope. `resultCount` changed because a record was added. `info/ping`
-  stayed `ACTIVE_READY`. `GET /openidm/repo/managed/<object>` stayed 403.
-  `info/config`, `maintenance`, and `config/repo` are 404. None of these
-  distinguished the two stores.
-- `GET managed/<object>/<missing-id>` answers 404. On a never-used type the
-  message names the OU as missing. Adding the per-type entry flipped that to a
-  uid under the OU on the first poll (dt 0.0 s), in the same moment the config
-  entry was visible, and removing the entry left the uid form in place for the
-  following 15 s. Creating one generic record, with no per-type entry, flipped
-  the same 404 the same way, and deleting the record left it flipped.
-  `managed/alpha_lock` has no per-type entry and already 404s as a uid under
-  its OU. The message reports whether that OU has ever been created. It does
-  not report whether the per-type entry is the live store.
+  This control shows that immediate readability does not establish cutover.
+  The 2026-11-03 failure mode did not occur here.
+- **Candidates without a pending-state control:** `_queryFilter=true`
+  (plain, with `totalPagedResultsPolicy=EXACT`, and `_countOnly` with
+  `Accept-API-Version: protocol=2.2,resource=1.0`) kept the same envelope.
+  `resultCount` changed because a record was added. `info/ping` stayed
+  `ACTIVE_READY`. These observations do not disprove either candidate.
+- **Blocked or unavailable:** `GET /openidm/repo/managed/<object>` stayed
+  403, preventing inspection. `info/config`, `maintenance`, and `config/repo`
+  were 404. These provide no evidence about runtime activation.
+- **Disproved as a sufficient signal by a control:** the missing-id 404
+  changed from an OU message to a uid-under-OU message when the per-type entry
+  was added (first poll, dt 0.0 s), and remained that way for 15 s after removal.
+  Creating one generic record, with no per-type entry, flipped the same message;
+  deleting that record left it flipped. `managed/alpha_lock`, without a per-type
+  entry, also returned the uid form. OU existence therefore cannot establish
+  per-type store activation.
 
-`relationship set` and `relationship map` therefore take
+`relationship set` and `relationship map` offer a consented fallback,
 `--wait-activation[=SECONDS]` (default 60, from 1 to 3600). After a write that
-added a per-type entry, and only then, the command creates one record in each
-such type (`POST /openidm/managed/<object>?_action=create` with `{}`), reads
-it by id until that succeeds or the deadline elapses, deletes it, and reads
-again until the delete is a 404. One deadline covers every type that write
-newly mapped. `--json` adds `storage_activation` (`outcome` `readable`,
-`not_confirmed`, `declined`, or `not_needed`; `seconds` and `timeout_seconds`
-on a probe; per object `outcome`, `seconds`, `detail`, and `id` when the
-delete was not confirmed). That object is separate from `activation`, the
-relationship-end liveness wait. `readable` means the probe was read back and
-the delete was confirmed. It does not prove a later record cannot land in the
-old store. `not_confirmed` covers the timeout, a create the type refuses (an
-empty body against required fields is a 400 and is not retried), and a delete
-that did not read back as gone. The command still succeeds: the mapping has
-landed, and the warning is printed as well. `declined` means the prompt was
-answered no. `not_needed` means the flag was set and no per-type entry was
-added. Without the flag the command only warns (`storage::activation_warning`)
-and `storage_activation` is absent.
+adds a per-type entry, the command creates one probe in each such type with
+`POST /openidm/managed/<object>?_action=create` and a caller-chosen UUID in
+`_id`. This is the documented create-only path above. The UUID is printed
+before dispatch. Create is never retried, including after a lost response.
+The probe reads that UUID, deletes it, and confirms absence with GET 404.
 
-The probe is a real record. It runs `onCreate` and `postCreate` when the
-object has them, and `onDelete` and `postDelete` when it has them. `onUpdate`
-and `postUpdate` are not invoked. Any sync mapping whose `source` or `target`
-is `managed/<object>` can run on both. The command lists the hooks present on
-the object and those mappings, and asks before writing. `--yes` skips the
-prompt and is the production gate. A non-interactive run without `--yes`
-refuses before any probe record is created. On `relationship set` the
-`config/managed` write has already landed and the per-type entry is not added;
-finish with `relationship map --wait-activation --yes`. On `relationship map`
-the switch has not been sent. `--dry-run` writes no probe. If `config/sync`
-cannot be read, the plan says the mappings could not be listed.
+One shared deadline bounds create/read waits across all newly mapped types;
+no create starts after it. Each started type gets a separate **15-second
+cleanup allowance**. An outstanding create is awaited for up to the first ten
+seconds of cleanup, with deletion and confirmation time reserved afterwards.
+Cleanup requests each wait at most two seconds; transient DELETE failures
+retry within the allowance, with a confirm read between attempts. A missing
+read cannot settle an outstanding create. An unsettled write or unresolved
+cleanup retains its UUID and explicitly requests manual removal, even if a
+read returned 404. Ctrl-C is latched: cleanup finishes within its allowance
+before the command exits non-zero. Further Ctrl-C presses do not skip cleanup.
+
+`--json` adds `storage_activation` (`outcome` `readable`, `not_confirmed`,
+`declined`, or `not_needed`; `interrupted`; `seconds` and `timeout_seconds`
+on a probe; per object `outcome`, `seconds`, `detail`, and `id` unless
+`readable`). This is separate from `activation`, the relationship-end liveness
+wait. `readable` means the probe was read within the probe deadline and its
+delete was confirmed. It does not prove a later record cannot land in the old
+store. `not_confirmed` covers timeout, a rejected create (required fields),
+interruption, or unresolved cleanup. Ordinary unconfirmed probes keep the
+command successful because the mapping has landed; interruption exits non-zero
+after rendering the report. `declined` writes no probe. `not_needed` means no
+per-type entry was added. Without the flag the command only warns and omits
+`storage_activation`.
+
+The probe is a real record: hooks and sync mappings may have side effects.
+The consent plan names **every script-shaped hook** on the object, inline or
+file-backed, for any event name, and labels firing behavior unknown for this
+probe where unmeasured. It names every mapping whose `source` or `target` is
+`managed/<object>`. If either `config/managed` or `config/sync` cannot be
+inventoried, the plan says so and the command **refuses even with `--yes`**;
+unread inventory is never reported as empty. Otherwise the plan requires
+`--yes` or terminal consent. `--yes` is also the production gate. A
+non-interactive run without `--yes` refuses before creating a probe. On
+`relationship set` the schema write has landed but the per-type entry is not
+added; finish with `relationship map --wait-activation --yes`. On
+`relationship map` the switch has not been sent. `--dry-run` writes no probe.
 
 **Promotion (measured 2026-11-02, three real dev → UAT promotions of
 throwaway types).** `repo.ds` is promoted as a **whole document**: after each
@@ -2653,7 +2665,10 @@ on create, or when actually rotating it.
   `managed/alpha_lock` has no per-type entry and already 404s as a uid under
   its OU. `config/repo.ds` was restored to the backup (re-read matched; the
   per-type entry was absent) and the three types were deleted. No read-only
-  signal separated "not yet active" from "active".
+  signal was validated; a pending activation state could not be reproduced.
+  The 403/404 candidates were blocked/unavailable, and unchanged query/ping
+  responses had no pending-state control. The generic-create missing-id control
+  rules out OU existence as a sufficient activation signal.
 
 - Date: 2026-11-14 — name-only object protection, sandbox, read-only
   `GET /openidm/config/managed`: a console-created custom object carried no

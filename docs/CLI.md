@@ -788,43 +788,52 @@ wait exists for a type with no records: nothing measured so far tells a live
 end from a pending one without a record to read through.
 
 That wait is the relationship end. It is separate from a new per-type
-`config/repo.ds` entry. Config read-back of the entry is immediate and does
-not say the new store is live. On the sandbox (2026-11-14) no read-only check
-flipped from "not yet active" to "active" after the entry was already visible:
-query shape, `_countOnly`, `info/ping`, and the raw repo endpoints did not
-distinguish the stores, and a missing-id 404 changes when the object's OU is
-first created (a record in the generic store does that too) and does not change
-back when the entry is removed. A record written just after the entry stayed
-readable for the whole watch (~20 s). The same lag was reported from a client
-tenant on 2026-11-03 and was not reproducible here on 2026-11-09 or 2026-11-14
-(`docs/api/10-managed-objects.md`).
+`config/repo.ds` entry. No validated read-only activation signal was found,
+and a pending activation state could not be reproduced on this sandbox
+(2026-11-14). Config read-back was immediate. Query envelopes and `info/ping`
+were unchanged, without a demonstrated pending-state control. Raw repo access
+was blocked (403), and candidate state endpoints were unavailable (404);
+these do not disprove a signal. A generic-create control shows that the
+missing-id OU message cannot establish activation. Records stayed readable
+before and after adding the entry, so immediate readability does not establish
+cutover. The client-reported lag (2026-11-03) was not reproduced here on
+2026-11-09 or 2026-11-14. See `docs/api/10-managed-objects.md`.
 
 `--wait-activation[=SECONDS]` on `relationship set` and `relationship map`
-(default 60, from 1 to 3600) runs only when the write added a per-type entry.
-It creates one record in each such type (`POST` with `{}`), reads it back by
-id, deletes it, and reads again to confirm the delete, under one shared
-deadline. Before that write it lists every hook present on the object and
-every sync mapping whose source or target is `managed/<object>`, and asks.
-`--yes` skips the prompt and is the production gate. The create runs
-`onCreate` and `postCreate` when the object has them; the delete runs
-`onDelete` and `postDelete` when it has them. `onUpdate` and `postUpdate` are
-not invoked. A sync mapping on the object can run on both. With no terminal,
-the command refuses before any probe record exists: on `relationship set` the
-schema write has landed and the per-type entry has not, so finish with
+(default 60, from 1 to 3600) offers a consented probe when a per-type entry is
+added. It sends one create-only POST per type with a caller-chosen UUID in
+`_id`, reads that ID, deletes it, and confirms absence. It prints the UUID
+before dispatch and never retries create. One deadline bounds all create/read
+waits; no create starts after expiry. Each started type gets a separate
+15-second cleanup allowance, including up to ten seconds settling an
+outstanding create. Each cleanup request waits at most two seconds. Transient
+DELETE failures retry, with confirm reads between attempts. An unsettled
+create or unresolved cleanup is explicitly reported with its UUID for manual
+removal. A 404 alone cannot settle an outstanding create. Ctrl-C is latched
+until bounded cleanup finishes, then exits non-zero; repeated Ctrl-C cannot
+skip cleanup.
+
+Before writing, the plan names all script-shaped hooks (inline and file-backed,
+any event) and every sync mapping whose source or target is `managed/<object>`.
+Hook firing behavior is labeled unknown where unmeasured for this probe;
+hooks and mappings may have side effects on create/delete. If either inventory
+cannot be read, the command refuses even with `--yes`, and never calls that
+inventory empty. Otherwise `--yes` skips the prompt and is the production gate.
+Without a terminal or `--yes`, refusal creates no probe: on `relationship set`
+the schema write has landed and the per-type entry has not, so finish with
 `relationship map --wait-activation --yes`; on `relationship map` nothing is
 switched. `--dry-run` writes no probe.
 
-`--json` adds `storage_activation`. `readable` means the probe was read back
-and the delete was confirmed, after N seconds. It does not prove a later
-record cannot land in the old generic store. `not_confirmed` is the timeout, a
-create the type refuses (required fields; a 400 is not retried), or a delete
-that did not read back as gone — the probe id is included when the delete is
-unconfirmed. The command still succeeds, and the warning is printed as well.
-`declined` means the prompt was answered no; no probe was written, and the
-warning remains. `not_needed` means the flag was set and no per-type entry was
-added. Without the flag the command only warns, and `storage_activation` is
-absent. `storage_activation` is this per-type store check. `activation`, above,
-is the relationship-end liveness wait.
+`--json` adds `storage_activation`, including `interrupted`. `readable` means
+the probe was read within the deadline and its delete was confirmed; it does
+not establish cutover or prevent a later generic-store write. `not_confirmed`
+covers timeout, a refused create, interruption, or unresolved cleanup. The UUID
+is retained unless the result is `readable`. Ordinary unconfirmed probes keep
+the command successful and print the warning; interruption renders recovery
+details then exits non-zero (map retains its capture). `declined` writes no
+probe and keeps the warning. `not_needed` means no per-type entry was added.
+Without the flag the command only warns and omits `storage_activation`.
+`activation`, above, remains the relationship-end liveness wait.
 
 Adding a reverse to a relationship that already has links leaves every one of
 them one-sided: IDM does not migrate them, so the new reverse end does not list
