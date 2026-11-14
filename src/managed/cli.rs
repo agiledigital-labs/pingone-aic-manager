@@ -293,6 +293,8 @@ pub enum RelationshipCommand {
         /// no records cannot be probed.
         #[arg(long)]
         check: bool,
+        #[command(flatten)]
+        force: OperationForce,
         #[arg(
             long,
             num_args = 0..=1,
@@ -932,7 +934,18 @@ async fn hook(command: HookCommand) -> Result<()> {
     output(json, &updated)
 }
 
+impl RelationshipCommand {
+    // Both verbs use operation consent for their optional activation probe.
+    fn activation_force(&self) -> bool {
+        match self {
+            Self::Set { force, .. } | Self::Map { force, .. } => force.operation(),
+            _ => false,
+        }
+    }
+}
+
 async fn relationship(command: RelationshipCommand) -> Result<()> {
+    let activation_force = command.activation_force();
     match command {
         RelationshipCommand::Set {
             field,
@@ -946,6 +959,7 @@ async fn relationship(command: RelationshipCommand) -> Result<()> {
             tenant,
             yes,
             check,
+            force: _,
             wait_activation,
             json,
         } => {
@@ -1061,7 +1075,7 @@ async fn relationship(command: RelationshipCommand) -> Result<()> {
                     ok.confirmed_prod,
                     &[],
                     wait_activation,
-                    yes,
+                    activation_force,
                     &command,
                 )
                 .await?;
@@ -1099,8 +1113,15 @@ async fn relationship(command: RelationshipCommand) -> Result<()> {
                 property.is_none(),
                 async || put_managed(&ok, &doc, updated.clone(), &expect).await,
                 async || {
-                    map_created_pair(&ok, &source_object, &key, wait_activation, yes, &command)
-                        .await
+                    map_created_pair(
+                        &ok,
+                        &source_object,
+                        &key,
+                        wait_activation,
+                        activation_force,
+                        &command,
+                    )
+                    .await
                 },
             )
             .await?;
@@ -1146,7 +1167,7 @@ async fn relationship(command: RelationshipCommand) -> Result<()> {
                         ok.confirmed_prod,
                         &[],
                         wait_activation,
-                        yes,
+                        activation_force,
                         &command,
                     )
                     .await?,
@@ -1492,7 +1513,7 @@ async fn relationship(command: RelationshipCommand) -> Result<()> {
             capture,
             dry_run,
             acknowledge_request_finished,
-            force,
+            force: _,
             tenant,
             yes,
             wait_activation,
@@ -1505,7 +1526,7 @@ async fn relationship(command: RelationshipCommand) -> Result<()> {
                 super::conversion_cli::Flags {
                     dry_run,
                     acknowledge_request_finished,
-                    force: force.operation(),
+                    force: activation_force,
                     yes,
                     wait_activation,
                     json,
@@ -2128,7 +2149,7 @@ async fn map_created_pair(
     object: &str,
     key: &str,
     wait_activation: Option<u64>,
-    yes: bool,
+    force: bool,
     command: &activation::CommandInterrupt,
 ) -> Result<(
     Option<VerificationOutput>,
@@ -2166,13 +2187,13 @@ async fn map_created_pair(
     })?;
     let mut storage_activation = if let Some(plan) = prepared {
         let added = activation::added_type_names(plan.addition());
-        let pending = activation::prepare(ok.tenant, &added, wait_activation, yes)
+        let pending = activation::prepare(ok.tenant, &added, wait_activation, force)
             .await
             .map_err(|error| {
                 crate::Error::Config(format!(
                     "config/managed was written, but mapping {field} was not attempted: {error}. \
                      The pair remains generic unless another writer changed it. Re-run \
-                     `aic managed relationship map {field} --wait-activation --yes` to add the \
+                     `aic managed relationship map {field} --wait-activation --force` to add the \
                      mapping and probe"
                 ))
             })?;
@@ -2187,7 +2208,7 @@ async fn map_created_pair(
             ok.confirmed_prod,
             &[],
             wait_activation,
-            yes,
+            force,
             command,
         )
         .await?
@@ -4044,6 +4065,51 @@ mod tests {
     }
 
     #[test]
+    fn production_authorization_does_not_grant_activation_probe_consent() {
+        for verb in ["set", "map"] {
+            for override_probe in [false, true] {
+                let mut args = vec!["aic", "managed", "relationship", verb, "thing.owner"];
+                if verb == "set" {
+                    args.extend(["--target", "other", "--forward", "one"]);
+                }
+                args.extend(["--wait-activation", "--yes"]);
+                if override_probe {
+                    args.push("--force");
+                }
+                let cli = Cli::try_parse_from(args).unwrap();
+                let crate::cli::Command::Managed {
+                    command: ManagedCommand::Relationship { command },
+                } = cli.command.unwrap()
+                else {
+                    panic!("expected relationship command");
+                };
+                let force = command.activation_force();
+                let yes = match command {
+                    RelationshipCommand::Set { yes, .. } | RelationshipCommand::Map { yes, .. } => {
+                        yes
+                    }
+                    _ => unreachable!(),
+                };
+                assert!(yes);
+                let decision = activation::consent(force, None);
+                if override_probe {
+                    assert_eq!(decision.unwrap(), activation::ProbeConsent::Granted);
+                } else {
+                    assert!(decision.unwrap_err().contains("--force"));
+                    assert_eq!(
+                        activation::consent(force, Some(false)).unwrap(),
+                        activation::ProbeConsent::Declined
+                    );
+                    assert_eq!(
+                        activation::consent(force, Some(true)).unwrap(),
+                        activation::ProbeConsent::Granted
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn wait_activation_parses_an_optional_timeout_without_swallowing_flags() {
         let set = |extra: &[&str]| {
             let mut args = vec![
@@ -4131,7 +4197,8 @@ mod tests {
         assert!(help.contains("onCreate"), "{help}");
         assert!(help.contains("storage_activation"), "{help}");
         assert!(help.contains("2026-11-14"), "{help}");
-        assert!(help.contains("--yes"), "{help}");
+        assert!(help.contains("--force"), "{help}");
+        assert!(help.contains("--yes is only the production gate"), "{help}");
     }
 
     fn wait_activation_of(cli: &Cli) -> Option<u64> {
@@ -4473,18 +4540,6 @@ mod tests {
                 "--forward",
                 "one",
                 "--allow-narrowing",
-            ],
-            vec![
-                "aic",
-                "managed",
-                "relationship",
-                "set",
-                "test.owner",
-                "--target",
-                "test2",
-                "--forward",
-                "one",
-                "--force",
             ],
         ] {
             assert!(Cli::try_parse_from(&args).is_err(), "{args:?}");
