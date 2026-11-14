@@ -14,7 +14,10 @@ use serde_json::{Value, json};
 
 use super::{api, state, storage};
 use crate::{Error, Result};
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 
 pub(crate) const MAX_TIMEOUT_SECS: u64 = 3600;
 const POLL: Duration = Duration::from_millis(500);
@@ -352,6 +355,7 @@ pub(crate) struct ObjectProbe {
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub(crate) struct StorageActivation {
+    pub interrupted: bool,
     pub outcome: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub seconds: Option<f64>,
@@ -380,6 +384,7 @@ pub(crate) fn object_probe(object: &str, facts: &ProbeFacts, seconds: f64) -> Ob
 
 pub(crate) fn not_needed() -> StorageActivation {
     StorageActivation {
+        interrupted: false,
         outcome: "not_needed",
         seconds: None,
         timeout_seconds: None,
@@ -390,6 +395,7 @@ pub(crate) fn not_needed() -> StorageActivation {
 
 pub(crate) fn declined(objects: &[String]) -> StorageActivation {
     StorageActivation {
+        interrupted: false,
         outcome: "declined",
         seconds: None,
         timeout_seconds: None,
@@ -422,6 +428,7 @@ pub(crate) fn from_objects(
         .filter(|object| object.outcome != "readable")
         .count();
     StorageActivation {
+        interrupted: false,
         outcome,
         seconds: Some(seconds),
         timeout_seconds: Some(timeout.as_secs()),
@@ -546,13 +553,21 @@ pub(crate) async fn finish(
             timeout,
             consent: ProbeConsent::Granted,
         } => {
+            let (interrupt, _watch) = Interrupt::install()?;
             let started = Instant::now();
             let deadline = started + timeout;
             let mut objects = Vec::with_capacity(added.len());
             for name in added {
-                objects.push(probe_object(tenant, confirmed_prod, name, deadline).await);
+                objects.push(
+                    probe_object(tenant, confirmed_prod, name, deadline, interrupt.clone()).await,
+                );
             }
-            let activation = from_objects(timeout, started.elapsed().as_secs_f64(), objects);
+            let mut activation = from_objects(timeout, started.elapsed().as_secs_f64(), objects);
+            activation.interrupted = interrupt.is_set();
+            if activation.interrupted {
+                activation.outcome = "not_confirmed";
+                activation.detail = Some("interrupted; bounded probe cleanup finished; inspect per-object cleanup results".into());
+            }
             announce(added, &activation);
             activation
         }
@@ -613,6 +628,62 @@ async fn load_effects(tenant: &str, added: &[String]) -> Vec<SideEffects> {
         .collect()
 }
 
+/// Called after rendering JSON, so interruption never hides recovery ids.
+pub(crate) fn check_interrupted(activation: Option<&StorageActivation>) -> Result<()> {
+    if activation.is_some_and(|a| a.interrupted) {
+        return Err(Error::Config("interrupted; probe cleanup attempted; inspect storage_activation and stderr for recovery ids".into()));
+    }
+    Ok(())
+}
+
+#[derive(Default)]
+struct Interrupt {
+    latched: AtomicBool,
+    wake: tokio::sync::Notify,
+}
+
+struct InterruptWatch(tokio::task::JoinHandle<()>);
+impl Drop for InterruptWatch {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+impl Interrupt {
+    fn install() -> Result<(Arc<Self>, InterruptWatch)> {
+        // Register synchronously before any create can be dispatched.
+        let mut signals = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())
+            .map_err(|e| Error::Config(format!("cannot protect probe cleanup from Ctrl-C: {e}")))?;
+        let interrupt = Arc::new(Self::default());
+        let listener = interrupt.clone();
+        let watch = tokio::spawn(async move {
+            while signals.recv().await.is_some() {
+                listener.trip();
+            }
+        });
+        Ok((interrupt, InterruptWatch(watch)))
+    }
+
+    fn trip(&self) {
+        self.latched.store(true, Ordering::SeqCst);
+        self.wake.notify_waiters();
+    }
+
+    fn is_set(&self) -> bool {
+        self.latched.load(Ordering::SeqCst)
+    }
+
+    async fn cancelled(&self) {
+        // Register before checking the latch to avoid missing a notification.
+        let notified = self.wake.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
+        if !self.is_set() {
+            notified.await;
+        }
+    }
+}
+
 /// The lifecycle uses this seam in production and in fault-injection tests.
 trait ProbeIo: Send + Sync + 'static {
     fn request(
@@ -649,14 +720,17 @@ async fn probe_object(
     confirmed_prod: bool,
     object: &str,
     deadline: Instant,
+    interrupt: Arc<Interrupt>,
 ) -> ObjectProbe {
-    probe_with(
+    probe_run(
         Arc::new(TenantIo {
             tenant: tenant.into(),
             confirmed_prod,
         }),
         object,
         deadline,
+        LIMITS,
+        interrupt,
     )
     .await
 }
@@ -674,15 +748,27 @@ const LIMITS: ProbeLimits = ProbeLimits {
     poll: POLL,
 };
 
+#[cfg(test)]
 async fn probe_with(io: Arc<impl ProbeIo>, object: &str, deadline: Instant) -> ObjectProbe {
     probe_with_limits(io, object, deadline, LIMITS).await
 }
 
+#[cfg(test)]
 async fn probe_with_limits(
     io: Arc<impl ProbeIo>,
     object: &str,
     deadline: Instant,
     limits: ProbeLimits,
+) -> ObjectProbe {
+    probe_run(io, object, deadline, limits, Arc::new(Interrupt::default())).await
+}
+
+async fn probe_run(
+    io: Arc<impl ProbeIo>,
+    object: &str,
+    deadline: Instant,
+    limits: ProbeLimits,
+    interrupt: Arc<Interrupt>,
 ) -> ObjectProbe {
     let started = Instant::now();
     let mut facts = ProbeFacts {
@@ -692,7 +778,7 @@ async fn probe_with_limits(
         delete_attempted: false,
         delete_confirmed: false,
     };
-    if Instant::now() >= deadline {
+    if Instant::now() >= deadline || interrupt.is_set() {
         return object_probe(object, &facts, started.elapsed().as_secs_f64());
     }
     // POST with an explicit _id is the documented create-only request, without
@@ -711,8 +797,9 @@ async fn probe_with_limits(
     // Keep ownership of the response future on timeout. Cancelling a socket
     // wait does not cancel the daemon's write. Cleanup first waits for this
     // original request; an unresolved write can never be reported as gone.
+    let create_interrupt = interrupt.clone();
     let mut create = tokio::spawn(async move {
-        if Instant::now() >= deadline {
+        if Instant::now() >= deadline || create_interrupt.is_set() {
             return Err(Error::Config(
                 "probe create not dispatched before deadline".into(),
             ));
@@ -721,9 +808,13 @@ async fn probe_with_limits(
             .request("POST", create_path, Some(json!({"_id": id})))
             .await
     });
-    let reply = tokio::time::timeout_at(deadline.into(), &mut create).await;
-    let mut create_pending = reply.is_err();
-    if let Ok(reply) = reply {
+    let reply = tokio::select! {
+        biased;
+        _ = interrupt.cancelled() => None,
+        reply = tokio::time::timeout_at(deadline.into(), &mut create) => reply.ok(),
+    };
+    let mut create_pending = reply.is_none();
+    if let Some(reply) = reply {
         record_create_reply(reply, &mut facts);
         if matches!(facts.create, CreateAttempt::Rejected { .. }) {
             return object_probe(object, &facts, started.elapsed().as_secs_f64());
@@ -731,15 +822,23 @@ async fn probe_with_limits(
     } else {
         facts.create = CreateAttempt::GaveUp;
     }
-    while !create_pending && Instant::now() < deadline {
-        match request_until(&*io, "GET", &read_path, deadline, limits).await {
+    while !create_pending && !interrupt.is_set() && Instant::now() < deadline {
+        let reply = tokio::select! {
+            biased;
+            _ = interrupt.cancelled() => break,
+            reply = request_until(&*io, "GET", &read_path, deadline, limits) => reply,
+        };
+        match reply {
             Ok(_) if Instant::now() < deadline => {
                 facts.create = CreateAttempt::Created;
                 facts.read_back = true;
                 break;
             }
             Err(error) if classify_read(api_status(&error)) == ReadClass::Stop => break,
-            _ => pause_with(deadline, limits.poll).await,
+            _ => tokio::select! {
+                _ = interrupt.cancelled() => break,
+                _ = pause_with(deadline, limits.poll) => {},
+            },
         }
     }
     // Cleanup has its own explicit allowance, even if reading used every
@@ -785,7 +884,20 @@ async fn probe_with_limits(
         // evidence because the daemon/tenant might finish the create later.
         create.abort();
     }
-    object_probe(object, &facts, started.elapsed().as_secs_f64())
+    let mut result = object_probe(object, &facts, started.elapsed().as_secs_f64());
+    if interrupt.is_set() {
+        result.outcome = "not_confirmed";
+        result.id = facts.id.clone();
+        result.detail = Some(if facts.delete_confirmed {
+            "interrupted; probe delete confirmed".into()
+        } else {
+            format!(
+                "interrupted; record {} cleanup unresolved; remove it by hand",
+                facts.id.as_deref().unwrap_or("(not dispatched)")
+            )
+        });
+    }
+    result
 }
 
 fn record_create_reply(
@@ -1102,6 +1214,9 @@ mod lifecycle_tests {
         hang_create: bool,
         hang_reads: bool,
         hang_delete: bool,
+        interrupt_on_create: Option<Arc<Interrupt>>,
+        interrupt_on_read: Option<Arc<Interrupt>>,
+        signal_on_read: bool,
     }
 
     fn api_error(status: u16) -> Error {
@@ -1133,12 +1248,28 @@ mod lifecycle_tests {
                     }
                     let id = body.unwrap()["_id"].as_str().unwrap().to_string();
                     *self.record.lock().unwrap() = Some(id.clone());
+                    if let Some(interrupt) = &self.interrupt_on_create {
+                        interrupt.trip();
+                    }
                     if self.lost_create_reply {
                         return Err(Error::Transport("response lost after commit".into()));
                     }
                     Ok(json!({"_id": id}))
                 }
                 "GET" => {
+                    if self.record.lock().unwrap().is_some() {
+                        if let Some(interrupt) = &self.interrupt_on_read {
+                            interrupt.trip();
+                            std::future::pending::<()>().await;
+                        }
+                        if self.signal_on_read {
+                            // This branch is exercised only in a subprocess.
+                            unsafe {
+                                libc::raise(libc::SIGINT);
+                            }
+                            std::future::pending::<()>().await;
+                        }
+                    }
                     if self.hang_reads {
                         std::future::pending::<()>().await;
                     }
@@ -1148,6 +1279,12 @@ mod lifecycle_tests {
                     }
                 }
                 "DELETE" => {
+                    if self.signal_on_read {
+                        // A second Ctrl-C during cleanup must remain latched.
+                        unsafe {
+                            libc::raise(libc::SIGINT);
+                        }
+                    }
                     if self.hang_delete {
                         std::future::pending::<()>().await;
                     }
@@ -1164,6 +1301,95 @@ mod lifecycle_tests {
         request: Duration::from_millis(15),
         poll: Duration::from_millis(2),
     };
+
+    #[tokio::test]
+    async fn interrupt_during_create_or_read_still_deletes_and_confirms() {
+        for during_create in [true, false] {
+            let interrupt = Arc::new(Interrupt::default());
+            let io = Arc::new(Fake {
+                interrupt_on_create: during_create.then(|| interrupt.clone()),
+                interrupt_on_read: (!during_create).then(|| interrupt.clone()),
+                ..Fake::default()
+            });
+            let result = probe_run(
+                io.clone(),
+                "thing",
+                Instant::now() + Duration::from_secs(1),
+                FAST,
+                interrupt,
+            )
+            .await;
+            assert_eq!(result.outcome, "not_confirmed");
+            assert!(result.detail.unwrap().contains("probe delete confirmed"));
+            assert!(io.record.lock().unwrap().is_none());
+            let calls = io.calls.lock().unwrap();
+            assert_eq!(calls[calls.len() - 2].0, "DELETE");
+            assert_eq!(calls[calls.len() - 1].0, "GET");
+        }
+    }
+
+    #[test]
+    fn sigint_child() {
+        let Ok(mode) = std::env::var("AIC_ACTIVATION_SIGINT_CHILD") else {
+            return;
+        };
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        runtime.block_on(async {
+            let (interrupt, _watch) = Interrupt::install().unwrap();
+            let io = Arc::new(Fake {
+                signal_on_read: true,
+                hang_delete: mode == "unresolved",
+                ..Fake::default()
+            });
+            let object = probe_run(
+                io.clone(),
+                "thing",
+                Instant::now() + Duration::from_secs(1),
+                FAST,
+                interrupt.clone(),
+            )
+            .await;
+            assert!(interrupt.is_set());
+            let calls = io.calls.lock().unwrap();
+            assert!(calls.iter().any(|c| c.0 == "DELETE"));
+            assert_eq!(calls.last().unwrap().0, "GET");
+            drop(calls);
+            let mut activation = from_objects(Duration::from_secs(1), 0.1, vec![object]);
+            activation.interrupted = true;
+            let mut body = json!({});
+            attach(&mut body, Some(&activation)).unwrap();
+            println!("{body}");
+            assert!(check_interrupted(Some(&activation)).is_err());
+        });
+        std::process::exit(130);
+    }
+
+    #[test]
+    fn real_sigint_exits_nonzero_after_cleanup_and_reports_json_recovery_id() {
+        for mode in ["confirmed", "unresolved"] {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "managed::activation::lifecycle_tests::sigint_child",
+                    "--nocapture",
+                ])
+                .env("AIC_ACTIVATION_SIGINT_CHILD", mode)
+                .output()
+                .unwrap();
+            assert_eq!(output.status.code(), Some(130), "{output:?}");
+            let stdout = String::from_utf8(output.stdout).unwrap();
+            assert!(stdout.contains("\"interrupted\":true"), "{stdout}");
+            assert!(stdout.contains("\"id\":"), "{stdout}");
+            assert!(
+                stdout.contains(if mode == "confirmed" {
+                    "probe delete confirmed"
+                } else {
+                    "cleanup unresolved"
+                }),
+                "{stdout}"
+            );
+        }
+    }
 
     #[tokio::test]
     async fn expired_deadline_never_dispatches_create() {
