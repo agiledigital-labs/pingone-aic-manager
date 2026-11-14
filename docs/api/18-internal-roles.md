@@ -183,6 +183,29 @@ the _reference_ conventions above — the `_id`-not-`name` rule, the two differi
 `roles` shapes, synthetic roles — because they are properties of a role
 reference rather than of the policy that consumes it.
 
+
+### Name and description — PATCH, then a re-read (verified 2026-11-14)
+
+A name or description change is an IDM patch, not a `PUT`. The document is a
+JSON array of `{operation, field, value}` objects. The JSON Patch spelling
+(`op` / `path`) is **400** `not a valid JSON patch`.
+
+| Call | Result | Re-read |
+| --- | --- | --- |
+| `PATCH` replace `/description`, no `If-Match` | 200 | New description. `name` unchanged. |
+| `PATCH` replace `/name` with `If-Match` of the current `_rev` | 200 | New name. Description unchanged. |
+| `PATCH` replace `/name` and `/description` in one document, current `If-Match`, privilege already present | 200 | Both new values. Privilege count and its `userName` flag unchanged. `condition` and `temporalConstraints` still present. |
+| `PATCH` replace `/description`, no `If-Match`, privilege present | 200 | New description. Privilege still present. |
+| `PATCH` with `If-Match` of a revision that is not current | **412** | Description unchanged. |
+| `PUT` with current `If-Match` and the privilege omitted | 200 | `privileges: []`. Same destructive replace as 2026-08-10. |
+| `PUT` with a revision that is not current | **412** | Description unchanged. |
+| `PUT` with current `If-Match`, `name`, `description`, and `privileges` | 200 | Name and description match the body. |
+
+`aic role edit` sends the patch, with `If-Match` of the revision it read, and
+reports `name` and `description` from a following `GET`. The patch response
+itself is not the confirmation. The probe role was deleted afterwards; a
+following `GET` was **404**.
+
 ## Open questions
 
 - **Are `permissions` values enumerable from an API?** The role schema exposes
