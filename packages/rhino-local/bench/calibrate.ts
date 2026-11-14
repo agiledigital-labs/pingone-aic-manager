@@ -34,10 +34,10 @@ process.env.AIC_SCRIPT_TESTER_TIMING = timing;
 function kase(shape: "full" | "bare" | "headers" | "store"): Case {
   const full = shape === "full";
   const given: Case["given"] = {
-    libraries: full || shape === "bare" ? benchLibraries() : undefined,
     callbacks: [],
     esv: givenEsv(),
   };
+  if (full || shape === "bare") given.libraries = benchLibraries();
   if (shape === "full" || shape === "store") given.managed = { "managed/alpha_thing": makeUsers() };
   if (shape === "full" || shape === "headers") {
     given.requestHeaders = buildHeaders();

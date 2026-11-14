@@ -1484,6 +1484,70 @@ token-exchange entry points were not measured.
 A may-act case runs locally only. The types are exported from `./case`:
 `MayActCaseInit`, `MayActExpect` and the recorded `MayActEffect`.
 
+### SAML2 NameID mapper scripts
+
+`context: "SAML2_NAMEID_MAPPER"` runs the remote service provider's NameID
+mapper (next-gen). The assertion's NameID text is the script's completion
+value when that value is a string. A completion of `undefined` fails SSO with
+`Could not generate NameID`. A thrown script fails the run (`CaseRunError`)
+and the message contains the thrown value. Measured 2026-11-14
+(`docs/api/12-script-bindings-matrix.md`).
+
+```ts
+defineCase({
+  name: "returns a stable NameID",
+  context: "SAML2_NAMEID_MAPPER",
+  script, // next-gen: the last expression is the NameID text
+  given: {
+    identity: {
+      name: "subject-id",
+      attributes: { mail: ["user@example.com"] },
+    },
+  },
+  expect: { nameId: { value: "user@example.com" } },
+});
+```
+
+**Fixtures.** `given.nameId` seeds `format` (default the email URN
+`urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress`), `remoteEntityId`
+(default `http://localhost/sp`), `hostedEntityId` (default
+`https://idp.example.com`) and `mappedValue`. `identity` seeds `name`
+(default `"subject"`), `exists` (default `true`) and `attributes`. The only
+attribute the measurement read is one `mail` string, so any other attribute
+map, and `identity.universalId`, are rejected at validation. `mappedValue`
+defaults to that mail string. `loggerScriptId` and `cookieName` are accepted
+too. `realm` defaults to `"/alpha"`.
+
+**Assertions.** `expect.nameId.value` is the NameID text. Omitting it on a
+success is a mismatch unless `allowUndeclared: { nameId: true }`. `format` is
+compared only when declared. `accepted: false` expects the measured void
+failure and cannot be combined with `value`; `refusal` then names the text
+(`Could not generate NameID` on a completion of `undefined`), and omitting
+`refusal` is a mismatch unless `allowUndeclared.nameId` is set.
+
+**Bindings.** Only measured members are emulated (2026-11-14):
+
+- `nameIDScriptHelper.getNameIDValue()` returns `mappedValue` (the mail
+  string in the measured email-format case). `getNameIDFromSession()` returns
+  `null`. `shouldPersistNameIDFormat()` returns `false`.
+  `createNameIdentifier` is present and calling it faults. The
+  `NAMEID_FORMAT_*` constants were not readable in the live enumeration, so a
+  read faults.
+- `identity.exists()` and `identity.getName()` answer the fixture.
+  `getName()` in the measured SSO was the managed object's `_id`, not the
+  userName. `getAttributeValues("mail")` is a list of that one string.
+  `store`, `setAttribute`, `addAttribute` and `getUniversalId` fault.
+- `nameIDFormat`, `remoteEntityId` and `hostedEntityId` are the seeded
+  strings. `session` is an object; no member of it was read.
+  `logger.getName()` is
+  `scripts.SAML2_NAMEID_MAPPER.<script id>.(<script name>)`.
+
+An unmeasured member or a completion other than a string or `undefined`
+raises `saml2-nameid-mapper-unmeasured/<binding>.<member>`.
+
+A NameID mapper case runs locally only. The types are exported from `./case`:
+`NameIdCaseInit`, `NameIdSeed`, `NameIdExpect` and the recorded `NameIdEffect`.
+
 ### Library scripts
 
 `context: "LIBRARY"` calls an export of a next-gen library script directly.

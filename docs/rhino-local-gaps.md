@@ -1216,6 +1216,44 @@ What it approximates or leaves out:
 - **The AIC lane** runs only decision-node scripts, so a may-act case runs
   locally only.
 
+## SAML2 NameID mapper context (measured 2026-11-14)
+
+`context: "SAML2_NAMEID_MAPPER"` runs from the overlay
+`packages/rhino-local/src/bindings/rhino/context-saml2-nameid-mapper.cjs`, on
+the same `context-common.cjs` views, so the view-level gaps above apply here
+too, with the prefix `saml2-nameid-mapper-unmeasured/`. The e2e
+(`test/bindings/saml2-nameid-mapper.e2e.test.ts`) runs the three probes from
+the SP-initiated SSO (a string completion, an empty completion, a throw) and
+the unmeasured calls. What it approximates or leaves out:
+
+- **One flow.** SP-initiated SSO with an existing IdP session, email NameID
+  format, and the hosted IdP's email format mapped to `mail`. Other formats,
+  IdP-initiated SSO, and a request with no session were not run.
+- **`for...in` over `nameIDScriptHelper`.** The live object lists its four
+  functions and the `java.lang.Object` names (`class`, `equals`, `getClass`,
+  `hashCode`, `notify`, `notifyAll`, `toString`, `wait`, plus
+  `nameIDFromSession` and `nameIDValue`). A bracket read of each of those
+  names is `undefined`. The emulator's methods are non-enumerable, and it
+  does not install the names that read as `undefined`.
+- **`NAMEID_FORMAT_*`.** Not enumerable in the live object, and no probe read
+  one. A read faults.
+- **`createNameIdentifier()`.** Present, arity 0, not called. A call faults.
+- **`session`.** Bound as an object. No member was read, so a member read is
+  the ordinary missing-property `undefined`, and `String(session)` faults.
+- **`getNameIDFromSession`.** Only `null` was returned. A persisted NameID was
+  not observed (`shouldPersistNameIDFormat()` returned `false`).
+- **`identity.getAttributeValues`.** Only `"mail"` with one string. `.length`
+  and `[0]` were read. `.size()` was not. Any other attribute faults. `store`,
+  `setAttribute`, `addAttribute` and `getUniversalId` were not called and
+  fault.
+- **The completion value.** A non-empty string is the NameID text.
+  `undefined` is the refusal `Could not generate NameID`. The empty string,
+  `null`, a number and an object were not sent; anything other than a string
+  or `undefined` faults. The assertion's format stayed the format the SP
+  requested. Nothing in the probe changed it.
+- **The AIC lane** runs only decision-node scripts, so a NameID mapper case
+  runs locally only.
+
 ## LIBRARY context (listed 2026-11-11)
 
 `context: "LIBRARY"` runs on next-gen only, from the overlay
