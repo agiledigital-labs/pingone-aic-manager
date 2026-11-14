@@ -97,7 +97,7 @@ line("host wait", sum("jvm.hostWaitMs"));
 line("transport", sum("job.transportMs"));
 line("stringify", sum("job.stringifyMs"));
 line("round trip", sum("job.roundTripMs"));
-line("line bytes", sum("job.lineBytes"));
+console.log(`  ${"line bytes".padEnd(22)} ${sum("job.lineBytes").toFixed(0).padStart(9)} bytes`);
 line("spawn to ready", sum("spawn.spawnToReadyMs"));
 line("audit publish", sum("publish.publishMs"));
 console.log(`  cache hits ${sum("jvm.cacheHits")}  misses ${sum("jvm.cacheMisses")}  subject hits ${sum("jvm.subjectCacheHits")} misses ${sum("jvm.subjectCacheMisses")}`);
