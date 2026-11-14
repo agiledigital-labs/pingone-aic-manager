@@ -1835,15 +1835,39 @@ fn render_idm_caller(view: &IdmCaller) -> String {
     out
 }
 
+async fn load_idm_caller<F, Fut>(mut get: F) -> Result<IdmCaller>
+where
+    F: FnMut(&'static str) -> Fut,
+    Fut: std::future::Future<Output = Result<serde_json::Value>>,
+{
+    let login = get("/openidm/info/login")
+        .await
+        .map_err(|error| idm_diagnostic_error("login lookup", error))?;
+    let tokeninfo = get("/am/oauth2/realms/root/tokeninfo")
+        .await
+        .map_err(|error| idm_diagnostic_error("tokeninfo lookup", error))?;
+    idm_caller_view(&login, &tokeninfo)
+        .map_err(|error| idm_diagnostic_error("response parsing", error))
+}
+
 async fn whoami_idm(tenant: &str, json: bool) -> Result<()> {
-    let login = crate::aic::api::get(tenant, "/openidm/info/login").await?;
-    let tokeninfo = crate::aic::api::get(tenant, "/am/oauth2/realms/root/tokeninfo").await?;
-    let view = idm_caller_view(&login, &tokeninfo)?;
+    let view = load_idm_caller(|path| crate::aic::api::get(tenant, path)).await?;
     if json {
         print_json(&view)
     } else {
         print!("{}", render_idm_caller(&view));
         Ok(())
+    }
+}
+
+/// Keep this credential-free diagnostic's errors independent of HTTP URLs and
+/// response bodies, both of which can contain tenant identifiers or tokens.
+fn idm_diagnostic_error(step: &str, error: Error) -> Error {
+    match error {
+        Error::Api { status, .. } => {
+            Error::Config(format!("whoami --idm failed during {step} (HTTP {status})"))
+        }
+        _ => Error::Config(format!("whoami --idm failed during {step}")),
     }
 }
 
@@ -1895,10 +1919,15 @@ async fn whoami(
     // Checked before anything is minted, so a refusal never prints a token.
     if let Some(requested) = host_arg.as_deref() {
         let base_url = tenant_config.map_or("", |config| config.base_url.as_str());
-        identity::check_host(&tenant, base_url, requested, &contexts, || {
+        let result = identity::check_host(&tenant, base_url, requested, &contexts, || {
             identity::custom_domains(&tenant)
         })
-        .await?;
+        .await;
+        if idm {
+            result.map_err(|error| idm_diagnostic_error("host validation", error))?;
+        } else {
+            result?;
+        }
     }
     if idm {
         return whoami_idm(&tenant, json).await;
@@ -2487,6 +2516,54 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[tokio::test]
+    async fn idm_diagnostic_errors_hide_transport_details_and_api_bodies() {
+        for (error, fail_second) in [
+            (
+                Error::Transport("https://synthetic.example/path bearer-marker-abc".into()),
+                false,
+            ),
+            (
+                Error::Api {
+                    status: 503,
+                    body: "https://synthetic.example/path bearer-marker-abc".into(),
+                },
+                true,
+            ),
+        ] {
+            let mut calls = 0;
+            let result = load_idm_caller(move |_| {
+                calls += 1;
+                let should_fail = !fail_second || calls == 2;
+                let error = if should_fail {
+                    Some(match error {
+                        Error::Transport(ref message) => Error::Transport(message.clone()),
+                        Error::Api { status, ref body } => Error::Api {
+                            status,
+                            body: body.clone(),
+                        },
+                        _ => unreachable!(),
+                    })
+                } else {
+                    None
+                };
+                async move { error.map_or_else(|| Ok(serde_json::json!({})), Err) }
+            })
+            .await;
+            let safe = result.unwrap_err().to_string();
+            assert!(safe.contains(if fail_second {
+                "tokeninfo lookup"
+            } else {
+                "login lookup"
+            }));
+            if safe.contains("HTTP") {
+                assert!(safe.contains("HTTP 503"));
+            }
+            assert!(!safe.contains("synthetic.example"));
+            assert!(!safe.contains("bearer-marker-abc"));
+        }
     }
 
     #[test]
