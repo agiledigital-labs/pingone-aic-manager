@@ -2553,6 +2553,10 @@ mod tests {
             })
             .await;
             let safe = result.unwrap_err().to_string();
+            let stdout = Vec::<u8>::new();
+            let mut stderr = Vec::<u8>::new();
+            use std::io::Write as _;
+            writeln!(&mut stderr, "{safe}").unwrap();
             assert!(safe.contains(if fail_second {
                 "tokeninfo lookup"
             } else {
@@ -2561,8 +2565,11 @@ mod tests {
             if safe.contains("HTTP") {
                 assert!(safe.contains("HTTP 503"));
             }
-            assert!(!safe.contains("synthetic.example"));
-            assert!(!safe.contains("bearer-marker-abc"));
+            for stream in [&stdout[..], &stderr[..]] {
+                let stream = String::from_utf8_lossy(stream);
+                assert!(!stream.contains("synthetic.example"));
+                assert!(!stream.contains("bearer-marker-abc"));
+            }
         }
     }
 
