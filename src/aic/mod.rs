@@ -481,27 +481,63 @@ mod tests {
         assert!(client.ensure_write_allowed(true).is_ok());
     }
 
+    fn synthetic_signing_key() -> serde_json::Value {
+        serde_json::json!({
+            "kty":"RSA",
+            "n":"AKpuDplQxCLK-rAKU07dO7TzfBy7kEzc_dfqET0uBLRifyWGGIX4IphLDLoY4-BcNWAP6hLRRRIP_FkYu1m2MPPuO7pOaua8ZaCzfyjXWt77G0OZP493fXndGKam3sy-UTKgMIN5DfJ557CCPFFN3IEX5I8QzUye8CRCnuyXBP-h",
+            "e":"AQAB",
+            "d":"HBCThtut8KzMK0EIBuyXcGzH-1NHp-CcTHnW7OQvEiVGGr_COg1qZPm21s5SeBe3EmKMgRzE6vyG6YURFOzTkpLEMsjPTMUDXFIuKatyEu0xs6pSIiRRaQkauVheDbezVdd0w2FiZbcYhcfH4ShJZOLpH8u0H7sCkKtQehc0uyE",
+            "p":"ANpSI07iIr2jcZdzXDX5ul13A-x4Add0A07RGa-1VtPaXKEMHSvzEyXwSn0p-EH-LKUi9eB1puqd_Ii_1WV1OuM",
+            "q":"AMfX_9KCXu9iUYQrx3frtsGWkJyC8LjQBogeH2UNnBzrCJldEtijhz08W_Rtak--5SQMflEUYx2Ww8R4rR6czqs"
+        })
+    }
+
+    async fn token_endpoint(scope: &'static str) -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = vec![0; 8192];
+            let _ = stream.read(&mut request).await.unwrap();
+            let body =
+                format!(r#"{{"access_token":"narrow-token","expires_in":898,"scope":"{scope}"}}"#);
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        });
+        format!("http://{address}")
+    }
+
     #[tokio::test]
-    async fn a_downscoped_mint_leaves_the_normal_cache_empty() {
-        let mut configured = tenant("https://127.0.0.1:1".into());
+    async fn downscoped_mint_preserves_seeded_cache_and_succeeds_with_empty_cache() {
+        let mut configured = tenant(token_endpoint("fr:am:*").await);
         configured.sa_id = Some("sa".into());
         configured.scopes = vec!["fr:am:*".into(), "fr:idm:*".into()];
-        let client = AicClient::new(configured, serde_json::Value::Null);
+        let client = AicClient::new(configured.clone(), synthetic_signing_key());
+        let normal_expiry = chrono::Utc::now().timestamp() + 700;
+        client
+            .token_cache
+            .lock()
+            .unwrap()
+            .store("normal-token".into(), normal_expiry);
+        let narrowed = client.mint_downscoped(&["fr:am:*".into()]).await.unwrap();
+        assert_eq!(narrowed.access_token, "narrow-token");
+        assert_eq!(narrowed.scopes, vec!["fr:am:*"]);
+        assert_eq!(
+            client.token_cache.lock().unwrap().expires_at(),
+            normal_expiry
+        );
+        assert_eq!(client.bearer().await.unwrap(), "normal-token");
 
-        let refused = client
-            .mint_downscoped(&["fr:zzemu:r3n:*".into()])
-            .await
-            .unwrap_err();
-        assert!(refused.to_string().contains("fr:zzemu:r3n:*"));
-        assert_eq!(client.token_cache.lock().unwrap().expires_at(), 0);
-
-        // The grant itself fails (nothing is listening). The cache must still
-        // be the empty one a normal caller would use.
-        let _failed = client
-            .mint_downscoped(&["fr:am:*".into()])
-            .await
-            .unwrap_err();
-        assert_eq!(client.token_cache.lock().unwrap().expires_at(), 0);
+        configured.base_url = token_endpoint("fr:am:*").await;
+        let empty = AicClient::new(configured, synthetic_signing_key());
+        let narrowed = empty.mint_downscoped(&["fr:am:*".into()]).await.unwrap();
+        assert_eq!(narrowed.access_token, "narrow-token");
+        assert_eq!(empty.token_cache.lock().unwrap().expires_at(), 0);
     }
 
     #[test]
