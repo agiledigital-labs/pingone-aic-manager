@@ -155,8 +155,7 @@ impl Staged<'_> {
         let dst = name(leaf)?;
         let fd = self.parent.0.as_raw_fd();
         let result = if expected.is_none() {
-            // No fallback to an overwriting rename: unsupported platforms or
-            // filesystems fail closed, leaving the destination untouched.
+            // Neither install path can replace a concurrently created destination.
             #[cfg(target_os = "linux")]
             {
                 // SAFETY: names are NUL-terminated and fd remains alive.
@@ -166,10 +165,7 @@ impl Staged<'_> {
             }
             #[cfg(not(target_os = "linux"))]
             {
-                return Err(io::Error::new(
-                    io::ErrorKind::Unsupported,
-                    "atomic no-replace export install is unavailable on this platform",
-                ));
+                return self.install_new_link(leaf);
             }
         } else {
             // SAFETY: names are NUL-terminated and fd remains alive. The bytes
@@ -178,6 +174,25 @@ impl Staged<'_> {
         };
         if result < 0 {
             return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
+
+    #[cfg(any(not(target_os = "linux"), test))]
+    fn install_new_link(&self, leaf: &Path) -> io::Result<()> {
+        let src = name(&self.temporary)?;
+        let dst = name(leaf)?;
+        let fd = self.parent.0.as_raw_fd();
+        // SAFETY: names are NUL-terminated under the live directory fd. With
+        // flags=0 linkat installs this staged file without following symlinks
+        // or replacing an existing name (including a dangling symlink).
+        if unsafe { libc::linkat(fd, src.as_ptr(), fd, dst.as_ptr(), 0) } < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // The destination is now installed. Drop retries temporary cleanup if
+        // unlink fails; cleanup must not report the installed file as absent.
+        unsafe {
+            libc::unlinkat(fd, src.as_ptr(), 0);
         }
         Ok(())
     }
@@ -191,5 +206,49 @@ impl Drop for Staged<'_> {
                 libc::unlinkat(self.parent.0.as_raw_fd(), name.as_ptr(), 0);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unix_link_install_is_atomic_no_replace_and_cleans_staging() {
+        let root = std::env::temp_dir().join(format!("aic-link-install-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&root).unwrap();
+        let dir = Directory::root(&root, false).unwrap().unwrap();
+        let staged = dir.stage(b"new").unwrap();
+        staged.install_new_link(Path::new("new.json")).unwrap();
+        assert_eq!(dir.read(Path::new("new.json")).unwrap(), b"new");
+        assert!(!root.join(&staged.temporary).exists());
+        drop(staged);
+
+        std::fs::write(root.join("existing.json"), b"old").unwrap();
+        std::os::unix::fs::symlink("missing", root.join("symlink.json")).unwrap();
+        std::fs::create_dir(root.join("directory.json")).unwrap();
+        for leaf in ["existing.json", "symlink.json", "directory.json"] {
+            let staged = dir.stage(b"replacement").unwrap();
+            assert_eq!(
+                staged.install_new_link(Path::new(leaf)).unwrap_err().kind(),
+                io::ErrorKind::AlreadyExists
+            );
+            assert!(root.join(&staged.temporary).exists());
+            drop(staged);
+        }
+        assert_eq!(dir.read(Path::new("existing.json")).unwrap(), b"old");
+        assert_eq!(
+            std::fs::read_link(root.join("symlink.json")).unwrap(),
+            Path::new("missing")
+        );
+        assert!(root.join("directory.json").is_dir());
+        assert!(!std::fs::read_dir(&root).unwrap().any(|entry| {
+            entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".aic-export-")
+        }));
+        std::fs::remove_dir_all(root).unwrap();
     }
 }
