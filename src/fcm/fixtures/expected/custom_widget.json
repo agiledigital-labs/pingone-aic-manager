@@ -1,0 +1,60 @@
+{
+  "extra": {
+    "keep": []
+  },
+  "name": "custom_widget",
+  "onCreate": {
+    "file": "custom_widget.onCreate.js",
+    "type": "text/javascript"
+  },
+  "schema": {
+    "properties": {
+      "2": {
+        "minimum": 1.5,
+        "type": "number"
+      },
+      "10": {
+        "minimum": 0,
+        "type": "number"
+      },
+      "4294967294": {
+        "type": "boolean"
+      },
+      "02": {
+        "type": "boolean"
+      },
+      "4294967295": {
+        "type": "boolean"
+      },
+      "owner": {
+        "description": "quote\" slash/ backslash\\ tab\t newline\n control\u0001",
+        "title": "line paragraph end",
+        "type": "string"
+      },
+      "thing": {
+        "enum": [
+          1e+21,
+          1e-7,
+          100000000000000000000,
+          0.000001,
+          0,
+          1e+23,
+          1000000000000000100,
+          9007199254740992,
+          5e-324,
+          1.7976931348623157e+308,
+          51.248178375505404,
+          -93.31137037688033
+        ],
+        "type": "number"
+      },
+      "😀": {
+        "type": "boolean"
+      },
+      "": {
+        "type": "boolean"
+      }
+    },
+    "type": "object"
+  }
+}

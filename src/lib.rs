@@ -7,6 +7,7 @@ pub mod cli;
 pub mod config;
 pub mod error;
 pub mod esv;
+pub(crate) mod fcm;
 pub(crate) mod http;
 pub mod idmstore;
 pub mod journey;
