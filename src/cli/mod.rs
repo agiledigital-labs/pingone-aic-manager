@@ -166,6 +166,14 @@ pub enum Command {
         min_ttl: Option<u32>,
         #[arg(
             long,
+            conflicts_with_all = ["token", "min_ttl"],
+            help = "Show how IDM sees the service-account token: the component, \
+                    its IDM roles, and the scopes the token requested. Prints no \
+                    token and no key. A management scope is not the IDM admin role"
+        )]
+        idm: bool,
+        #[arg(
+            long,
             value_name = "URL-OR-HOST",
             help = "Mint the token for the context whose host this URL names \
                     (without --tenant), and refuse, printing no token, unless it \
@@ -458,7 +466,8 @@ pub(crate) async fn dispatch(
             host,
             json,
             min_ttl,
-        }) => whoami(tenant, token, host, json, min_ttl).await,
+            idm,
+        }) => whoami(tenant, token, host, json, min_ttl, idm).await,
         Some(Command::Esv { command }) => crate::esv::cli::run(command).await,
         Some(Command::Managed { command }) => crate::managed::cli::run(command).await,
         Some(Command::Idm { command }) => crate::idmstore::cli::run(command).await,
@@ -1718,15 +1727,123 @@ fn whoami_view(
     }
 }
 
+/// What `GET /openidm/info/login` and `GET /am/oauth2/realms/root/tokeninfo`
+/// say about the service-account bearer. Ids and the echoed access token are
+/// not fields of this view: a management diagnostic must not become a secret dump.
+#[derive(Debug, Serialize, PartialEq, Eq)]
+struct IdmCaller {
+    component: String,
+    roles: Vec<String>,
+    scopes: Vec<String>,
+    /// True only when the role list contains `internal/role/openidm-admin`.
+    admin_role: bool,
+    note: &'static str,
+}
+
+const IDM_ADMIN_ROLE: &str = "internal/role/openidm-admin";
+const IDM_ADMIN_NOTE: &str = "A management scope is not the IDM admin role. \
+     fr:idm:* does not grant openidm-admin.";
+
+fn idm_caller_view(login: &serde_json::Value, tokeninfo: &serde_json::Value) -> Result<IdmCaller> {
+    let component = login
+        .pointer("/authorization/component")
+        .and_then(serde_json::Value::as_str)
+        .filter(|component| !component.is_empty())
+        .ok_or_else(|| Error::Config("openidm/info/login has no authorization.component".into()))?
+        .to_string();
+    let roles_value = login
+        .pointer("/authorization/roles")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| Error::Config("openidm/info/login has no authorization.roles".into()))?;
+    let mut roles = Vec::with_capacity(roles_value.len());
+    for role in roles_value {
+        let Some(role) = role.as_str() else {
+            return Err(Error::Config(
+                "openidm/info/login authorization.roles has a non-string entry".into(),
+            ));
+        };
+        roles.push(role.to_string());
+    }
+    let scopes = tokeninfo_scopes(tokeninfo)?;
+    let admin_role = roles.iter().any(|role| role == IDM_ADMIN_ROLE);
+    Ok(IdmCaller {
+        component,
+        roles,
+        scopes,
+        admin_role,
+        note: IDM_ADMIN_NOTE,
+    })
+}
+
+fn tokeninfo_scopes(tokeninfo: &serde_json::Value) -> Result<Vec<String>> {
+    match tokeninfo.get("scope") {
+        Some(serde_json::Value::Array(items)) => {
+            let mut scopes = Vec::with_capacity(items.len());
+            for scope in items {
+                let Some(scope) = scope.as_str() else {
+                    return Err(Error::Config(
+                        "tokeninfo scope has a non-string entry".into(),
+                    ));
+                };
+                scopes.push(scope.to_string());
+            }
+            Ok(scopes)
+        }
+        Some(serde_json::Value::String(text)) => {
+            Ok(text.split_whitespace().map(str::to_string).collect())
+        }
+        Some(_) => Err(Error::Config(
+            "tokeninfo scope is neither a list nor a string".into(),
+        )),
+        None => Err(Error::Config("tokeninfo has no scope".into())),
+    }
+}
+
+fn render_idm_caller(view: &IdmCaller) -> String {
+    let mut out = format!("component: {}\nroles:\n", view.component);
+    for role in &view.roles {
+        out.push_str(&format!("  {role}\n"));
+    }
+    out.push_str("scopes:\n");
+    for scope in &view.scopes {
+        out.push_str(&format!("  {scope}\n"));
+    }
+    let presence = if view.admin_role { "present" } else { "absent" };
+    out.push_str(&format!("admin role: {presence}\n{IDM_ADMIN_NOTE}\n"));
+    out
+}
+
+async fn whoami_idm(tenant: &str, json: bool) -> Result<()> {
+    let login = crate::aic::api::get(tenant, "/openidm/info/login").await?;
+    let tokeninfo = crate::aic::api::get(tenant, "/am/oauth2/realms/root/tokeninfo").await?;
+    let view = idm_caller_view(&login, &tokeninfo)?;
+    if json {
+        print_json(&view)
+    } else {
+        print!("{}", render_idm_caller(&view));
+        Ok(())
+    }
+}
+
 async fn whoami(
     tenant_arg: Option<String>,
     token_only: bool,
     host_arg: Option<String>,
     json: bool,
     min_ttl: Option<u32>,
+    idm: bool,
 ) -> Result<()> {
+    if idm && (token_only || min_ttl.is_some()) {
+        return Err(Error::Config(
+            "whoami --idm prints no token and does not take --token or --min-ttl".into(),
+        ));
+    }
     // Before any mint: a floor the tenant cannot satisfy must not touch the agent.
-    let min_ttl_secs = token_floor(token_only, min_ttl)?;
+    let min_ttl_secs = if idm {
+        None
+    } else {
+        token_floor(token_only, min_ttl)?
+    };
     let cfg =
         ProjectConfig::load()?.ok_or_else(|| Error::Config("no .aic/config.toml here".into()))?;
     let contexts: Vec<(&str, &str)> = cfg
@@ -1758,6 +1875,9 @@ async fn whoami(
             identity::custom_domains(&tenant)
         })
         .await?;
+    }
+    if idm {
+        return whoami_idm(&tenant, json).await;
     }
     let operator = operator::resolve(&settings, tenant_config, NetworkAccess::Skip).await;
 
@@ -2269,13 +2389,91 @@ mod tests {
                 min_ttl,
                 host,
                 tenant,
+                idm,
             }) => {
                 assert!(json && token);
+                assert!(!idm);
                 assert_eq!(min_ttl, Some(120));
                 assert!(host.is_none() && tenant.is_none());
             }
             other => panic!("expected whoami, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn whoami_idm_refuses_to_combine_with_a_token_print() {
+        let error = Cli::try_parse_from(["aic", "whoami", "--idm", "--token"]).unwrap_err();
+        let text = error.to_string();
+        assert!(text.contains("--idm") && text.contains("--token"), "{text}");
+        let error = Cli::try_parse_from(["aic", "whoami", "--idm", "--min-ttl", "30"]).unwrap_err();
+        assert!(error.to_string().contains("--min-ttl"));
+        let cli = Cli::try_parse_from(["aic", "whoami", "--idm", "--json"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Whoami {
+                idm: true,
+                json: true,
+                token: false,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn idm_caller_view_names_the_component_and_drops_ids_and_the_token() {
+        let login = serde_json::json!({
+            "_id": "login-id-should-not-appear",
+            "authenticationId": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+            "authorization": {
+                "component": "managed/svcacct",
+                "id": "ffffffff-1111-2222-3333-444444444444",
+                "roles": [
+                    "internal/role/openidm-svcacct",
+                    "internal/role/openidm-authorized"
+                ]
+            }
+        });
+        let tokeninfo = serde_json::json!({
+            "access_token": "bearer-for-test",
+            "sub": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+            "scope": ["fr:idm:*", "fr:am:*"]
+        });
+        let view = super::idm_caller_view(&login, &tokeninfo).unwrap();
+        assert_eq!(view.component, "managed/svcacct");
+        assert!(!view.admin_role);
+        assert_eq!(view.scopes, ["fr:idm:*", "fr:am:*"]);
+        let body = serde_json::to_string(&view).unwrap();
+        let rendered = super::render_idm_caller(&view);
+        for secret in [
+            "bearer-for-test",
+            "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+            "ffffffff-1111-2222-3333-444444444444",
+            "login-id-should-not-appear",
+        ] {
+            assert!(!body.contains(secret), "{secret} leaked into json");
+            assert!(!rendered.contains(secret), "{secret} leaked into text");
+        }
+        assert!(rendered.contains(
+            "A management scope is not the IDM admin role. fr:idm:* does not grant openidm-admin."
+        ));
+        assert!(rendered.contains("admin role: absent"));
+
+        let admin = serde_json::json!({
+            "authorization": {
+                "component": "internal/user",
+                "roles": ["internal/role/openidm-admin"]
+            }
+        });
+        let from_string = serde_json::json!({ "scope": "fr:idm:*  fr:am:*" });
+        let view = super::idm_caller_view(&admin, &from_string).unwrap();
+        assert!(view.admin_role);
+        assert_eq!(view.scopes, ["fr:idm:*", "fr:am:*"]);
+        assert!(super::render_idm_caller(&view).contains("admin role: present"));
+
+        let missing = serde_json::json!({"authorization": {"roles": []}});
+        assert!(super::idm_caller_view(&missing, &from_string).is_err());
+        let bad_scope = serde_json::json!({"scope": 1});
+        assert!(super::idm_caller_view(&login, &bad_scope).is_err());
     }
 
     use super::*;

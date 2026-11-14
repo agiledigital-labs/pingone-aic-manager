@@ -71,6 +71,29 @@ a JWK at account creation).
   no token.
 - `scope` may be a re-ordered subset of requested scopes — compare as a set.
 
+## Who the service-account token is inside IDM (verified 2026-11-14)
+
+`GET /openidm/info/login` with the service-account bearer returns 200. The
+object has `_id`, `authenticationId`, and `authorization`. `authorization`
+has `component`, `id`, and `roles`. On this call `component` was
+`managed/svcacct` and `roles` were `internal/role/openidm-svcacct` and
+`internal/role/openidm-authorized`. `openidm-admin` was not among them. The
+same component and roles were recorded on 2026-08-10 in
+[19-config-access.md](19-config-access.md); this call reconfirms them.
+
+`GET /am/oauth2/realms/root/tokeninfo` with the same bearer returns 200,
+with or without `Accept-API-Version: resource=1.0`. `scope` is a JSON array.
+This call's array was `fr:am:*`, `fr:idc:esv:*`, `fr:idm:*`,
+`fr:idc:cookie-domain:*`, `fr:idc:promotion:*`. The same names also appear
+as top-level keys. A whitespace-separated `scope` string is the other shape
+worth accepting. The body includes `access_token`; do not log it, and do not
+log `authenticationId`, `authorization.id`, `sub`, or `_id`.
+
+`aic whoami --idm` prints the component, the roles, and that `scope` list,
+and states that a management scope is not the IDM admin role. `--json` adds
+`admin_role`, which is true only when the roles include
+`internal/role/openidm-admin`.
+
 ## Scopes (observed working in sandbox)
 
 | Scope                    | Grants                                                           |
