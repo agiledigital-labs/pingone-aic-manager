@@ -5,7 +5,7 @@ use std::fs::File;
 use std::io::{self, Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd};
 use std::os::unix::ffi::OsStrExt;
-use std::path::{Component, Path};
+use std::path::{Component, Path, PathBuf};
 
 pub(super) struct Directory(File);
 
@@ -60,22 +60,27 @@ impl Directory {
     }
 
     pub(super) fn root(path: &Path, create: bool) -> io::Result<Option<Self>> {
-        let absolute = std::path::absolute(path)?;
-        let mut dir = Self(File::open("/")?);
-        for component in absolute.components() {
-            match component {
-                Component::RootDir | Component::CurDir => continue,
-                Component::Normal(part) => match dir.child(Path::new(part), create) {
-                    Ok(child) => dir = child,
-                    Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
-                    Err(error) => return Err(error),
-                },
-                _ => {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        "invalid config directory",
-                    ));
+        // Resolve the operator's path with filesystem semantics (including
+        // symlinks and ..), then create only its missing suffix through fds.
+        let mut ancestor = std::path::absolute(path)?;
+        let mut missing = Vec::new();
+        let resolved = loop {
+            match ancestor.canonicalize() {
+                Ok(path) => break path,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                    let part = ancestor.components().next_back().ok_or(error)?;
+                    missing.push(part.as_os_str().to_owned());
+                    ancestor.pop();
                 }
+                Err(error) => return Err(error),
+            }
+        };
+        let mut dir = Self(File::open(resolved)?);
+        for part in missing.into_iter().rev() {
+            match dir.child(Path::new(&part), create) {
+                Ok(child) => dir = child,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+                Err(error) => return Err(error),
             }
         }
         Ok(Some(dir))
@@ -117,27 +122,74 @@ impl Directory {
         file.write_all(bytes)
     }
 
-    pub(super) fn replace(&self, leaf: &Path, bytes: &[u8]) -> io::Result<()> {
-        let temporary = format!(".aic-export-{}", uuid::Uuid::new_v4());
-        self.create_new(Path::new(&temporary), bytes)?;
-        let src = name(Path::new(&temporary))?;
+    pub(super) fn stage(&self, bytes: &[u8]) -> io::Result<Staged<'_>> {
+        let temporary = PathBuf::from(format!(".aic-export-{}", uuid::Uuid::new_v4()));
+        let mut file = self.open(&temporary, libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL)?;
+        let staged = Staged {
+            parent: self,
+            temporary,
+        };
+        file.write_all(bytes)?;
+        Ok(staged)
+    }
+}
+
+pub(super) struct Staged<'a> {
+    parent: &'a Directory,
+    temporary: PathBuf,
+}
+
+impl Staged<'_> {
+    pub(super) fn install(&self, leaf: &Path, expected: Option<&[u8]>) -> io::Result<()> {
+        let current = match self.parent.read(leaf) {
+            Ok(bytes) => Some(bytes),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+            Err(error) => return Err(error),
+        };
+        if current.as_deref() != expected {
+            return Err(io::Error::other("export target changed before install"));
+        }
+        #[cfg(test)]
+        super::replacement_hook("before rename");
+        let src = name(&self.temporary)?;
         let dst = name(leaf)?;
-        // SAFETY: both names are NUL-terminated and relative to this live fd.
-        let result = unsafe {
-            libc::renameat(
-                self.0.as_raw_fd(),
-                src.as_ptr(),
-                self.0.as_raw_fd(),
-                dst.as_ptr(),
-            )
+        let fd = self.parent.0.as_raw_fd();
+        let result = if expected.is_none() {
+            // No fallback to an overwriting rename: unsupported platforms or
+            // filesystems fail closed, leaving the destination untouched.
+            #[cfg(target_os = "linux")]
+            {
+                // SAFETY: names are NUL-terminated and fd remains alive.
+                unsafe {
+                    libc::renameat2(fd, src.as_ptr(), fd, dst.as_ptr(), libc::RENAME_NOREPLACE)
+                }
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    "atomic no-replace export install is unavailable on this platform",
+                ));
+            }
+        } else {
+            // SAFETY: names are NUL-terminated and fd remains alive. The bytes
+            // were compared after staging and backup, immediately above.
+            unsafe { libc::renameat(fd, src.as_ptr(), fd, dst.as_ptr()) }
         };
         if result < 0 {
-            let error = io::Error::last_os_error();
-            unsafe {
-                libc::unlinkat(self.0.as_raw_fd(), src.as_ptr(), 0);
-            }
-            return Err(error);
+            return Err(io::Error::last_os_error());
         }
         Ok(())
+    }
+}
+
+impl Drop for Staged<'_> {
+    fn drop(&mut self) {
+        if let Ok(name) = name(&self.temporary) {
+            // SAFETY: unlink only our unique staging name under its live fd.
+            unsafe {
+                libc::unlinkat(self.parent.0.as_raw_fd(), name.as_ptr(), 0);
+            }
+        }
     }
 }
