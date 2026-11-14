@@ -312,23 +312,29 @@ pub fn no_orphans(object: &str, key: &str, column: &str, records: &[String]) -> 
 /// `genericMapping`. A record created through that object before IDM activates
 /// the new mapping lands in the old generic store and becomes unreadable once
 /// it does; reverting the mapping exposes it again. Seen on a client tenant
-/// (2026-11-03); how long activation takes is unmeasured, so this warns rather
-/// than waits.
+/// (2026-11-03). How long activation takes was not measurable on the sandbox
+/// (2026-11-14), so the command warns unless `--wait-activation` probes.
 pub fn activation_warning(addition: &Addition) -> Option<String> {
-    if addition.added_types.is_empty() {
+    activation_warning_for(&addition.added_types.keys().cloned().collect::<Vec<_>>())
+}
+
+pub(crate) fn activation_warning_for(objects: &[String]) -> Option<String> {
+    if objects.is_empty() {
         return None;
     }
-    let objects: Vec<String> = addition
-        .added_types
-        .keys()
+    let mut names: Vec<String> = objects
+        .iter()
         .map(|object| format!("managed/{object}"))
         .collect();
+    names.sort();
+    names.dedup();
     Some(format!(
         "warning: {} now {} its own config/repo.ds mapping. Until IDM activates it, a record \
          created there can land in the old generic store and become unreadable once it does. \
-         How long that takes is unmeasured: wait before creating records, then read one back",
-        objects.join(" and "),
-        if objects.len() == 1 { "has" } else { "have" }
+         How long that takes is unmeasured: wait before creating records, then read one back. \
+         `--wait-activation` writes a probe record and reads it back",
+        names.join(" and "),
+        if names.len() == 1 { "has" } else { "have" }
     ))
 }
 
@@ -387,6 +393,7 @@ mod tests {
             warning.contains("managed/a and managed/b now have"),
             "{warning}"
         );
+        assert!(warning.contains("--wait-activation"), "{warning}");
 
         let mut existing = repo();
         existing["resourceMapping"]["genericMapping"]["managed/a"] = json!({"properties": {}});

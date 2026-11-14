@@ -77,6 +77,41 @@ public final class HostOps extends BaseFunction {
   private Object dispatch(Context cx, Scriptable scope, Object[] args) throws Exception {
     String op = (String) Context.jsToJava(args[0], String.class);
     switch (op) {
+      // A context can refuse unmeasured writes to one of its scalar bindings.
+      case "guardBinding": {
+        ScriptContextScope target = (ScriptContextScope) args[1];
+        target.guardBinding(Context.toString(args[2]), (Function) args[3]);
+        return org.mozilla.javascript.Undefined.instance;
+      }
+      // A context measured only selected scalar properties of this object.
+      // Unknown reads and writes must be tallied, even if a script catches them.
+      case "measuredView": {
+        final Scriptable target = (Scriptable) args[1];
+        final Function fault = (Function) args[2];
+        final Scriptable callbackScope = scope;
+        ScriptableObject view = new ScriptableObject() {
+          @Override public String getClassName() { return "Object"; }
+          private Object deny(String member) {
+            return fault.call(Context.getCurrentContext(), callbackScope, target,
+                new Object[] {member});
+          }
+          @Override public Object get(String name, Scriptable start) {
+            return target.has(name, target) ? target.get(name, target) : deny(name);
+          }
+          @Override public Object get(int index, Scriptable start) {
+            return target.has(index, target) ? target.get(index, target) : deny("[" + index + "]");
+          }
+          @Override public void put(String name, Scriptable start, Object value) { deny(name); }
+          @Override public void put(int index, Scriptable start, Object value) { deny("[" + index + "]"); }
+          @Override public void delete(String name) { deny(name); }
+          @Override public void delete(int index) { deny("[" + index + "]"); }
+          @Override public Object[] getIds() { deny("enumeration"); return new Object[0]; }
+          @Override public Object getDefaultValue(Class<?> hint) { return deny("valueOf"); }
+        };
+        view.setParentScope(scope);
+        view.setPrototype(null);
+        return view;
+      }
       // A real java.util.ArrayList holding a script array's elements, presented as AIC presents
       // a list (java/SequenceFacade.java). A script string is stored as a Java string, so the
       // list's own contains(), indexOf() and toString() answer as Java does; a script object is

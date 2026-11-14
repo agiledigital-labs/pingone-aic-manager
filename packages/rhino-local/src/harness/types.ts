@@ -162,6 +162,13 @@ export interface SuiteSpec<TSchema extends z.ZodType> {
   name: string;
   /** Local-only binding name; defaults to `name`. AIC uses its uploaded name. */
   scriptName?: string;
+  /**
+   * Rhino source name for this script: its path or id. Stable across tests
+   * and callback steps, so the subject compiles once per script and stack
+   * traces name this file. Defaults to `name`. Not the per-test name, and
+   * not `scriptName` (that binding can change per run).
+   */
+  sourceName?: string;
   /** Author source, already loaded. */
   script: string;
   /** The outcome vocabulary. Required here — a lease has to declare it. */

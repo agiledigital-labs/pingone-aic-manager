@@ -55,6 +55,14 @@ library bodies; a missing id throws naming `given.libraries`), and an inert
 `JavaImporter`. End-to-end cases live
 in `cases/`.
 
+## Supported engines
+
+Next-gen (evaluator 2.0) scripts only. A case with `given.engine: "legacy"` is
+refused at validation with fault id `case-invalid/engine-legacy`, and that
+refusal is a row in the fault tally. Every other case-validation refusal is a
+row too, one id per kind (`case-invalid/unknown-key`, `case-invalid/required`,
+and the rest of `case-invalid/`), counted the same way an emulation fault is.
+
 ## Breaking change: the legacy (V1) script engine is no longer emulated
 
 The emulator runs next-gen scripts only. Legacy decision nodes and the legacy
@@ -64,9 +72,9 @@ patched, and the emulator is moving its next-gen bindings onto real Java, so a
 second engine would be a second mechanism to maintain.
 
 - A case with `given.engine: "legacy"` fails `validateCase` / `defineCase` /
-  `runCase` at once, with a message naming the removal. It never falls through
-  to next-gen. Drop `given.engine` (or leave it as `"next-gen"`) after
-  upgrading the script.
+  `runCase` at once, with fault id `case-invalid/engine-legacy` and a message
+  naming the removal. It never falls through to next-gen. Drop `given.engine`
+  (or leave it as `"next-gen"`) after upgrading the script.
 - `ENGINES` is now `["next-gen"]` and `Engine` is `"next-gen"`.
 - The legacy-only bindings are gone: `sharedState`/`transientState` on a
   decision node, the legacy `JsonValue` construction route and `UserInfoClaims`
@@ -296,20 +304,27 @@ also writes the tally as JSON, even when it is empty. The default path is
 `AIC_SCRIPT_TESTER_STATE_DIR` or else `<project>/.aic-script-tester`. Set
 `AIC_SCRIPT_TESTER_FAULT_TALLY` to write it somewhere else. The tally covers
 every file, worker and pooled JVM in the run, and each fault is attributed to
-the case whose job raised it. Missing journey and IDM behaviour that has no id
+the case whose job raised it. A validation refusal from a nested suite's
+`beforeAll` is attributed to that suite: the hook's error is stored on the
+suite and its tests are skipped. Missing journey and IDM behaviour that has no id
 yet is listed separately, under its cause text. In watch mode with
 `isolate: false` the audit history spans reruns, so a rerun's tally can count
 cases from earlier runs; read the tally from a plain `vitest run`.
 
 ```json
-{ "version": 1, "harness": "0.4.0-emulator.1",
+{ "version": 1, "harness": "0.4.0-emulator.2 (commit unknown)",
   "faults": [{ "id": "script-defect/send-body-js-date", "cases": 2, "failed": 2,
                "files": ["test/a.test.ts", "test/b.test.ts"], "message": "…" }],
   "unidentified": [] }
 ```
 
-`harness` is the version of this package that ran the suite; the summary's
-heading names it too, so a pasted tally says which build produced it.
+`harness` is the version of this package and the commit of the packed tree:
+`<version> (<commit>)`, or `<version> (<commit>-dirty)` when that tree was
+dirty. A checkout that has not been packed prints `<version> (commit unknown)`
+and does not ask git. A pack whose tree has no git metadata (no `.git`, or git
+absent) still finishes, and that build prints `(commit unknown)`. The summary's
+heading names the same string, so a pasted tally says which build produced it.
+The timing summary and the benchmark print it too.
 `failed` is the number of cases the fault failed. The rest declared it on
 purpose with `expectHarnessFault(id)`, which is how a test that exercises the
 refusal itself asserts it:
@@ -415,6 +430,15 @@ IDM field name (`userName`, `frUnindexedString1`, …) to `setAttribute` or
 what AM stores for an unknown name is unmeasured. After `store()` the same
 wrapper and a fresh `getIdentity` see the new values at once; without
 `store()` nothing persists, matching AIC.
+
+On `OAUTH2_ACCESS_TOKEN_MODIFICATION` the bound `identity` records the same
+effect. `setAttribute(name, values)` does not change `getAttributeValues`
+until `store()`. `store()` writes one entry per attribute,
+`{ identity, attribute, values }`, where `identity` is `identity.getName()`
+(the fixture's `given.identity.name`) and `values` are the strings the script
+passed. Starting values are `given.identity.attributes`. `addAttribute` on
+that binding is unmeasured and faults. This path does not use the IDM layouts
+below.
 
 `store()` lays each attribute out in IDM as measured on AIC
 (`docs/api/14-am-identity-attributes.md`, "What `store()` writes"):
@@ -651,7 +675,8 @@ the missing channels marked unobserved. What the harness hands *to* your code
 (`RunResult`, `StepResult`, `CheckContext`, `StepContext`, `BeforeRunContext`)
 stays complete, so a test that builds one of those by hand needs the new
 fields. The one deliberate widening is `EvidenceChannel`, which gained
-`"accessToken"` and `"oidc"` for the access-token and OIDC claims contexts, so an
+`"accessToken"`, `"oidc"`, `"socialIdp"`, `"configProvider"`,
+`"validateScope"`, `"mayAct"`, `"returns"` and `"nameId"` for the added contexts, so an
 exhaustive `switch` over it written against 0.1.2 needs new arms. `test/compat/consumer-0.1.2.ts` holds this line: it compiles every
 0.1.2 export's shape against the current one, and `npm run typecheck` fails on
 any new break.
@@ -887,6 +912,13 @@ name to the local runner for the same comparison.
 suite with explicit `scriptName` fails setup in both modes. Use an explicit
 `scriptName` only for suites that are always local-only.
 
+`sourceName` is the name the subject compiles under: the script's path or id.
+It defaults to the suite `name`, and it is shared by every test and callback
+step, so a suite compiles the subject once. Stack traces and parse errors name
+that file. The test or step name stays on the verdict and on the timing row.
+`scriptName` is the binding the script reads; changing it does not change the
+compile name.
+
 `cookieName` follows the same fixed-tenant rule. Local-only suites can set it
 in `always`, with `.cookieName(name)`, or in `beforeRun` via
 `request.cookieName`. With `aicWhenEnabled()`, any explicit author value is
@@ -1082,6 +1114,13 @@ headers and the request URI.
 `fields` and `responseFields` (added/changed/removed, as for state buckets),
 `scope` (compared as a set), `expiryTime`, `nonce`, `authLevel`, `claims`,
 `act`, `mayAct` and `permissions` (each a value or a matcher), and `issued`.
+`aud` is a field on that map. It starts as the client id when the audience has
+one element (the default), as the audience array when it has several, and
+absent when the audience is empty. `setField("aud", value)` sets a string or a
+non-empty array of strings, and `null` removes the claim. Declare that change
+in `fields`. `getAudience()` reads the claim back (a string is a one-element
+list, an array is its elements, a missing claim is empty). `getCustomFields()`
+does not list `aud`. There is no `removeField`.
 Any change the case does not declare fails the verdict, as every other channel
 does, unless `allowUndeclared: { accessToken: true }`. `issued` defaults to
 `true`. A script can return normally and still leave AM unable to issue the
@@ -1446,6 +1485,79 @@ token-exchange entry points were not measured.
 A may-act case runs locally only. The types are exported from `./case`:
 `MayActCaseInit`, `MayActExpect` and the recorded `MayActEffect`.
 
+### SAML2 NameID mapper scripts
+
+`context: "SAML2_NAMEID_MAPPER"` runs the remote service provider's NameID
+mapper (next-gen). The assertion's NameID text is the script's completion
+value when that value is a nonempty string. A completion of `undefined` fails SSO with
+`Could not generate NameID`. A thrown script fails the run (`CaseRunError`)
+and the message contains the thrown value. Measured 2026-11-14
+(`docs/api/12-script-bindings-matrix.md`).
+
+```ts
+defineCase({
+  name: "returns a stable NameID",
+  context: "SAML2_NAMEID_MAPPER",
+  script, // next-gen: the last expression is the NameID text
+  given: {
+    identity: {
+      name: "subject-id",
+      attributes: { mail: ["user@example.com"] },
+    },
+  },
+  expect: { nameId: { value: "user@example.com" } },
+});
+```
+
+**Fixtures.** `given.nameId` seeds `format` (default the email URN
+`urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress`), `remoteEntityId`
+(default `http://localhost/sp`), `hostedEntityId` (default
+`https://idp.example.com`) and `mappedValue`. `identity` seeds `name`
+(default `"subject"`), `exists` (default `true`) and `attributes`. The only
+attribute the measurement read is one `mail` string, so the context-specific
+`NameIdIdentitySeed` type accepts only `attributes: { mail: [string] }` and
+omits `universalId`. Other attributes and mail cardinalities are rejected
+at validation too. `mappedValue` defaults to that mail string. `loggerScriptId` and `cookieName` are accepted
+too. `realm` defaults to `"/alpha"`.
+
+**Assertions.** `expect.nameId.value` is the NameID text. Omitting it on a
+success is a mismatch unless `allowUndeclared: { nameId: true }`. `format` is
+compared only when declared. `accepted: false` expects the measured void
+failure and cannot be combined with `value`; `refusal` then names the text
+(`Could not generate NameID` on a completion of `undefined`), and omitting
+`refusal` is a mismatch unless `allowUndeclared.nameId` is set.
+
+**Bindings.** Only measured members are emulated (2026-11-14):
+
+- `nameIDScriptHelper.getNameIDValue()` returns `mappedValue` (the mail
+  string in the measured email-format case). `getNameIDFromSession()` returns
+  `null`. `shouldPersistNameIDFormat()` returns `false`. All three calls fault
+  outside the measured email format.
+  `createNameIdentifier` is present and calling it faults. The
+  `NAMEID_FORMAT_*` constants were not read in the live probe, so a
+  read faults. Unmeasured helper member reads fault, including capability
+  checks with `typeof`; the names measured as `undefined` still return it
+  (`class`, `equals`, `getClass`, `hashCode`, `notify`, `notifyAll`, `toString`,
+  `wait`, `nameIDFromSession` and `nameIDValue`).
+- `identity.exists()` and `identity.getName()` answer the fixture.
+  `getName()` in the measured SSO was the managed object's `_id`, not the
+  userName. `getAttributeValues("mail")` is a list of that one string.
+  `store`, `setAttribute`, `addAttribute` and `getUniversalId` fault, as do
+  unmeasured member reads such as `typeof identity.getAttributes`.
+- `nameIDFormat`, `remoteEntityId` and `hostedEntityId` are the seeded
+  strings. Assigning to `nameIDFormat` faults, including assignment of the
+  current value or an assignment whose exception the script catches.
+  `session` is an object; no member of it was read.
+  `logger.getName()` is
+  `scripts.SAML2_NAMEID_MAPPER.<script id>.(<script name>)`.
+
+An unmeasured member or a completion other than a nonempty string or `undefined`
+raises `saml2-nameid-mapper-unmeasured/<binding>.<member>`.
+
+A NameID mapper case runs locally only. The types are exported from `./case`:
+`NameIdCaseInit`, `NameIdIdentitySeed`, `NameIdSeed`, `NameIdExpect` and the
+recorded `NameIdEffect`.
+
 ### Library scripts
 
 `context: "LIBRARY"` calls an export of a next-gen library script directly.
@@ -1488,7 +1600,9 @@ bound. Present: `require`, `JavaImporter`, `exports`, `module`, `logger`,
 `jwtAssertion`, `jwtValidator`, `policy`, `realm`, `scriptName` and
 `cookieName`. The caller's own bindings (`nodeState`, `accessToken`, `scopes`,
 …) are not. `scriptName` and `logger.getName()` are the caller's, including
-inside a nested `require()`. `logger.getName()` is
+inside a nested `require()`. A caller variable named `logger` does not replace
+the library's `logger`: `var logger = require(lib).load(); logger.info(...)`
+logs once, through that logger. `logger.getName()` is
 `scripts.<caller context>.<script id>.(<script name>)`. `systemEnv.getProperty`
 of a missing key is `null`. `utils.base64.encode` and `openidm.read` of a
 missing id behave as they do for a decision node.
@@ -1530,6 +1644,9 @@ npx aic-script-tester-timing timing.jsonl        # --json for machine output
 npx aic-script-tester-timing --share timing.jsonl  # names replaced by hashes
 ```
 
+The summary's first line, and `harness` in `--json`, is the same build identity
+the fault tally prints.
+
 Every JVM spawn, pool lease and eval job appends one JSON line. A job row
 carries the bytes written (`lineBytes`), the source text shipped with it
 (`sourceBytes`, `sourcesShipped`), `stringifyMs`, `roundTripMs` and
@@ -1548,7 +1665,9 @@ not running its body.
 
 `outcome` is the script's own outcome, so a script that caught a harness
 refusal reads `"ok"`; `emulationFault` says whether the run failed the fault
-audit, and `faultIds` names the faults.
+audit, and `faultIds` names the faults. A `defineCase` or `validateCase`
+refusal is a job row with its fault id too, though no JVM ran. `runCase`
+validates through that same call, so one refusal is one row.
 
 The summary adds a table of module-body time per library and of JVM time per
 test source. `--share` replaces every library id and source name with a salted
@@ -1642,7 +1761,9 @@ start a JVM per lease as before.
 Within a JVM, the case prelude (generated mocks, identity policy, runtime) and
 each library body are compiled once and cached by content hash, and each
 distinct text crosses the pipe once per JVM, whichever lease, worker or file
-sends it: the pool hands each lease the hashes earlier leases shipped. A case therefore costs a few
+sends it: the pool hands each lease the hashes earlier leases shipped. The
+subject script is cached the same way, keyed by its text and its source name,
+so the tests and callback steps of one script compile it once. A case therefore costs a few
 milliseconds, plus executing the libraries it `require`s, however large the
 library map. `node bench/run.ts [--workers=N]` and `node bench/micro.ts`
 measure this on invented fixtures.
@@ -1650,7 +1771,10 @@ measure this on invented fixtures.
 Job shape (open enough to carry later mock bindings):
 
 - `source` / `sourceName` — author's script; `sourceName` is Rhino's source
-  name, so a parse error names the author's file and line, not `<eval>`
+  name, so a parse error names the author's file and line, not `<eval>`.
+  It is part of the compile cache key. A suite passes one stable `sourceName`
+  for every test and step; the test or step name is recorded on the timing
+  row instead
 - `engine` — `"am"` (default) or `"idm"`
 - `globals` — AM JSON values placed in ENGINE_SCOPE Bindings
 - `preamble` — evaluated first so concatenating mocks into `source` is not

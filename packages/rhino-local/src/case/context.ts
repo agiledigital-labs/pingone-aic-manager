@@ -14,6 +14,8 @@ import type {
   ValidateScopeExpect,
   ValidateScopeSeed,
   MayActExpect,
+  NameIdExpect,
+  NameIdSeed,
   LibraryExpect,
   LibrarySeed,
   LibraryCallerContext,
@@ -71,8 +73,9 @@ export const CONTEXT_ONLY_GIVEN: readonly GivenKey[] = [
   "socialIdp",
   "validateScope",
   "library",
+  "nameId",
 ];
-export const CONTEXT_ONLY_EXPECT: readonly ExpectKey[] = ["accessToken", "oidc", "socialIdp", "configProvider", "validateScope", "mayAct", "returns"];
+export const CONTEXT_ONLY_EXPECT: readonly ExpectKey[] = ["accessToken", "oidc", "socialIdp", "configProvider", "validateScope", "mayAct", "nameId", "returns"];
 export const CONTEXT_ONLY_ALLOW: readonly AllowUndeclaredChannel[] = [
   "accessToken",
   "oidc",
@@ -80,6 +83,7 @@ export const CONTEXT_ONLY_ALLOW: readonly AllowUndeclaredChannel[] = [
   "configProvider",
   "validateScope",
   "mayAct",
+  "nameId",
   "returns",
 ];
 
@@ -94,8 +98,8 @@ export const CONTEXTS: { readonly [K in ScriptContext]: ContextDeclaration } = {
   OAUTH2_ACCESS_TOKEN_MODIFICATION: {
     id: "OAUTH2_ACCESS_TOKEN_MODIFICATION",
     givenKeys: [...SHARED_GIVEN, "accessToken", "identity", "client", "scopes", "request"],
-    expectKeys: ["outcome", "accessToken", "openidm", "http", "logs", "allowUndeclared"],
-    allowUndeclared: ["accessToken", "openidmWrites", "openidmReads", "http", "logs"],
+    expectKeys: ["outcome", "accessToken", "openidm", "http", "logs", "identityWrites", "allowUndeclared"],
+    allowUndeclared: ["accessToken", "openidmWrites", "openidmReads", "http", "logs", "identityWrites"],
     hasOutcome: false,
   },
   OIDC_CLAIMS: {
@@ -153,6 +157,13 @@ export const CONTEXTS: { readonly [K in ScriptContext]: ContextDeclaration } = {
     givenKeys: [...SHARED_GIVEN, "loggerScriptId", "cookieName", "client", "request", "accessToken", "identity", "scopes"],
     expectKeys: ["outcome", "mayAct", "openidm", "http", "logs", "allowUndeclared"],
     allowUndeclared: ["mayAct", "openidmWrites", "openidmReads", "http", "logs"],
+    hasOutcome: false,
+  },
+  SAML2_NAMEID_MAPPER: {
+    id: "SAML2_NAMEID_MAPPER",
+    givenKeys: [...SHARED_GIVEN, "identity", "loggerScriptId", "cookieName", "nameId"],
+    expectKeys: ["outcome", "nameId", "openidm", "http", "logs", "allowUndeclared"],
+    allowUndeclared: ["nameId", "openidmWrites", "openidmReads", "http", "logs"],
     hasOutcome: false,
   },
   LIBRARY: {
@@ -460,6 +471,58 @@ export function parseValidateScopeExpect(raw: unknown, path: string): ValidateSc
   }
   if (out.granted !== undefined && (out.invalidScope !== undefined || out.accepted === false)) {
     throw new Error(`rhino-local: ${path}.granted cannot be declared with a refusal`);
+  }
+  return out;
+}
+
+const NAME_ID_SEED_KEYS = ["format", "remoteEntityId", "hostedEntityId", "mappedValue"] as const;
+
+/**
+ * The NameID mapper's scalars. `identity.universalId` and any attribute other
+ * than one `mail` value are refused here: those calls were not measured, and
+ * a fixture the overlay cannot serve must not validate.
+ */
+export function checkNameIdIdentity(identity: IdentitySeed | undefined, path: string): void {
+  if (identity?.universalId !== undefined) {
+    throw new Error(`rhino-local: ${path}.universalId was not measured in this context`);
+  }
+  const attributes = identity?.attributes;
+  if (attributes === undefined) return;
+  const keys = Object.keys(attributes);
+  if (keys.length === 0) return;
+  const mail = attributes.mail;
+  if (keys.length !== 1 || keys[0] !== "mail" || mail === undefined || mail.length !== 1) {
+    throw new Error(
+      `rhino-local: ${path}.attributes only accepts { mail: [one string] }; that is the call that was measured`
+    );
+  }
+}
+
+export function parseNameIdSeed(raw: unknown, path: string): NameIdSeed {
+  const obj = plain(raw, path, NAME_ID_SEED_KEYS);
+  const out: NameIdSeed = {};
+  for (const key of NAME_ID_SEED_KEYS) {
+    if (obj[key] !== undefined) out[key] = str(obj[key], `${path}.${key}`);
+  }
+  return out;
+}
+
+export function parseNameIdExpect(raw: unknown, path: string): NameIdExpect {
+  const obj = plain(raw, path, ["value", "format", "accepted", "refusal"]);
+  const out: NameIdExpect = {};
+  if (obj.value !== undefined) out.value = str(obj.value, `${path}.value`);
+  if (obj.format !== undefined) out.format = str(obj.format, `${path}.format`);
+  if (obj.accepted !== undefined) {
+    if (typeof obj.accepted !== "boolean") throw new Error(`rhino-local: ${path}.accepted must be a boolean`);
+    out.accepted = obj.accepted;
+  }
+  if (obj.refusal !== undefined) out.refusal = str(obj.refusal, `${path}.refusal`);
+  if (out.accepted === false) {
+    if (out.value !== undefined) {
+      throw new Error(`rhino-local: ${path} cannot declare value together with accepted: false`);
+    }
+  } else if (out.value === undefined) {
+    throw new Error(`rhino-local: ${path}.value is required unless accepted is false`);
   }
   return out;
 }

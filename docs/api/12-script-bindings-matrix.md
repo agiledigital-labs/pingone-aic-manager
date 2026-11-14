@@ -1783,7 +1783,7 @@ afterwards. `identity.getAttributes()` was never called.
 | Binding | Present | Notes |
 | --- | --- | --- |
 | `accessToken` | yes | `AccessTokenScriptWrapper`. Getters return JS strings and numbers: `getClientId() === "<id>"` is `true`. |
-| `identity` | yes | `ScriptedIdentityScriptWrapper`: `getName`, `getUniversalId`, `exists()`, `getAttributeValues` (a list; `[]` for an attribute it lacks). `getAttribute` and `isExists` are `Cannot find function`. |
+| `identity` | yes | `ScriptedIdentityScriptWrapper`: `getName`, `getUniversalId`, `exists()`, `getAttributeValues` (a list; `[]` for an attribute it lacks). `getAttribute` and `isExists` are `Cannot find function`. `setAttribute` and `store` on a password grant: verified 2026-11-14, below. |
 | `session` | **no** | Not bound at all: reading it is `ReferenceError: "session" is not defined.`, where legacy binds `null`. |
 | `scopes` | yes | A Java list: `size()`, `contains()`, `scopes[0]` and `length` work, and `add()` mutates it. |
 | `requestProperties` | yes | Four entries (`size()` is 4): `realm`, `requestHeaders`, `requestParams`, `requestUri`. Param and header values are lists; headers answer to lower and Title case. `requestParams` renders as JSON (`{ "grant_type": [ … ] }`). |
@@ -1814,6 +1814,85 @@ JSON one as the string given, not parsed. `setScope` takes a JS array or the
 token. `accessToken.getScope().add(…)` throws `InternalError: null`.
 `setExpiryTime(auth + 600000)` shortens both the JWT and the body's `expires_in`
 (599).
+
+#### `setField("aud")` (verified 2026-11-14)
+
+Next-gen `OAUTH2_ACCESS_TOKEN_MODIFICATION_NEXT_GEN` only, on a
+`client_credentials` grant, stateless token. Throwaway client `zzemuR3M-atm`
+(scope `zzemuR3M-scope`) and script `zzemuR3M-atm`. Fixtures
+`scripts/rhino-script-tester/fixtures-atm-ng/aud-*.script.js`, driven by
+`run-atm-probes.sh`. Each case also called `setField("zzemuR3Mctl", "ctl-ok")`.
+That claim was present on every issued token and every response was HTTP 200,
+so the script ran and a custom claim set the same way is issued.
+
+Before any write, `getField("aud")` is a string equal to the client id and
+`getAudience()` is a one-element JavaList of that same id. The issued `aud`
+is that string. `typeof accessToken.removeField` is `undefined`.
+
+| Call | Throws | Issued `aud` |
+| --- | --- | --- |
+| `setField("aud", "zzemuR3M-aud")` | no; returns `undefined` | the string `zzemuR3M-aud` |
+| `setField("aud", ["zzemuR3M-aud"])` | no; returns `undefined` | a one-element JSON array of that string |
+| `setField("aud", ["zzemuR3M-a", "zzemuR3M-b"])` | no; returns `undefined` | a two-element JSON array, that order |
+| `setField("aud", null)` | no; returns `undefined` | claim absent (not JSON `null`) |
+| `removeField("aud")` | `TypeError: Cannot find function removeField` | unchanged client-id string |
+
+After a string write, `getField("aud")` is that string and `getAudience()` is
+a one-element JavaList of it. After an array write, `getField` is that array
+and `getAudience()` is a JavaList of the same elements in the same order.
+After `null`, `getField` is `null` and `getAudience()` is an empty JavaList.
+`removeField` changes neither.
+
+A string is issued as a string, not wrapped in an array. An array is issued
+as an array. `null` removes the claim. There is no `removeField` method.
+
+In the probe claim, `length` of the array `getField` returns is `1.0` or
+`2.0`, while `getAudience().length` in the same claim is the integer `1` or
+`2`. String lengths in that claim stayed integers.
+
+The string overwrite agrees with the 2026-08-28 exchange measurement in
+`docs/api/22-token-exchange.md`. The array, `null`, and `removeField` cases
+were not part of that run.
+
+The throwaway client `zzemuR3M-atm` and script `zzemuR3M-atm` were deleted
+later the same day. The client re-read was HTTP 404 and the script was not
+on the tenant.
+
+#### `identity.setAttribute` and `identity.store` (verified 2026-11-14)
+
+Next-gen `OAUTH2_ACCESS_TOKEN_MODIFICATION_NEXT_GEN` on a password grant as
+managed user `zzemuR3M-user`, same throwaway client and script as the `aud`
+probe above (`zzemuR3M-atm`, stateless). Fixtures
+`scripts/rhino-script-tester/fixtures-atm-ng/identity-set-nostore.script.js`
+and `identity-set-store.script.js`. The attribute written was `description`.
+Each request also set `zzemuR3Mctl` to `ctl-ok`. Both responses were HTTP 200
+and that claim was present, so the script ran. Issued `aud` stayed the
+client-id string.
+
+`identity.exists()` is `true`. `getName()` is not the user's `userName`; the
+name's length is 36. `typeof identity.setAttribute` and
+`typeof identity.store` are both `"function"`. Before either write,
+`getAttributeValues("description")` is a one-element list
+`["zzemuR3M-baseline"]`.
+
+| Call | Throws | Same wrapper afterwards | Fresh managed read |
+| --- | --- | --- | --- |
+| `setAttribute("description", ["zzemuR3M-nostore"])`, no `store()` | no; returns `undefined` | still `["zzemuR3M-baseline"]` | `description` still `zzemuR3M-baseline`; `accountStatus` `active`; revision unchanged |
+| `setAttribute("description", ["zzemuR3M-stored"])` then `store()` | neither throws; both return `undefined`. Before `store()`, the wrapper still reads the baseline | after `store()`, `["zzemuR3M-stored"]` | `description` is `zzemuR3M-stored`; `accountStatus` `active`; revision changed |
+
+A JSON Patch replacing `/description` with `zzemuR3M-baseline` returned
+HTTP 200. A fresh managed read then showed that baseline, `accountStatus`
+`active`, and a revision that had moved again.
+
+`setAttribute` without `store()` does not persist and is not visible on the
+same wrapper. `store()` writes `description` through to a fresh managed read,
+and the same wrapper then reads the stored value. This is the decision-node
+rule in `docs/api/14-am-identity-attributes.md` (measured 2026-10-01). This
+context had not been measured before.
+
+The managed user `zzemuR3M-user` was deleted the same day, with `description`
+still `zzemuR3M-baseline`. A query for that `userName` returned `resultCount`
+0, and a read of the id returned 404.
 
 #### Legacy additions to the 2026-08-27 surface
 
@@ -2473,6 +2552,62 @@ were not used as callers. `OAUTH2_AUTHORIZE_ENDPOINT_DATA_PROVIDER` was not
 reached. `OAUTH2_SCRIPTED_JWT_ISSUER` still has no configuration hook.
 
 
+
+#### Rebinding `logger` around `require()` (verified 2026-11-14)
+
+Next-gen scripted decision, stored as `AUTHENTICATION_TREE_DECISION_NODE`
+with `evaluatorVersion` `2.0`. Throwaway journey `zzemuR3M-logger`, script
+`zzemuR3M-decision`, library `zzemuR3M-logger-lib` (`LIBRARY`, `2.0`).
+Fixtures `scripts/rhino-script-tester/fixtures/zzemuR3M-logger-*.script.js`
+and `zzemuR3M-logger-lib.lib.js`. The library is
+
+```javascript
+exports.load = function () {
+  return {
+    info: function (m) {
+      logger.info(m);
+    }
+  };
+};
+```
+
+The caller did `var logger = require("zzemuR3M-logger-lib").load();` and
+then `logger.info("zzemuR3M-shadow")`. The journey answered HTTP 200 and the
+hidden-value callback was `{ "ok": true, "result": "returned" }`. `aic logs
+tx` (`am-core`) has that message once, level INFO. The logger name is
+`scripts.AUTHENTICATION_TREE_DECISION_NODE.<decision script id>.(zzemuR3M-decision)`,
+which is the decision script.
+
+The library's `logger` stayed the library binding. `logger.info` wrote that
+one line and returned.
+
+Two controls on the same journey:
+
+- The caller named its variable `log` and called
+  `log.info("zzemuR3M-noshadow")`. HTTP 200, callback
+  `{ "ok": true, "result": "returned" }`. The message was logged once, level
+  INFO, under the same decision-script logger name.
+- The library evaluated `String(nodeState)`. HTTP 200. The callback's `error`
+  is `ReferenceError: "nodeState" is not defined.` and its `name` is
+  `ReferenceError`.
+  That is the unbound-name result already recorded above, so this run was in
+  library scope.
+
+The same rebinding was repeated on next-gen may-act
+(`OAUTH2_MAY_ACT_NEXT_GEN`, script `zzemuR3M-mayact`, fixture
+`fixtures-atm-ng/mayact-logger-shadow.mayact.js`), attached as
+`overrideOAuth2ClientConfig.accessTokenMayActScript` on client `zzemuR3M-atm`.
+The script has no `try`/`catch`. A `client_credentials` grant returned HTTP
+200. The message `zzemuR3M-mayact-shadow` was logged once, level INFO, logger
+`scripts.OAUTH2_MAY_ACT_NEXT_GEN.<may-act script id>.(zzemuR3M-mayact)`. The
+`log` rename and the `nodeState` read were not repeated on may-act. The
+client's access-token modification script for that request was the audience
+baseline, which returns on this grant.
+
+The journey, its decision node, the library, the decision script and the
+may-act script were deleted the same day. The tree re-read was HTTP 404, the
+node re-read was HTTP 404, and each script was not on the tenant.
+
 **Next-gen scripted decision sends callbacks by accumulation, not by an
 `action.send` (2026-08-25).** There is no `send` on the `action` binding at all;
 call `callbacksBuilder.<type>(…)` as many times as you like. If any callbacks
@@ -3006,6 +3141,73 @@ with and without a field list) three ways:
 So enumeration order is stable and serialisation order is not; a script or a
 test must not depend on the order of a serialised response.
 
+
+### SAML2 NameID mapper — next-gen (measured 2026-11-14)
+
+The context id is `SAML2_NAMEID_MAPPER` (evaluatorVersion 2.0). The script is
+not on the hosted IdP. It is the remote service provider's
+`serviceProvider.assertionProcessing.accountMapper.nameIDMapperScript`. When
+that field names a script, SP-initiated SSO runs it, and the assertion's
+NameID text is the script's completion value.
+
+Positive control, same second as a successful signed assertion: an `am-core`
+INFO line from logger `scripts.SAML2_NAMEID_MAPPER.<script id>.(<script name>)`,
+message `zzemuR3S-ran`. The NameID text was `zzemuR3S-nameid-return`, the
+script's completion value. The format was
+`urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress`, the format the SP
+requested. `getNameIDValue()` had already returned the user's mail
+`zzemuR3S@example.com`. That string is not the NameID.
+
+`nameIDScriptHelper` is an object. Each function has `.length === 0`:
+
+| Member | What the call did |
+| --- | --- |
+| `getNameIDValue()` | returned the mail string (the hosted IdP maps the email format to `mail`, one value) |
+| `getNameIDFromSession()` | returned `null` |
+| `shouldPersistNameIDFormat()` | returned `false` |
+| `createNameIdentifier` | present; not called |
+
+A `for...in` also listed `class`, `equals`, `getClass`, `hashCode`, `notify`,
+`notifyAll`, `toString`, `wait`, `nameIDFromSession` and `nameIDValue`. A
+bracket read of each is `undefined`. `NAMEID_FORMAT_TRANSIENT`,
+`NAMEID_FORMAT_PERSISTENT`, `NAMEID_FORMAT_UNSPECIFIED` and
+`NAMEID_FORMAT_EMAIL` were not enumerable and were not read.
+
+`identity` is an object. `exists()` is `true`. `getName()` is a string, the
+managed object's `_id`, not the userName. `getAttributeValues("mail")` is an
+object, `.length` is 1, and `[0]` is the mail string. `.size()` was not
+called. `store`, `setAttribute`, `addAttribute` and `getUniversalId` were not
+called.
+
+| Binding | Type | Value in this SSO |
+| --- | --- | --- |
+| `nameIDFormat` | string | the email format above |
+| `remoteEntityId` | string | the SP entity id, `http://localhost:18080/realms/zzemuR3S` |
+| `hostedEntityId` | string | the hosted IdP entity id, `https://zzemuR3S-idp.example.com` |
+
+`session` is bound (`typeof` `object`) even though the captured binding list
+does not name it. No member was read.
+
+| Script | What SSO did |
+| --- | --- |
+| completion `zzemuR3S-nameid-return` | assertion NameID text is that string; status Success |
+| no completion (INFO `zzemuR3S-ran-void` and `zzemuR3S-void-body` still logged) | HTTP 500, no assertion. `am-core` ERROR `Unable to do sso or federation.` The exception text includes `Could not generate NameID` |
+| INFO `zzemuR3S-ran-throw`, then `throw "zzemuR3S-boom"` | HTTP 500, no assertion. ERROR `Script 'zzemuR3S-nameid' with evaluatorVersion 2.0 in realm /alpha terminated with exception`. The exception text includes the thrown string. The same second also logs `Unable to do sso or federation.` |
+
+No helper setter was found. The NameID text is the completion value.
+
+Not measured: calling `createNameIdentifier`, reading a `NAMEID_FORMAT_*`
+constant, any `session` member, the identity writes and `getUniversalId`,
+`getAttributeValues` of anything other than one `mail` value, `getNameIDValue`
+for a format other than email, `getNameIDFromSession` returning a string,
+`shouldPersistNameIDFormat` returning `true`, a completion other than a string
+or `undefined` (the empty string was not sent), and whether the script can
+change the NameID format. The assertion's format was the binding, which was
+the format the SP requested.
+
+Probes: `scripts/rhino-script-tester/fixtures-saml/nameid-enumerate.script.js`,
+`nameid-void.script.js`, `nameid-throw.script.js`.
+
 ### AM script families (folder slugs)
 
 | Family                                  | Slug                   | `evaluatorVersion` | Library support                               | Bindings overlay                                                                |
@@ -3015,7 +3217,7 @@ test must not depend on the order of a serialised response.
 | Library                                 | `lib`                  | (next-gen)         | yes (CommonJS)                                | library + library-args (caller argument types)                                  |
 | OIDC claims                             | `oidc-claims`          | mixed              | next-gen only                                 | oidc-claims                                                                     |
 | OAuth2 (token mod, scope, jwt, dcr, …)  | `oauth2-*`             | mixed              | next-gen only (token mod verified 2026-07-29) | all next-gen OAuth2 contexts typed (2026-07-29); legacy token mod names its bindings as `any` (2026-08-26), other legacy ids shared globals only |
-| SAML2 (idp/sp adapter, mappers)         | `saml-*`               | mixed              | next-gen only                                 | per-context (future)                                                            |
+| SAML2 (idp/sp adapter, mappers)         | `saml-*`               | mixed              | next-gen only                                 | NameID mapper measured 2026-11-14; other SAML contexts still per-context (future) |
 | Social normalization/handler            | `social-*`             | mixed              | —                                             | per-context (future)                                                            |
 | Config provider / device match / policy | various                | mixed              | —                                             | shared globals only (today)                                                     |
 
@@ -3033,6 +3235,45 @@ IDM scripts are tenant-global (no realm). The IDM **endpoint**
 | `identityServer` | yes      | yes      | **D/V** | `getProperty(name, defaultValue?, substitute?)`; a missing ESV/property returns `null` when no default is supplied, or the supplied default. Endpoint behavior verified 2026-07-22 below.                                                                                                                                                           |
 | `request`        | yes      | no       | **V**   | Discriminated union per CREST method (read/create/update/patch/delete/action/query). `docs/api/11`.                                                                                                                                                                                                                                                 |
 | `context`        | yes      | no       | **V**   | `context.http` = {method,path,headers,parameters}; `context.security` = {authenticationId,authorization}; `context.oauth2` = {scopes (a `JavaSet` — use `.contains()`), rawInfo, token, expiresAt}, present only behind `rsFilter`; `rawInfo` is AM's 15-key introspection record (`client_id`, `user_id`, `exp`, …) — full table in `docs/api/11`. `context.http.headers` and `.parameters` are single-valued **strings**, unlike AM's lists — a duplicated query parameter is rejected with `400` before the script runs and a duplicated header is comma-joined (verified 2026-09-08; `docs/api/11`). |
+
+### `openidm.query` result and has-many arrays — IDM (verified 2026-11-14)
+
+A throwaway custom endpoint on the sandbox, created for this probe and deleted
+afterwards (the config read and the route were both 404), described each value
+with `Array.isArray`, `instanceof Array`, `Object.prototype.toString.call`,
+`typeof` of `map` / `some` / `length` / `size` / `get`, whether `map` is
+`Array.prototype.map`, what calling `map` returns, and whether `[].concat(v)`
+is a real array of the same elements. A JS array literal in the same script
+was the control.
+
+The values were `openidm.query("managed/alpha_user", { _queryFilter: "true",
+_pageSize: 2 }, ["_id"]).result` (two records), the `result` of
+`_queryFilter: "false"` (zero records), `roles` from `openidm.read` of a
+throwaway `alpha_user` holding one `alpha_role` and of one holding none, and
+`members` from a read of that role (one). Those records were removed before
+the request returned; a following query and read found none of them.
+
+| Probe | Query `result` (2 and 0) and the relationship arrays (`roles` 1 and 0, `members` 1) | JS array literal (3 and 0) |
+| ----- | ------------------------------------------------------------------------------------ | --------------------------- |
+| `Array.isArray` / `instanceof Array` | `true` / `true` | `true` / `true` |
+| `Object.prototype.toString.call` | `[object Array]` | `[object Array]` |
+| `typeof map`, `typeof some` | `"function"`, `"function"` | `"function"`, `"function"` |
+| `map === Array.prototype.map` | `true` | `true` |
+| calling `map` | an array of the same length | an array of the same length |
+| `typeof length` | `"number"`, the element count | `"number"` |
+| `typeof size`, `typeof get` | `"undefined"`, `"undefined"` | `"undefined"`, `"undefined"` |
+| `[].concat(v)` | a real array of the same length, elements equal | a real array of the same length, elements equal |
+| `JSON.stringify(v)` first character | `{` | `[` |
+| `JSON.stringify([].concat(v))` first character | `[` | `[` |
+
+IDM answers these probes the way a JS array does: `.map()` and `.some()` are
+the ordinary array methods, and `size` / `get` are absent. The next-gen AM
+table in this file (verified 2026-11-08) records that engine's list, where
+`Array.isArray` is false and `map` is undefined. `JSON.stringify` of the IDM
+list value itself begins with `{`, including when the list is empty; the same
+quirk is in `docs/api/24-idm-script-runtime.md`. `[].concat(v)` begins with
+`[`. The IDM workspace and the TypeScript endpoint declarations keep
+`ReadList<T> = T[]`, and a type test pins `.map()` as accepted.
 
 ### IDM `identityServer.getProperty` missing ESV behavior (verified 2026-07-22)
 

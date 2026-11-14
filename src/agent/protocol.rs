@@ -66,6 +66,11 @@ pub enum Request {
         tenant: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         min_ttl_secs: Option<u32>,
+        /// Mint a token that carries only these scopes, and do not cache it.
+        /// `None` is the normal cached token. An older daemon ignores this
+        /// field, which is why protocol v6 exists.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        scopes: Option<Vec<String>>,
     },
     /// Store or replace an encrypted vault artifact's per-tenant secret. `kind`
     /// names the artifact ([`crate::config::VaultArtifact::kind`], e.g.
@@ -133,6 +138,10 @@ pub enum Response {
     Token {
         access_token: String,
         expires_at: i64,
+        /// Scopes the token response said it issued. Set only for a
+        /// down-scoped mint; the cached-token path leaves it unset.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        scopes: Option<Vec<String>>,
     },
     /// Reply to `GetSecret` — the opaque JSON payload for `(kind, tenant)`.
     Secret {
@@ -225,7 +234,7 @@ mod tests {
 
         let actual = serde_json::to_value(&wire).expect("serialise");
         let expected = serde_json::json!({
-            "protocol_version": 5,
+            "protocol_version": 6,
             "op": "api_call",
             "tenant": "sandbox",
             "method": "PUT",
@@ -259,7 +268,7 @@ mod tests {
 
         let actual = serde_json::to_value(&wire).expect("serialise");
         let expected = serde_json::json!({
-            "protocol_version": 5,
+            "protocol_version": 6,
             "op": "api_call",
             "tenant": "sandbox",
             "method": "GET",
@@ -329,7 +338,14 @@ mod tests {
         .expect("a get_token with no floor is still a valid request");
 
         match decoded {
-            Request::GetToken { min_ttl_secs, .. } => assert_eq!(min_ttl_secs, None),
+            Request::GetToken {
+                min_ttl_secs,
+                scopes,
+                ..
+            } => {
+                assert_eq!(min_ttl_secs, None);
+                assert!(scopes.is_none());
+            }
             other => panic!("expected a get_token, got {other:?}"),
         }
     }
@@ -339,13 +355,43 @@ mod tests {
         let wire = serde_json::to_value(WireRequest::current(Request::GetToken {
             tenant: "sandbox".into(),
             min_ttl_secs: Some(840),
+            scopes: None,
         }))
         .expect("serialises");
 
         assert_eq!(wire["min_ttl_secs"], 840);
+        assert!(wire.get("scopes").is_none());
 
         match serde_json::from_value::<Request>(wire).expect("round trips") {
-            Request::GetToken { min_ttl_secs, .. } => assert_eq!(min_ttl_secs, Some(840)),
+            Request::GetToken {
+                min_ttl_secs,
+                scopes,
+                ..
+            } => {
+                assert_eq!(min_ttl_secs, Some(840));
+                assert!(scopes.is_none());
+            }
+            other => panic!("expected a get_token, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn get_token_round_trips_a_downscoped_request() {
+        let wire = serde_json::to_value(WireRequest::current(Request::GetToken {
+            tenant: "sandbox".into(),
+            min_ttl_secs: None,
+            scopes: Some(vec!["fr:am:*".into()]),
+        }))
+        .expect("serialises");
+
+        assert_eq!(wire["protocol_version"], 6);
+        assert_eq!(wire["scopes"], serde_json::json!(["fr:am:*"]));
+        assert!(wire.get("min_ttl_secs").is_none());
+
+        match serde_json::from_value::<Request>(wire).expect("round trips") {
+            Request::GetToken { scopes, .. } => {
+                assert_eq!(scopes, Some(vec!["fr:am:*".to_string()]));
+            }
             other => panic!("expected a get_token, got {other:?}"),
         }
     }

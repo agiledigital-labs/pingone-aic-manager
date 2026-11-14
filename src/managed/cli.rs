@@ -7,7 +7,9 @@ use serde_json::Value;
 use crate::Result;
 use crate::cli::force::OperationForce;
 use crate::cli::{WriteOk, ensure_prod_confirmed, print_json, print_table, tenant_for};
-use crate::managed::{api, diff, ops, recovery, relink, repair, spec, state, storage, verify};
+use crate::managed::{
+    activation, api, diff, ops, recovery, relink, repair, spec, state, storage, verify,
+};
 use crate::undo::{DiskLog, UndoLog};
 
 #[derive(Subcommand, Debug)]
@@ -60,6 +62,22 @@ pub enum ManagedCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Write one managed object the way `fr-config-pull managed-objects` does.
+    Export {
+        name: String,
+        /// Root of the fr-config-manager tree (`managed-objects/` is created under it).
+        #[arg(long, value_name = "DIR")]
+        config_dir: crate::config::UserPath,
+        #[arg(long, help = "Tenant to target")]
+        tenant: Option<String>,
+        #[arg(long, help = "Print the result as JSON")]
+        json: bool,
+        #[arg(long, help = "List the paths and write nothing")]
+        dry_run: bool,
+        /// Overwrite a file that differs, after backing the old bytes up.
+        #[command(flatten)]
+        force: OperationForce,
+    },
     /// Create, rename, or delete managed object definitions.
     Object {
         #[command(subcommand)]
@@ -101,11 +119,6 @@ pub enum ObjectCommand {
     Rename {
         old: String,
         new: String,
-        /// Override the guard for an object that carries Ping's
-        /// `"Managed Object"` marker under a name that is not a Ping object
-        /// (console-created objects carry it). Ping's own objects stay refused.
-        #[command(flatten)]
-        force: OperationForce,
         #[arg(long)]
         tenant: Option<String>,
         /// Confirm a write to a production-themed tenant.
@@ -116,11 +129,6 @@ pub enum ObjectCommand {
     },
     Delete {
         name: String,
-        /// Override the guard for an object that carries Ping's
-        /// `"Managed Object"` marker under a name that is not a Ping object
-        /// (console-created objects carry it). Ping's own objects stay refused.
-        #[command(flatten)]
-        force: OperationForce,
         #[arg(long)]
         tenant: Option<String>,
         /// Confirm a write to a production-themed tenant.
@@ -285,6 +293,17 @@ pub enum RelationshipCommand {
         /// no records cannot be probed.
         #[arg(long)]
         check: bool,
+        #[command(flatten)]
+        force: OperationForce,
+        #[arg(
+            long,
+            num_args = 0..=1,
+            default_missing_value = "60",
+            value_name = "SECONDS",
+            help = super::activation::WAIT_ACTIVATION_HELP,
+            long_help = super::activation::WAIT_ACTIVATION_LONG
+        )]
+        wait_activation: Option<u64>,
         #[arg(long)]
         json: bool,
     },
@@ -346,6 +365,15 @@ pub enum RelationshipCommand {
         /// Confirm a write to a production-themed tenant.
         #[arg(long)]
         yes: bool,
+        #[arg(
+            long,
+            num_args = 0..=1,
+            default_missing_value = "60",
+            value_name = "SECONDS",
+            help = super::activation::WAIT_ACTIVATION_HELP,
+            long_help = super::activation::WAIT_ACTIVATION_LONG
+        )]
+        wait_activation: Option<u64>,
         #[arg(long)]
         json: bool,
     },
@@ -477,6 +505,14 @@ pub async fn run(cmd: ManagedCommand) -> Result<()> {
             tenant,
             json,
         } => managed_diff(name, file, strict, tenant, json).await,
+        ManagedCommand::Export {
+            name,
+            config_dir,
+            tenant,
+            json,
+            dry_run,
+            force,
+        } => export_object(name, config_dir, tenant, json, dry_run, force).await,
         ManagedCommand::Get {
             name,
             fields,
@@ -498,6 +534,37 @@ pub async fn run(cmd: ManagedCommand) -> Result<()> {
         ManagedCommand::Hook { command } => hook(command).await,
         ManagedCommand::Relationship { command } => relationship(command).await,
     }
+}
+
+async fn export_object(
+    name: String,
+    config_dir: crate::config::UserPath,
+    tenant: Option<String>,
+    json: bool,
+    dry_run: bool,
+    force: OperationForce,
+) -> Result<()> {
+    let tenant = tenant_for(tenant)?;
+    let (doc, object) = api::get_managed_with_object(&tenant, &name).await?;
+    let copies = api::objects(&doc)?
+        .iter()
+        .filter(|candidate| candidate.get("name").and_then(Value::as_str) == Some(name.as_str()))
+        .count();
+    if copies != 1 {
+        return Err(crate::Error::Config(format!(
+            "{copies} managed objects are named {name:?}"
+        )));
+    }
+    let files = crate::fcm::managed_object_files(&object)?;
+    let report = crate::fcm::install(&crate::fcm::Install {
+        config_dir: config_dir.as_ref(),
+        files: &files,
+        dry_run,
+        force: force.operation(),
+        backup_kind: "managed",
+        backup_realm: "managed",
+    })?;
+    crate::fcm::present(&report, json)
 }
 
 async fn get(
@@ -659,7 +726,6 @@ async fn object(command: ObjectCommand) -> Result<()> {
         ObjectCommand::Rename {
             old,
             new,
-            force,
             tenant,
             yes,
             json,
@@ -668,7 +734,7 @@ async fn object(command: ObjectCommand) -> Result<()> {
             let ok = ensure_prod_confirmed(&tenant, yes)?;
             let doc = api::get_managed(&tenant).await?;
             let old_object = api::object_named(&doc, &old)?;
-            refuse_shipped(old_object, "renamed", force.operation())?;
+            refuse_shipped(old_object, "renamed")?;
             state::validate_object_name(&new, &object_names(&doc), &old)
                 .map_err(crate::Error::Config)?;
             ops::refuse_mapped_rename(&tenant, &old).await?;
@@ -686,7 +752,6 @@ async fn object(command: ObjectCommand) -> Result<()> {
         }
         ObjectCommand::Delete {
             name,
-            force,
             tenant,
             yes,
             json,
@@ -694,11 +759,7 @@ async fn object(command: ObjectCommand) -> Result<()> {
             let tenant = tenant_for(tenant)?;
             let ok = ensure_prod_confirmed(&tenant, yes)?;
             let doc = api::get_managed(&tenant).await?;
-            refuse_shipped(
-                api::object_named(&doc, &name)?,
-                "deleted",
-                force.operation(),
-            )?;
+            refuse_shipped(api::object_named(&doc, &name)?, "deleted")?;
             let (updated, inbound) =
                 ops::delete_object_in_doc(&doc, &name).map_err(crate::Error::Config)?;
             let mut undo = DiskLog::load_default()?;
@@ -873,7 +934,18 @@ async fn hook(command: HookCommand) -> Result<()> {
     output(json, &updated)
 }
 
+impl RelationshipCommand {
+    // Both verbs use operation consent for their optional activation probe.
+    fn activation_force(&self) -> bool {
+        match self {
+            Self::Set { force, .. } | Self::Map { force, .. } => force.operation(),
+            _ => false,
+        }
+    }
+}
+
 async fn relationship(command: RelationshipCommand) -> Result<()> {
+    let activation_force = command.activation_force();
     match command {
         RelationshipCommand::Set {
             field,
@@ -887,8 +959,14 @@ async fn relationship(command: RelationshipCommand) -> Result<()> {
             tenant,
             yes,
             check,
+            force: _,
+            wait_activation,
             json,
         } => {
+            if let Some(seconds) = wait_activation {
+                activation::parse_timeout(seconds)
+                    .map_err(|error| crate::Error::Config(error.to_string()))?;
+            }
             if !attrs.enum_values.is_empty()
                 || attrs.clear_enum
                 || attrs.default_value.is_some()
@@ -898,6 +976,7 @@ async fn relationship(command: RelationshipCommand) -> Result<()> {
                     "relationship set cannot use --enum, --clear-enum, --default, or --clear-default".into(),
                 ));
             }
+            let command = activation::CommandInterrupt::new();
             let (source_object, key) = parse_object_key(&field)?;
             let tenant = tenant_for(tenant)?;
             let ok = ensure_prod_confirmed(&tenant, yes)?;
@@ -991,21 +1070,36 @@ async fn relationship(command: RelationshipCommand) -> Result<()> {
                 eprintln!(
                     "relationship {source_object}.{key} is already as requested; nothing written"
                 );
+                let storage_activation = activation::settle(
+                    &tenant,
+                    ok.confirmed_prod,
+                    &[],
+                    wait_activation,
+                    activation_force,
+                    &command,
+                )
+                .await?;
                 if !check {
-                    return output(json, &serde_json::json!({ "changed": [] }));
+                    let mut body = serde_json::json!({ "changed": [] });
+                    activation::attach(&mut body, storage_activation.as_ref())?;
+                    return output(json, &body);
                 }
                 // A re-run after a failed `--check` must not pass on the
                 // strength of having nothing to write: it checks again.
-                let activation = wait_for_ends(&tenant, ends).await;
+                let Some(activation) = command.run(wait_for_ends(&tenant, ends)).await else {
+                    let mut body = serde_json::json!({ "changed": [], "interrupted": true });
+                    activation::attach(&mut body, storage_activation.as_ref())?;
+                    output(json, &body)?;
+                    return Err(activation::command_interrupted());
+                };
                 let unverified = unverified_ends(&activation);
-                output(
-                    json,
-                    &serde_json::json!({
-                        "changed": [],
-                        "activation": activation,
-                        "activation_verified": unverified.is_empty(),
-                    }),
-                )?;
+                let mut body = serde_json::json!({
+                    "changed": [],
+                    "activation": activation,
+                    "activation_verified": unverified.is_empty(),
+                });
+                activation::attach(&mut body, storage_activation.as_ref())?;
+                output(json, &body)?;
                 return activation_check(&source_object, &key, &unverified, false);
             }
             record_config_undo(
@@ -1015,31 +1109,91 @@ async fn relationship(command: RelationshipCommand) -> Result<()> {
                 format!("Revert relationship {source_object}.{key}"),
             )?;
             let expect = relationship_expectations(&doc, &updated)?;
-            let mapping = storage::set_with(
+            let mapped = storage::set_with(
                 property.is_none(),
                 async || put_managed(&ok, &doc, updated.clone(), &expect).await,
-                async || map_created_pair(&ok, &source_object, &key).await,
+                async || {
+                    map_created_pair(
+                        &ok,
+                        &source_object,
+                        &key,
+                        wait_activation,
+                        activation_force,
+                        &command,
+                    )
+                    .await
+                },
             )
             .await?;
             confirmation(&format!("relationship {source_object}.{key} set"));
-            let activation = wait_for_ends(&tenant, ends).await;
-            let one_sided = match relink::reverse_added(&doc, &updated, &source_object, &key) {
-                Some((far, far_key)) => {
-                    sample_one_sided(&tenant, &updated, &source_object, &key, &far, &far_key).await
-                }
-                None => None,
-            };
-            let unverified = unverified_ends(&activation);
-            output(
-                json,
-                &serde_json::json!({
+            if let Some((mapping, Some(storage))) = &mapped
+                && storage.interrupted
+            {
+                let mut body = serde_json::json!({
                     "changed": changed_objects(&doc, &updated)?,
-                    "activation": activation,
-                    "activation_verified": unverified.is_empty(),
-                    "one_sided": one_sided,
                     "mapping_verification": mapping,
-                }),
-            )?;
+                });
+                activation::attach(&mut body, Some(storage))?;
+                output(json, &body)?;
+                return Err(activation::command_interrupted());
+            }
+            let remaining = command
+                .run(async {
+                    let activation = wait_for_ends(&tenant, ends).await;
+                    let one_sided =
+                        match relink::reverse_added(&doc, &updated, &source_object, &key) {
+                            Some((far, far_key)) => {
+                                sample_one_sided(
+                                    &tenant,
+                                    &updated,
+                                    &source_object,
+                                    &key,
+                                    &far,
+                                    &far_key,
+                                )
+                                .await
+                            }
+                            None => None,
+                        };
+                    (activation, one_sided)
+                })
+                .await;
+            let (mapping, mut storage_activation) = match mapped {
+                Some((verification, storage)) => (verification, storage),
+                None => (
+                    None,
+                    activation::settle(
+                        &tenant,
+                        ok.confirmed_prod,
+                        &[],
+                        wait_activation,
+                        activation_force,
+                        &command,
+                    )
+                    .await?,
+                ),
+            };
+            if command.mark(&mut storage_activation) || remaining.is_none() {
+                let mut body = serde_json::json!({
+                    "changed": changed_objects(&doc, &updated)?,
+                    "mapping_verification": mapping,
+                    "interrupted": true,
+                });
+                activation::attach(&mut body, storage_activation.as_ref())?;
+                output(json, &body)?;
+                return Err(activation::command_interrupted());
+            }
+            let (activation, one_sided) = remaining.unwrap();
+            let unverified = unverified_ends(&activation);
+            let mut body = serde_json::json!({
+                "changed": changed_objects(&doc, &updated)?,
+                "activation": activation,
+                "activation_verified": unverified.is_empty(),
+                "one_sided": one_sided,
+                "mapping_verification": mapping,
+            });
+            activation::attach(&mut body, storage_activation.as_ref())?;
+            output(json, &body)?;
             if check {
                 return activation_check(&source_object, &key, &unverified, true);
             }
@@ -1359,9 +1513,10 @@ async fn relationship(command: RelationshipCommand) -> Result<()> {
             capture,
             dry_run,
             acknowledge_request_finished,
-            force,
+            force: _,
             tenant,
             yes,
+            wait_activation,
             json,
         } => {
             super::conversion_cli::map(
@@ -1371,8 +1526,9 @@ async fn relationship(command: RelationshipCommand) -> Result<()> {
                 super::conversion_cli::Flags {
                     dry_run,
                     acknowledge_request_finished,
-                    force: force.operation(),
+                    force: activation_force,
                     yes,
+                    wait_activation,
                     json,
                 },
             )
@@ -1986,7 +2142,19 @@ fn print_mapping_plan(plan: &repair::Plan) {
 
 /// The second half of a new `set`. A failure before the repo.ds write leaves
 /// the consistent generic declaration available for `map` to finish.
-async fn map_created_pair(ok: &WriteOk<'_>, object: &str, key: &str) -> Result<VerificationOutput> {
+/// The storage-activation decision is asked before that write and carried out
+/// after it is confirmed.
+async fn map_created_pair(
+    ok: &WriteOk<'_>,
+    object: &str,
+    key: &str,
+    wait_activation: Option<u64>,
+    force: bool,
+    command: &activation::CommandInterrupt,
+) -> Result<(
+    Option<VerificationOutput>,
+    Option<activation::StorageActivation>,
+)> {
     let field = format!("{object}.{key}");
     let mut generic = false;
     let prepared = async {
@@ -2017,20 +2185,58 @@ async fn map_created_pair(ok: &WriteOk<'_>, object: &str, key: &str) -> Result<V
             }
         ))
     })?;
-    if let Some(plan) = prepared {
+    let mut storage_activation = if let Some(plan) = prepared {
+        let added = activation::added_type_names(plan.addition());
+        let pending = activation::prepare(ok.tenant, &added, wait_activation, force)
+            .await
+            .map_err(|error| {
+                crate::Error::Config(format!(
+                    "config/managed was written, but mapping {field} was not attempted: {error}. \
+                     The pair remains generic unless another writer changed it. Re-run \
+                     `aic managed relationship map {field} --wait-activation --force` to add the \
+                     mapping and probe"
+                ))
+            })?;
         let permit = repair::authorize(false, true)
             .ok_or_else(|| crate::Error::Config("mapping authorization failed".into()))?;
         apply_mapping(ok, &plan, &permit).await?;
+        activation::finish(ok.tenant, ok.confirmed_prod, &added, pending, command).await?
     } else {
         check_orphans(ok.tenant, object, key, "existing mapping").await?;
+        activation::settle(
+            ok.tenant,
+            ok.confirmed_prod,
+            &[],
+            wait_activation,
+            force,
+            command,
+        )
+        .await?
+    };
+    // Return directly to rendering recovery evidence after bounded cleanup.
+    if storage_activation.as_ref().is_some_and(|a| a.interrupted) {
+        return Ok((None, storage_activation));
     }
-    let verification =
-        collect_verification(field, 5, 200, None, Some(ok.tenant.to_string())).await?;
+    let Some(verification) = command
+        .run(collect_verification(
+            field,
+            5,
+            200,
+            None,
+            Some(ok.tenant.to_string()),
+        ))
+        .await
+    else {
+        command.mark(&mut storage_activation);
+        return Ok((None, storage_activation));
+    };
+    let verification = verification?;
     verification_check(&verification)?;
     eprintln!(
         "mapping configuration verified; runtime storage mode is untested without links (run verify --probe later if appropriate)"
     );
-    Ok(verification)
+
+    Ok((Some(verification), storage_activation))
 }
 
 async fn apply_mapping(
@@ -2064,9 +2270,6 @@ async fn apply_mapping(
         .map_or("unknown column", |addition| addition.column.as_str());
     check_orphans(ok.tenant, &plan.object, &plan.key, column).await?;
     eprintln!("mapped {field} (config confirmed by re-read; no orphaned values found)");
-    if let Some(warning) = plan.addition().and_then(storage::activation_warning) {
-        eprintln!("{warning}");
-    }
     Ok(applied)
 }
 
@@ -3724,20 +3927,11 @@ fn object_names(doc: &Value) -> Vec<String> {
         })
         .unwrap_or_default()
 }
-fn refuse_shipped(object: &Value, action: &str, force: bool) -> Result<()> {
+fn refuse_shipped(object: &Value, action: &str) -> Result<()> {
     match state::object_protection(object) {
         state::ObjectProtection::Shipped => Err(crate::Error::Config(format!(
             "Ping-shipped objects cannot be {action}"
         ))),
-        state::ObjectProtection::Marked if !force => {
-            let name = object.get("name").and_then(Value::as_str).unwrap_or("?");
-            Err(crate::Error::Config(format!(
-                "{name} carries Ping's \"type\": \"Managed Object\" marker but is not a Ping \
-                 object (alpha_/bravo_ user, role, group, organization, application, \
-                 assignment); console-created objects carry it too. Pass --force if {name} \
-                 is yours and should be {action}"
-            )))
-        }
         _ => Ok(()),
     }
 }
@@ -3837,6 +4031,7 @@ fn join_or_dash(values: &[String]) -> String {
 mod tests {
     use super::*;
     use crate::cli::Cli;
+    use clap::CommandFactory;
 
     /// `relationship verify` refuses a type `config/managed` no longer declares,
     /// which is the usual subject of `--empty-entry`, so a read-back failure on
@@ -3869,16 +4064,181 @@ mod tests {
         );
     }
 
-    /// `--force` overrides the marker and never a Ping object.
     #[test]
-    fn force_overrides_the_marker_but_never_a_ping_object() {
-        let marked = serde_json::json!({"name": "console_widget", "type": "Managed Object"});
+    fn production_authorization_does_not_grant_activation_probe_consent() {
+        for verb in ["set", "map"] {
+            for override_probe in [false, true] {
+                let mut args = vec!["aic", "managed", "relationship", verb, "thing.owner"];
+                if verb == "set" {
+                    args.extend(["--target", "other", "--forward", "one"]);
+                }
+                args.extend(["--wait-activation", "--yes"]);
+                if override_probe {
+                    args.push("--force");
+                }
+                let cli = Cli::try_parse_from(args).unwrap();
+                let crate::cli::Command::Managed {
+                    command: ManagedCommand::Relationship { command },
+                } = cli.command.unwrap()
+                else {
+                    panic!("expected relationship command");
+                };
+                let force = command.activation_force();
+                let yes = match command {
+                    RelationshipCommand::Set { yes, .. } | RelationshipCommand::Map { yes, .. } => {
+                        yes
+                    }
+                    _ => unreachable!(),
+                };
+                assert!(yes);
+                let decision = activation::consent(force, None);
+                if override_probe {
+                    assert_eq!(decision.unwrap(), activation::ProbeConsent::Granted);
+                } else {
+                    assert!(decision.unwrap_err().contains("--force"));
+                    assert_eq!(
+                        activation::consent(force, Some(false)).unwrap(),
+                        activation::ProbeConsent::Declined
+                    );
+                    assert_eq!(
+                        activation::consent(force, Some(true)).unwrap(),
+                        activation::ProbeConsent::Granted
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn wait_activation_parses_an_optional_timeout_without_swallowing_flags() {
+        let set = |extra: &[&str]| {
+            let mut args = vec![
+                "aic",
+                "managed",
+                "relationship",
+                "set",
+                "test.owner",
+                "--target",
+                "test2",
+                "--forward",
+                "one",
+            ];
+            args.extend(extra.iter().copied());
+            Cli::try_parse_from(args).unwrap()
+        };
+        assert_eq!(wait_activation_of(&set(&[])), None);
+        let with_flag = set(&["--wait-activation", "--yes"]);
+        assert_eq!(wait_activation_of(&with_flag), Some(60));
+        assert!(set_yes(&with_flag));
+        assert_eq!(
+            wait_activation_of(&set(&["--wait-activation=15"])),
+            Some(15)
+        );
+        assert_eq!(
+            wait_activation_of(&set(&["--wait-activation", "15", "--yes"])),
+            Some(15)
+        );
+        assert!(
+            Cli::try_parse_from([
+                "aic",
+                "managed",
+                "relationship",
+                "set",
+                "test.owner",
+                "--target",
+                "test2",
+                "--forward",
+                "one",
+                "--wait-activation=no",
+            ])
+            .is_err()
+        );
+
+        let map = Cli::try_parse_from([
+            "aic",
+            "managed",
+            "relationship",
+            "map",
+            "a.link",
+            "--wait-activation",
+            "--dry-run",
+            "--yes",
+        ])
+        .unwrap();
+        assert!(matches!(
+            &map.command,
+            Some(crate::cli::Command::Managed {
+                command: ManagedCommand::Relationship {
+                    command: RelationshipCommand::Map {
+                        wait_activation: Some(60),
+                        dry_run: true,
+                        yes: true,
+                        ..
+                    }
+                }
+            })
+        ));
+    }
+
+    #[test]
+    fn wait_activation_help_states_the_probe_tradeoff() {
+        let mut cmd = Cli::command();
+        let set = cmd
+            .find_subcommand_mut("managed")
+            .unwrap()
+            .find_subcommand_mut("relationship")
+            .unwrap()
+            .find_subcommand_mut("set")
+            .unwrap();
+        let mut buf = Vec::new();
+        set.write_long_help(&mut buf).unwrap();
+        let help = String::from_utf8(buf).unwrap();
+        assert!(help.contains("probe"), "{help}");
+        assert!(help.contains("onCreate"), "{help}");
+        assert!(help.contains("storage_activation"), "{help}");
+        assert!(help.contains("2026-11-14"), "{help}");
+        assert!(help.contains("--force"), "{help}");
+        assert!(help.contains("--yes is only the production gate"), "{help}");
+    }
+
+    fn wait_activation_of(cli: &Cli) -> Option<u64> {
+        match &cli.command {
+            Some(crate::cli::Command::Managed { command }) => match command {
+                ManagedCommand::Relationship {
+                    command:
+                        RelationshipCommand::Set {
+                            wait_activation, ..
+                        },
+                } => *wait_activation,
+                other => panic!("not a relationship set: {other:?}"),
+            },
+            other => panic!("not a managed command: {other:?}"),
+        }
+    }
+
+    fn set_yes(cli: &Cli) -> bool {
+        match &cli.command {
+            Some(crate::cli::Command::Managed { command }) => match command {
+                ManagedCommand::Relationship {
+                    command: RelationshipCommand::Set { yes, .. },
+                } => *yes,
+                other => panic!("not a relationship set: {other:?}"),
+            },
+            other => panic!("not a managed command: {other:?}"),
+        }
+    }
+
+    /// Custom names remain eligible even with the marker; Ping names do not.
+    #[test]
+    fn marker_does_not_protect_custom_names_but_ping_names_stay_refused() {
+        let marked = serde_json::json!({"name": "custom_widget", "type": "Managed Object"});
         let ping = serde_json::json!({"name": "alpha_user", "type": "Managed Object"});
         let custom = serde_json::json!({"name": "alpha_lock"});
-        assert!(refuse_shipped(&marked, "deleted", false).is_err());
-        assert!(refuse_shipped(&marked, "deleted", true).is_ok());
-        assert!(refuse_shipped(&ping, "deleted", true).is_err());
-        assert!(refuse_shipped(&custom, "deleted", false).is_ok());
+        for action in ["deleted", "renamed"] {
+            assert!(refuse_shipped(&marked, action).is_ok());
+            assert!(refuse_shipped(&custom, action).is_ok());
+            assert!(refuse_shipped(&ping, action).is_err());
+        }
     }
     use clap::Parser;
 
@@ -4180,18 +4540,6 @@ mod tests {
                 "--forward",
                 "one",
                 "--allow-narrowing",
-            ],
-            vec![
-                "aic",
-                "managed",
-                "relationship",
-                "set",
-                "test.owner",
-                "--target",
-                "test2",
-                "--forward",
-                "one",
-                "--force",
             ],
         ] {
             assert!(Cli::try_parse_from(&args).is_err(), "{args:?}");

@@ -15,6 +15,9 @@
 //!   sampled links, for `aic managed relationship verify`; tenant-free.
 //! - [`storage`] plans relationship mappings and allocates columns;
 //!   [`repair`] owns the single permit-gated repo.ds addition/removal writer.
+//! - [`activation`] decides the follow-up when that addition gives a type its
+//!   first per-type entry: warn, or with `--wait-activation` write a probe
+//!   record and read it back. The decision is separate from the HTTP.
 //! - [`conversion`] owns durable link capture, exact-set checks, Q14 guards
 //!   and resumable migration; `conversion_records` owns readiness and full
 //!   rollback preflight/removal over injected record/config transport;
@@ -39,6 +42,7 @@
 //! immediate; hook runtime activation can still lag; file-backed hooks are
 //! read-only markers.
 
+pub mod activation;
 pub mod api;
 pub mod cli;
 pub mod conversion;

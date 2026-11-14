@@ -1,5 +1,5 @@
 export { isPortable } from "./portable.ts";
-export { defineCase, validateCase } from "./validate.ts";
+export { CaseValidationError, defineCase, validateCase } from "./validate.ts";
 export { judge, normaliseEffects } from "./verdict.ts";
 export {
   ALLOW_UNDECLARED_CHANNELS,
@@ -51,6 +51,11 @@ export type {
   MayActCaseInit,
   MayActEffect,
   MayActExpect,
+  NameIdCaseInit,
+  NameIdIdentitySeed,
+  NameIdEffect,
+  NameIdExpect,
+  NameIdSeed,
   LibraryCallerContext,
   LibraryCaseInit,
   LibraryEffect,

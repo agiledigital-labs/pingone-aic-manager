@@ -15,6 +15,7 @@ import {
   bindingsSocialIdpPath,
   bindingsValidateScopePath,
   bindingsMayActPath,
+  bindingsNameIdMapperPath,
   bindingsLibraryPath,
   generatedJsPath,
 } from "../paths.ts";
@@ -100,6 +101,13 @@ const CONTEXT_RUNTIME: {
     overlays: [bindingsContextCommonPath, bindingsMayActPath],
     seed: "__rhinoLocalSeedMayAct",
     harvest: "__rhinoLocalHarvestMayAct",
+  },
+  // The assertion's NameID text is the script's completion value (measured).
+  SAML2_NAMEID_MAPPER: {
+    overlays: [bindingsContextCommonPath, bindingsNameIdMapperPath],
+    seed: "__rhinoLocalSeedNameId",
+    harvest: "__rhinoLocalHarvestNameId",
+    completion: true,
   },
   // The case script is the library body, injected as a require() target.
   // The source the runner executes is empty; this harvest loads it and calls

@@ -24,10 +24,41 @@ function findPackageRoot(start: string): string {
 }
 
 /**
- * This package's own version, as `package.json` states it. Printed in the
- * fault tally and benchmark output so a report says which build produced it.
+ * This package's own version, as `package.json` states it.
  */
 export const packageVersion: string = (JSON.parse(readFileSync(join(packageRoot, "package.json"), "utf8")) as { version: string }).version;
+
+/**
+ * `<version> (<commit>[-dirty])` for a packed tree, or `<version> (commit
+ * unknown)` when {@link buildIdentityPath} is absent. Reading it never runs
+ * git: a checkout that has not been packed has no file to read.
+ */
+export function formatBuildIdentity(version: string, packed: { commit: string; dirty: boolean } | undefined): string {
+  if (packed === undefined) return `${version} (commit unknown)`;
+  return `${version} (${packed.commit}${packed.dirty ? "-dirty" : ""})`;
+}
+
+/** Written by `src/write-build-identity.ts` at pack time. Absent in a checkout. */
+export const buildIdentityPath = join(packageRoot, "dist", "build-identity.json");
+
+function readPackedIdentity(path: string): { commit: string; dirty: boolean } | undefined {
+  if (!existsSync(path)) return undefined;
+  const raw: unknown = JSON.parse(readFileSync(path, "utf8"));
+  if (
+    typeof raw !== "object" ||
+    raw === null ||
+    typeof (raw as { commit?: unknown }).commit !== "string" ||
+    (raw as { commit: string }).commit === "" ||
+    typeof (raw as { dirty?: unknown }).dirty !== "boolean"
+  ) {
+    throw new Error(`rhino-local: ${path} must be {"commit": string, "dirty": boolean}`);
+  }
+  const parsed = raw as { commit: string; dirty: boolean };
+  return { commit: parsed.commit, dirty: parsed.dirty };
+}
+
+/** Printed in the fault tally, its heading, the timing summary and the benchmark. */
+export const buildIdentity: string = formatBuildIdentity(packageVersion, readPackedIdentity(buildIdentityPath));
 
 /**
  * pingone-aic-manager repo root. **Repo-only**: generation and this repo's
@@ -110,6 +141,15 @@ export const mayActBindingsJsonPath = join(generatedDir, "oauth2-may-act-next.js
 
 /** The may-act context's binding overlay, appended to the prelude for that context only. */
 export const bindingsMayActPath = join(packageRoot, "src", "bindings", "rhino", "context-oauth2-may-act.cjs");
+
+/** The SAML2 NameID mapper context's captured descriptor. Repo-only; read by `generate`. */
+export const sourceNameIdMapperBindingsJsonPath = join(repoRoot, "docs", "api", "bindings", "saml2-nameid-mapper-next.json");
+
+/** `generate`'s verbatim copy of {@link sourceNameIdMapperBindingsJsonPath}: the context's class allow-list. */
+export const nameIdMapperBindingsJsonPath = join(generatedDir, "saml2-nameid-mapper-next.json");
+
+/** The SAML2 NameID mapper context's binding overlay, appended to the prelude for that context only. */
+export const bindingsNameIdMapperPath = join(packageRoot, "src", "bindings", "rhino", "context-saml2-nameid-mapper.cjs");
 
 /** The library context's binding overlay, appended to the prelude for that context only. */
 export const bindingsLibraryPath = join(packageRoot, "src", "bindings", "rhino", "context-library.cjs");

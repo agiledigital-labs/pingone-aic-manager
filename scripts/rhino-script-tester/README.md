@@ -39,7 +39,6 @@ No log API keys should be committed. `.envrc` is ignored by the repo.
 > `docs/api/99-quirks-and-open-questions.md` — which also explains why the
 > clobbered script cannot simply be deleted.
 
-
 By default the harness uses these sandbox resources:
 
 - Script: `AIC Rhino Let Probe`
@@ -75,7 +74,7 @@ Two things about this lane are deliberate:
   `overrideOAuth2ClientConfig` on a throwaway `client_credentials` client. The
   realm default would apply to every client in the tenant.
 - **Ids are minted, not chosen.** Both objects are created with `aic oauth
-  create` / `aic script create`, which generate fresh UUIDs, so this lane cannot
+create` / `aic script create`, which generate fresh UUIDs, so this lane cannot
   reproduce the clobber described above. It takes no id from the reserved
   `…a1c0a11e7xxx` family.
 
@@ -218,10 +217,42 @@ Two rules, both learned by getting them wrong:
   2026-08-27). `typeof` is evidence only in the negative.
 - **Strip the receiver out of an error message before emitting it.** Rhino puts
   the receiver's `toString()` into the text — `Cannot find function includes in
-  object [alice@example.com]` — so a probe that reports raw error strings leaks
+object [alice@example.com]` — so a probe that reports raw error strings leaks
   exactly the values it was written not to echo. Split on `" in object "` and
   keep the left half. The sibling journey fixture leaked a test address this way
   on its first run.
+
+## The next-gen access-token lane (`fixtures-atm-ng/`)
+
+Same runner as the legacy lane, pointed at a next-gen script
+(`OAUTH2_ACCESS_TOKEN_MODIFICATION_NEXT_GEN`, `evaluatorVersion` `2.0`) and a
+throwaway client. `GRANT_TYPE=password` with `USERNAME` and `PASSWORD_FILE`
+makes `identity` that user; the default remains `client_credentials`. The
+result JSON records `aud` and `zzemuR3Mctl` as shapes and does not keep the
+access token.
+
+`ctx list` puts the base URL in the last column (`$NF`). An earlier `$4` read
+the theme.
+
+Measured 2026-11-14, recorded in `docs/api/12-script-bindings-matrix.md`:
+`setField("aud", …)` accepts a string, a one-element array, a two-element
+array and `null` (null drops the claim). `removeField` is not a method
+(`TypeError: Cannot find function removeField`). On this engine `typeof` of
+that missing method is `undefined`, which is not the legacy "`typeof` says
+function" trap above.
+
+The same lane, with `GRANT_TYPE=password` as managed user `zzemuR3M-user`,
+measured `identity.setAttribute` and `identity.store` on `description` the
+same day. Neither throws and both return `undefined`. Without `store()` the
+value does not persist and the same wrapper still reads the previous one.
+After `store()` a fresh managed read shows the new value.
+
+A required library keeps its own `logger` when the caller rebinds that
+name (measured 2026-11-14, same matrix). The decision-node fixtures are
+`fixtures/zzemuR3M-logger-*`. The may-act twin is
+`fixtures-atm-ng/mayact-logger-shadow.mayact.js`; the `*.mayact.js` suffix
+keeps it out of this lane's `*.script.js` glob. The call returns and the
+message is logged once.
 
 ## The token-exchange lane (`fixtures-exchange/`)
 
@@ -244,12 +275,12 @@ one line, and is worth running first.
 
 Four cases, and the two controls are what make the other two mean anything:
 
-| Case | may-act | validate-scope | Grant | What it settles |
-| ---- | ------- | -------------- | ----- | ---------------- |
-| `control-cc` | stamps | identity probe | `client_credentials` | The wiring works, **and** what `identity` is on a grant that is not an exchange |
-| `control-exchange` | stamps | passthrough | exchange | The exchange itself works with this client pair |
-| `identity` | stamps | identity probe | exchange | D3 — compare its log line with `control-cc`'s |
-| `no-may-act` | **silent** | passthrough | exchange | D6 — one line removed, nothing else changed |
+| Case               | may-act    | validate-scope | Grant                | What it settles                                                                 |
+| ------------------ | ---------- | -------------- | -------------------- | ------------------------------------------------------------------------------- |
+| `control-cc`       | stamps     | identity probe | `client_credentials` | The wiring works, **and** what `identity` is on a grant that is not an exchange |
+| `control-exchange` | stamps     | passthrough    | exchange             | The exchange itself works with this client pair                                 |
+| `identity`         | stamps     | identity probe | exchange             | D3 — compare its log line with `control-cc`'s                                   |
+| `no-may-act`       | **silent** | passthrough    | exchange             | D6 — one line removed, nothing else changed                                     |
 
 `no-may-act` is the discriminating case for the whole feature: same clients,
 same scopes, same validate-scope script, and only the `setMayAct` call gone.

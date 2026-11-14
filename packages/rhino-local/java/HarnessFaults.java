@@ -18,6 +18,9 @@ import org.mozilla.javascript.Undefined;
  */
 final class HarnessFaults extends BaseFunction {
   static final String NAME = "__rhinoLocalHarnessFault";
+  /** A script that recurses past the stack. A script error, not an emulator failure. */
+  static final String STACK_OVERFLOW_ID = "script-defect/stack-overflow";
+  static final String STACK_OVERFLOW_MESSAGE = "the script exceeded the maximum stack depth";
   private final List<Map<String, Object>> faults = new ArrayList<Map<String, Object>>();
 
   @Override
@@ -29,6 +32,32 @@ final class HarnessFaults extends BaseFunction {
       faults.add(fault);
     }
     return Undefined.instance;
+  }
+
+  /**
+   * Rhino's interpreter reports {@code Exceeded maximum stack depth}. A compiled
+   * script throws {@link StackOverflowError}. Either may be wrapped.
+   */
+  static boolean isStackOverflow(Throwable error) {
+    Throwable cursor = error;
+    for (int depth = 0; cursor != null && depth < 8; depth++) {
+      if (cursor instanceof StackOverflowError) return true;
+      String message = cursor.getMessage();
+      if (message != null && message.contains("Exceeded maximum stack depth")) return true;
+      Throwable next = cursor.getCause();
+      if (next == cursor) return false;
+      cursor = next;
+    }
+    return false;
+  }
+
+  /** The emulation object {@link #attach} would add for this one fault. */
+  static Map<String, Object> stackOverflowEmulation() {
+    HarnessFaults recorded = new HarnessFaults();
+    recorded.record(STACK_OVERFLOW_ID, STACK_OVERFLOW_MESSAGE);
+    Map<String, Object> response = new LinkedHashMap<String, Object>();
+    recorded.attach(response);
+    return Json.asObject(response.get("emulation"), "stack overflow fault");
   }
 
   /** Records a fault from Java, as the preamble's {@code __rhinoLocalHarnessFault} call does. */

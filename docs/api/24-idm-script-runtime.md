@@ -90,6 +90,17 @@ present, `Object.keys` gives `"0","1",…` — but they are **not** native array
 | `String(q.result)`         | pretty-printed JSON array text                                           |
 | `r.t = [1, null, 3]`       | `length` 3, **`1 in r.t` false**, `map` visits all three (`v1,vnull,v3`) |
 
+A 2026-11-14 endpoint probe (deleted afterwards; config and route both 404)
+re-checked `q.result` for a two-record page and for a filter that matches
+nothing, plus `roles` on a read (one reference, and none) and `members` on
+the role (one). All five agreed with a JS array literal in the same script:
+`map` and `some` are functions, `map === Array.prototype.map`, `size` and
+`get` are `"undefined"`, and `[].concat(v)` is a real array of the elements.
+`JSON.stringify(v)` still begins with `{` for every one of those lists,
+including the empty ones; the literal begins with `[`. The full table is in
+`12-script-bindings-matrix.md` (`openidm.query` result and has-many arrays —
+IDM).
+
 Scalars convert to JS primitives: strings `typeof "string"` (not
 `java.lang.String`), numbers `number`, booleans `boolean`.
 

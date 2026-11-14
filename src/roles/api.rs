@@ -66,6 +66,30 @@ pub async fn put_role(tenant: &str, id: &str, body: Value, confirmed_prod: bool)
         .await
 }
 
+/// Replace `name` and/or `description` only when the revision still matches.
+///
+/// The body is an IDM patch document (`[{"operation","field","value"}]`), not
+/// a full role. A full `PUT` that omits `privileges` empties them.
+pub async fn patch_role_if_match(
+    tenant: &str,
+    id: &str,
+    body: Value,
+    revision: &str,
+    confirmed_prod: bool,
+) -> Result<Value> {
+    let path = format!("{ROLES_PATH}/{id}");
+    role_write_call(
+        tenant,
+        "PATCH",
+        &path,
+        Some(body),
+        confirmed_prod,
+        Some(revision),
+    )
+    .send()
+    .await
+}
+
 /// Fully replace a role only when its current revision still matches.
 pub async fn put_role_if_match(
     tenant: &str,
@@ -113,6 +137,11 @@ mod tests {
         for (method, body, revision) in [
             ("PUT", Some(json!({"name": "support"})), None),
             ("PUT", Some(json!({"name": "support"})), Some("rev-1")),
+            (
+                "PATCH",
+                Some(json!([{"operation": "replace", "field": "/name", "value": "support"}])),
+                Some("rev-1"),
+            ),
             ("DELETE", None, None),
         ] {
             let path = format!("{ROLES_PATH}/support");

@@ -4,13 +4,13 @@ Status: design note, 2026-11-11, updated 2026-11-12 when the legacy (V1) engine
 was removed: every context is next-gen only. Implemented: the selector and
 `OAUTH2_ACCESS_TOKEN_MODIFICATION`, `OIDC_CLAIMS`,
 `SOCIAL_IDP_PROFILE_TRANSFORMATION`, `CONFIG_PROVIDER_NODE`,
-`OAUTH2_VALIDATE_SCOPE` and `OAUTH2_MAY_ACT`. `LIBRARY` is implemented too.
+`OAUTH2_VALIDATE_SCOPE`, `OAUTH2_MAY_ACT` and `SAML2_NAMEID_MAPPER`. `LIBRARY` is implemented too.
 
 ## The problem
 
 Until now the tester ran one kind of AM script: the scripted decision node.
 Everything else (an access-token modification script, OIDC claims, a social
-profile transform, a config provider node, validate scope, may-act, a library
+profile transform, a config provider node, validate scope, may-act, a SAML2 NameID mapper, a library
 called directly) failed on its first context binding with a missing-binding
 `ReferenceError`, because the only binding surface the harness installs is the
 decision node's. The case API had no way to say which context a script runs in.
@@ -94,7 +94,7 @@ The class shutter follows the context: next-gen contexts install their own
 `allowLists` from `docs/api/bindings/<context>.json`, plus the same
 `OBSERVED_BASE` boxed types the decision node gets. 
 
-## The seven contexts
+## The eight contexts
 
 | Context (`context` + engine)                                          | Bindings beyond the shared set                                                                                                | Fixtures                                                                  | Invocation, and what AM does with it                                                                                             | Assertions                                                                               |
 | --------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
@@ -104,6 +104,7 @@ The class shutter follows the context: next-gen contexts install their own
 | `CONFIG_PROVIDER_NODE` (**implemented**) | `nodeState`; the decision node's bindings less `sharedState`, `transientState` and `outcome` | the node state, request maps | Top-level body that assigns the `config` global (read after the script, not its completion value); AM configures the wrapped node from it, and fails the journey (HTTP 500) when it is not a map | `expect.configProvider`: `config`, `accepted`; the state channels |
 | `OAUTH2_VALIDATE_SCOPE` (**implemented**) | `scopeValidatorHelper`, `requestedScopes`, `availableScopes`, `allowedScopes`, `defaultScopes` (Java lists), `identity`, `requestProperties`, `clientProperties` | `validateScope` (requested / allowed / available / default scopes), `client`, `request` | Named function `validateAccessTokenScope` AM calls after the body; AM grants exactly the list it returns (no intersection); `throwInvalidScope` is the 400 denial | `expect.validateScope`: `granted`, `invalidScope`, `accepted` |
 | `OAUTH2_MAY_ACT` (**implemented**)                    | `token` (five methods: `getField`, `getAct`, `getMayAct`, `setAct`, `setMayAct`), `scopes` (a Java list), `identity`, `requestProperties`, `clientProperties` | `client`, `scopes`, `request`, `identity`, `accessToken`                                | Top-level body; AM stamps `may_act` and `act` after the script; a thrown script is HTTP 500 and discards prior sets                                                                                         | `expect.mayAct`: `mayAct`, `act`, `scope`, `issued`, `refusal`                           |
+| `SAML2_NAMEID_MAPPER` (**implemented**) | `nameIDScriptHelper`, `identity`, `nameIDFormat`, `remoteEntityId`, `hostedEntityId`, `session` (object; members unread) | `identity`, `nameId` (`format`, `remoteEntityId`, `hostedEntityId`, `mappedValue`) | Completion value: a string is the assertion NameID; `undefined` fails SSO with `Could not generate NameID`; a throw fails the run | `expect.nameId`: `value`, `format`, `accepted`, `refusal` |
 | `LIBRARY` next-gen only (**implemented**) | library scope (`require`, `logger`, `openidm`, `httpClient`, `secrets`, `systemEnv`, `utils`, …); the caller's bindings are absent; `scriptName` and `logger.getName()` are the caller's | `library` (`export`, `args`, `callerContext`); `realm`, `scriptName`, `loggerScriptId`, `cookieName` | The case script is the library body. An empty caller `require()`s it and calls the named export as a method. A throw, including one while the body loads, is the result | `expect.returns` (`returned` / `thrown`, fail-closed), plus shared channels |
 
 Shared bindings per context come from the binding descriptors in
@@ -207,4 +208,5 @@ is the script's completion value, which a harvest appended to the source cannot
 read without changing what the script evaluates to. So a context entry may set
 `completion: true` (`src/bindings/preamble.ts`). The runner then evaluates the
 script unchanged and calls the context's harvest function with the completion
-value. Every other context still gets the appended harvest.
+value. The NameID mapper uses the same completion hook. Contexts that do not
+consume the script completion still get the appended harvest.
