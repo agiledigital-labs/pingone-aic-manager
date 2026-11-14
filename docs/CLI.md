@@ -1554,7 +1554,13 @@ a write it also includes the read-back `name` and `description`. `--yes`
 confirms a production tenant, and a dry run does not ask for it. `privilege add` validates
 the path and attribute names against the tenant's managed-object schema, then
 replaces an existing privilege with the same path or appends a new one. Each
-`--attr` uses `name:ro` or `name:rw`. Known permissions are `VIEW`, `CREATE`,
+`--attr` uses `name:ro` or `name:rw`. `_id` and `_rev` are refused: IDM returns
+both on managed-object reads with no accessFlags entry, so the flag is not how
+they are exposed. `_rev`, `_ref`, `_refProperties`, `_relationship`,
+`_notification`, `_parent` and `_schema` are also refused because IDM rejects
+an accessFlags entry for them. `_meta` is refused too: IDM stored a flag for it
+on `managed/alpha_user` and rejected it on `managed/alpha_organization`. A name
+that is simply not in the object's schema still fails as "not a property". Known permissions are `VIEW`, `CREATE`,
 `UPDATE`, `DELETE`, and `ACTION`; other values warn and proceed because AIC does
 not publish an authoritative enum. Privilege edits use the revision read with
 the role; a concurrent modification is reported and left untouched instead of
