@@ -3141,6 +3141,73 @@ with and without a field list) three ways:
 So enumeration order is stable and serialisation order is not; a script or a
 test must not depend on the order of a serialised response.
 
+
+### SAML2 NameID mapper — next-gen (measured 2026-11-14)
+
+The context id is `SAML2_NAMEID_MAPPER` (evaluatorVersion 2.0). The script is
+not on the hosted IdP. It is the remote service provider's
+`serviceProvider.assertionProcessing.accountMapper.nameIDMapperScript`. When
+that field names a script, SP-initiated SSO runs it, and the assertion's
+NameID text is the script's completion value.
+
+Positive control, same second as a successful signed assertion: an `am-core`
+INFO line from logger `scripts.SAML2_NAMEID_MAPPER.<script id>.(<script name>)`,
+message `zzemuR3S-ran`. The NameID text was `zzemuR3S-nameid-return`, the
+script's completion value. The format was
+`urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress`, the format the SP
+requested. `getNameIDValue()` had already returned the user's mail
+`zzemuR3S@example.com`. That string is not the NameID.
+
+`nameIDScriptHelper` is an object. Each function has `.length === 0`:
+
+| Member | What the call did |
+| --- | --- |
+| `getNameIDValue()` | returned the mail string (the hosted IdP maps the email format to `mail`, one value) |
+| `getNameIDFromSession()` | returned `null` |
+| `shouldPersistNameIDFormat()` | returned `false` |
+| `createNameIdentifier` | present; not called |
+
+A `for...in` also listed `class`, `equals`, `getClass`, `hashCode`, `notify`,
+`notifyAll`, `toString`, `wait`, `nameIDFromSession` and `nameIDValue`. A
+bracket read of each is `undefined`. `NAMEID_FORMAT_TRANSIENT`,
+`NAMEID_FORMAT_PERSISTENT`, `NAMEID_FORMAT_UNSPECIFIED` and
+`NAMEID_FORMAT_EMAIL` were not enumerable and were not read.
+
+`identity` is an object. `exists()` is `true`. `getName()` is a string, the
+managed object's `_id`, not the userName. `getAttributeValues("mail")` is an
+object, `.length` is 1, and `[0]` is the mail string. `.size()` was not
+called. `store`, `setAttribute`, `addAttribute` and `getUniversalId` were not
+called.
+
+| Binding | Type | Value in this SSO |
+| --- | --- | --- |
+| `nameIDFormat` | string | the email format above |
+| `remoteEntityId` | string | the SP entity id, `http://localhost:18080/realms/zzemuR3S` |
+| `hostedEntityId` | string | the hosted IdP entity id, `https://zzemuR3S-idp.example.com` |
+
+`session` is bound (`typeof` `object`) even though the captured binding list
+does not name it. No member was read.
+
+| Script | What SSO did |
+| --- | --- |
+| completion `zzemuR3S-nameid-return` | assertion NameID text is that string; status Success |
+| no completion (INFO `zzemuR3S-ran-void` and `zzemuR3S-void-body` still logged) | HTTP 500, no assertion. `am-core` ERROR `Unable to do sso or federation.` The exception text includes `Could not generate NameID` |
+| INFO `zzemuR3S-ran-throw`, then `throw "zzemuR3S-boom"` | HTTP 500, no assertion. ERROR `Script 'zzemuR3S-nameid' with evaluatorVersion 2.0 in realm /alpha terminated with exception`. The exception text includes the thrown string. The same second also logs `Unable to do sso or federation.` |
+
+No helper setter was found. The NameID text is the completion value.
+
+Not measured: calling `createNameIdentifier`, reading a `NAMEID_FORMAT_*`
+constant, any `session` member, the identity writes and `getUniversalId`,
+`getAttributeValues` of anything other than one `mail` value, `getNameIDValue`
+for a format other than email, `getNameIDFromSession` returning a string,
+`shouldPersistNameIDFormat` returning `true`, a completion other than a string
+or `undefined` (the empty string was not sent), and whether the script can
+change the NameID format. The assertion's format was the binding, which was
+the format the SP requested.
+
+Probes: `scripts/rhino-script-tester/fixtures-saml/nameid-enumerate.script.js`,
+`nameid-void.script.js`, `nameid-throw.script.js`.
+
 ### AM script families (folder slugs)
 
 | Family                                  | Slug                   | `evaluatorVersion` | Library support                               | Bindings overlay                                                                |
@@ -3150,7 +3217,7 @@ test must not depend on the order of a serialised response.
 | Library                                 | `lib`                  | (next-gen)         | yes (CommonJS)                                | library + library-args (caller argument types)                                  |
 | OIDC claims                             | `oidc-claims`          | mixed              | next-gen only                                 | oidc-claims                                                                     |
 | OAuth2 (token mod, scope, jwt, dcr, …)  | `oauth2-*`             | mixed              | next-gen only (token mod verified 2026-07-29) | all next-gen OAuth2 contexts typed (2026-07-29); legacy token mod names its bindings as `any` (2026-08-26), other legacy ids shared globals only |
-| SAML2 (idp/sp adapter, mappers)         | `saml-*`               | mixed              | next-gen only                                 | per-context (future)                                                            |
+| SAML2 (idp/sp adapter, mappers)         | `saml-*`               | mixed              | next-gen only                                 | NameID mapper measured 2026-11-14; other SAML contexts still per-context (future) |
 | Social normalization/handler            | `social-*`             | mixed              | —                                             | per-context (future)                                                            |
 | Config provider / device match / policy | various                | mixed              | —                                             | shared globals only (today)                                                     |
 

@@ -7,6 +7,7 @@ import {
   socialIdpBindingsJsonPath,
   validateScopeBindingsJsonPath,
   mayActBindingsJsonPath,
+  nameIdMapperBindingsJsonPath,
 } from "../paths.ts";
 
 let cached: string[] | undefined;
@@ -157,6 +158,20 @@ export function mayActClassAllowList(): string[] {
     cachedMayAct = [...declaredAllowList(mayActBindingsJsonPath), ...OBSERVED_BASE];
   }
   return cachedMayAct;
+}
+
+let cachedNameIdMapper: string[] | undefined;
+
+/**
+ * The SAML2 NameID mapper context's allow-list, from its own descriptor
+ * (`docs/api/bindings/saml2-nameid-mapper-next.json`) plus the same
+ * `OBSERVED_BASE`.
+ */
+export function nameIdMapperClassAllowList(): string[] {
+  if (cachedNameIdMapper === undefined) {
+    cachedNameIdMapper = [...declaredAllowList(nameIdMapperBindingsJsonPath), ...OBSERVED_BASE];
+  }
+  return cachedNameIdMapper;
 }
 
 function declaredAllowList(path: string): string[] {

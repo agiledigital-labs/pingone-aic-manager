@@ -11,7 +11,9 @@
  * prints the resulting shares of JVM time.
  */
 
-import { managed, type FixtureSpec } from "../src/harness/lease.ts";
+import { managed } from "../src/harness/lease.ts";
+import type { FixtureSpec } from "../src/harness/types.ts";
+import type { JsonObject } from "../src/case/types.ts";
 
 /** Files in the vitest suite. */
 export const FILE_COUNT = 100;
@@ -51,17 +53,22 @@ export function linkName(index: number): string {
   return `n${index}`;
 }
 
-interface Link {
+interface RefProps extends JsonObject {
+  _id: string;
+  _rev: string;
+}
+
+interface Link extends JsonObject {
   _id: string;
   _rev: string;
   _ref: string;
   _refResourceCollection: string;
   _refResourceId: string;
-  _refProperties: { _id: string; _rev: string };
+  _refProperties: RefProps;
   name: string;
 }
 
-interface User {
+interface User extends JsonObject {
   _id: string;
   _rev: string;
   userName: string;
