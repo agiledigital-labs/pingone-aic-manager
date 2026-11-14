@@ -208,4 +208,5 @@ is the script's completion value, which a harvest appended to the source cannot
 read without changing what the script evaluates to. So a context entry may set
 `completion: true` (`src/bindings/preamble.ts`). The runner then evaluates the
 script unchanged and calls the context's harvest function with the completion
-value. Every other context still gets the appended harvest.
+value. The NameID mapper uses the same completion hook. Contexts that do not
+consume the script completion still get the appended harvest.

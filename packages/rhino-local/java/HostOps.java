@@ -77,10 +77,6 @@ public final class HostOps extends BaseFunction {
   private Object dispatch(Context cx, Scriptable scope, Object[] args) throws Exception {
     String op = (String) Context.jsToJava(args[0], String.class);
     switch (op) {
-      // A real java.util.ArrayList holding a script array's elements, presented as AIC presents
-      // a list (java/SequenceFacade.java). A script string is stored as a Java string, so the
-      // list's own contains(), indexOf() and toString() answer as Java does; a script object is
-      // stored as it is.
       // A context measured only selected scalar properties of this object.
       // Unknown reads and writes must be tallied, even if a script catches them.
       case "measuredView": {
@@ -110,6 +106,10 @@ public final class HostOps extends BaseFunction {
         view.setPrototype(null);
         return view;
       }
+      // A real java.util.ArrayList holding a script array's elements, presented as AIC presents
+      // a list (java/SequenceFacade.java). A script string is stored as a Java string, so the
+      // list's own contains(), indexOf() and toString() answer as Java does; a script object is
+      // stored as it is.
       case "javaList":
         return JavaCollections.list(cx, scope, args.length > 1 ? args[1] : null,
             args.length > 2 && Context.toBoolean(args[2]));

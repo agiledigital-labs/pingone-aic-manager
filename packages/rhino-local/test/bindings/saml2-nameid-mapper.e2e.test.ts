@@ -1,6 +1,6 @@
 /**
- * The SAML2 NameID mapper on the real JVM. The scripts are the probes that
- * ran in an SP-initiated SSO on 2026-11-14 (docs/api/12, "SAML2 NameID mapper"):
+ * The SAML2 NameID mapper on the real JVM. These cases pin the probe results
+ * from an SP-initiated SSO on 2026-11-14 (docs/api/12, "SAML2 NameID mapper"):
  * a string completion is the assertion NameID, an empty completion fails SSO
  * with "Could not generate NameID", and a throw fails SSO with the thrown
  * string in the exception text.
