@@ -272,7 +272,7 @@ read-back, and remains so.
 | Shape                   | Accepted / observed                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Minimal custom object   | `{ "name": "...", "schema": { "type": "object", "title": "...", "properties": {}, "required": [], "order": [] } }`. Objects carry no `_id`/`$id`; the document's `_id: "managed"` is the only id.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
-| Standard object marker  | **Two markers, governing two different things — do not collapse them.** (a) Top-level `"type": "Managed Object"` marks a Ping-shipped _object_: all ten realm objects carry it, custom objects carry no `type` at all, and no other value of `type` occurs (verified 2026-08-07). **Reported from a client tenant 2026-11-05, not reproduced here:** console-created custom objects carry `"type": "Managed Object"` too (objects created through REST, as on the sandbox, carry no `type`). A read-only census on 2026-11-14 found the marker on the ten Ping realm objects only (`alpha_`/`bravo_` × `application`, `assignment`, `organization`, `role`, `user`; no `group`); no custom object carried it. Whether the console adds the marker is still that report. The guard was exercised on 2026-11-10 by writing the marker through the config API, not by a console create. So the marker is not proof: `crate::managed::state::object_protection` refuses rename/delete by **name** (`alpha_`/`bravo_` × `user`, `role`, `group`, `organization`, `application`, `assignment`) and treats the marker under any other name as needing `--force`. (b) Top-level `meta` marks the objects whose _fields_ Ping constrains: **only `alpha_user` and `bravo_user`** carry it (verified 2026-07-27, re-confirmed 2026-08-07). This is the "additions need a `custom_` prefix, shipped fields are read-only" test — `object_class`. `role`/`organization`/`assignment`/`application` have `type` but no `meta`, and **accept ordinary un-prefixed properties** (confirmed by the maintainer against `alpha_organization`, 2026-08-07 — not independently re-run here), so they get full field freedom while the object stays protected. Keying field capability on `type` (2026-07-31 to 2026-08-07) forced `custom_` names the server never required. |
+| Standard object marker  | **Two markers, governing two different things — do not collapse them.** (a) Top-level `"type": "Managed Object"` was present on Ping's ten realm objects in the 2026-11-14 sandbox census; a console-created custom object carried no `type`. The census of 30 objects found exactly the ten Ping built-ins (`alpha_`/`bravo_` × `user`, `role`, `organization`, `application`, `assignment`) marked. Protection is by name only: `object_protection` refuses rename/delete for the existing `alpha_`/`bravo_` Ping-name list, regardless of marker, and allows custom names even when marked. The 2026-11-05 client report that console-created custom objects carry this marker is not reproduced in that sandbox. (b) Top-level `meta` marks the objects whose _fields_ Ping constrains: **only `alpha_user` and `bravo_user`** carry it (verified 2026-07-27, re-confirmed 2026-08-07). This is the `custom_` prefix and shipped-fields protection test — `object_class`. `role`/`organization`/`assignment`/`application` have `type` but no `meta`, and accept ordinary un-prefixed properties (maintainer confirmation against `alpha_organization`, 2026-08-07; not independently re-run here). Keying field capability on `type` would force `custom_` names the server never required.
 | Scalar property         | `{ "title": "...", "description": "...", "type": "string", "searchable": true, "viewable": true, "userEditable": true }` round-trips.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | Enum-constrained scalar | `{ "type": "string", "title": "...", "enum": ["new", "done"], "options": { "enum_titles": ["Brand new", "All done"] }, "searchable": …, "viewable": …, "userEditable": … }`. **`enum` is a constraint on a scalar, not a distinct property type** — the property keeps its `type` and gains a sibling `enum` array. Round-trips verbatim, including optional `options.enum_titles` display labels. Also works on `"type": "number"` (`enum: [1,2,3]`) and on an array's items (`{"type":"array","items":{"type":"string","enum":[…]}}`). **Enforced on record write**, not just UI metadata — see "Enum constraints" below. Verified 2026-07-31.                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | Single relationship     | `{ "type": "relationship", "resourceCollection": [{ "path": "managed/<target>" }] }`. `reversePropertyName`, `validate`, and explicit `_ref`/`_refProperties` are optional at config-write time.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
@@ -1479,27 +1479,6 @@ delete would remove outright is refused. That records' links to the other
 targets survive the narrowing is inferred from the schema edit; it has not been
 measured.
 
-Checking the marker guard takes a console step, which is the operator's. `aic`
-cannot drive the admin console, and `managed object
-create` does not write `"type": "Managed Object"`, so nothing here can add the
-marker for you.
-
-1. In the admin console, create a throwaway managed object.
-2. `aic managed object delete <name>` — refused. The message names the marker
-   and `--force`. The object is still in `config/managed`.
-3. `aic managed object delete <name> --force` — the object is deleted.
-4. Read `config/managed` again and confirm the object is gone.
-
-A read-only census of this sandbox on 2026-11-14 found `"type": "Managed
-Object"` only on the ten Ping realm objects (`alpha_`/`bravo_` ×
-`application`, `assignment`, `organization`, `role`, `user`; there is no
-`group`). No custom object carried it, so this sandbox does not show a
-console-created custom object with the marker. Whether the console adds it is
-still the client's report (2026-11-05). The 2026-11-10 row below proved the
-guard by writing the marker through the config API, which is not a console
-create. No new flag is involved: `--force` is the existing override, and a
-Ping-shipped name stays refused with or without it.
-
 ## Hook scripts (verified 2026-06-13)
 
 Hook keys **observed in use** on the sandbox schema: `onCreate`, `onUpdate`,
@@ -2676,18 +2655,13 @@ on create, or when actually rotating it.
   per-type entry was absent) and the three types were deleted. No read-only
   signal separated "not yet active" from "active".
 
-- Date: 2026-11-14 — marker census, sandbox, read-only `GET
-  /openidm/config/managed` (29 objects). `"type": "Managed Object"` was
-  present on exactly the ten Ping realm objects (`alpha_`/`bravo_` ×
-  `application`, `assignment`, `organization`, `role`, `user`; no `group`).
-  No `zzemu` object and no other custom object carried it. This does not show
-  the console adding the marker. The 2026-11-10 row remains the exercise of
-  the guard, done by writing the marker through the config API. A closing
-  re-read the same day, after the throwaway types above were deleted, found
-  30 objects and the same ten markers, no name containing `zzemuR3A`, no
-  `genericMapping` key containing it, and no sync mapping naming it.
-  `config/repo.ds` matched both backups taken before those writes.
-
+- Date: 2026-11-14 — name-only object protection, sandbox, read-only
+  `GET /openidm/config/managed`: a console-created custom object carried no
+  `type`; among 30 objects exactly the ten Ping built-ins (`alpha_`/`bravo_` ×
+  user, role, organization, application, assignment) carried
+  `"type": "Managed Object"`. Protection is by name only. This evidence does
+  not reproduce the 2026-11-05 client report that console-created custom
+  objects carry the marker.
 - Date: 2026-11-10 — removing the empty per-type `repo.ds` entry of an
   **existing** type, sandbox, throwaway `zzemuA_thing` and `zzemuA_owner`
   (`object create`, a `label` string each, `relationship set thing.owner
@@ -2709,16 +2683,6 @@ on create, or when actually rotating it.
   through a mapping (the mapping was removed first, so links through it
   were not read after), a restart of IDM, or a larger collection. All records
   and both types were then deleted.
-
-- Date: 2026-11-10 — console-marker delete guard, sandbox, throwaway
-  `zzemuA_mark` (`object create`, no relationships). The whole `config/managed`
-  document was backed up, then re-sent with `"type": "Managed Object"` added to
-  that one object (`PUT` 200; re-read equal to the document sent). `aic managed
-  object delete zzemuA_mark --yes` refused, exit 1, naming the marker and
-  `--force`, and the object stayed in the config. With `--force --yes` it was
-  deleted, and the rest of `config/managed` equalled the backup minus that
-  object, key for key. The marker write went by `curl` rather than an `aic`
-  verb, since no `aic` verb sets it.
 
 - Date: 2026-11-09 — mapping activation and last-mapping removal, sandbox,
   throwaway `zzemu_act_a`–`zzemu_act_d` built with `aic managed object create`

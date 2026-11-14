@@ -600,8 +600,8 @@ as workspace scripts via `aic script` (`managed/<object>.<hook>`).
 aic managed list [--json]                        # object types with property + hook counts
 aic managed get alpha_user [--fields GLOB] [--hook-sources] [--schema-only | --property NAME] [--json]
 aic managed object create custom_widget [--title T] [--description D] [--yes] [--json]
-aic managed object rename custom_widget custom_gadget [--force] [--yes] [--json]
-aic managed object delete custom_gadget [--force] [--yes] [--json]
+aic managed object rename custom_widget custom_gadget [--yes] [--json]
+aic managed object delete custom_gadget [--yes] [--json]
 aic managed field add custom_widget.code --type string|boolean|number|string[]|object|object[] [--nullable] [--after KEY] [--title T] [--required false] [--enum value[:Title] ...] [--default VALUE] [--yes] [--json]
 aic managed field edit custom_widget.code --searchable true [--enum value[:Title] ... | --clear-enum] [--default VALUE | --clear-default] [--force] [--yes] [--json]
 aic managed field rename custom_widget.code external_code [--yes] [--json]
@@ -681,28 +681,9 @@ hook's presence, `type` and `globals` are still compared. `--strict` applies
 neither. It exits non-zero when anything differs; `--json` prints
 `{"object", "normalised", "differences"}`.
 
-`object rename` and `object delete` refuse Ping's realm objects
-(`alpha_`/`bravo_` × `user`, `role`, `group`, `organization`, `application`,
-`assignment`) outright. An object that carries Ping's `"type": "Managed Object"`
-marker under any other name is refused unless `--force` is given, because
-console-created custom objects carry that marker too.
-
-To check that guard on a console-created object:
-
-1. In the admin console, create a throwaway managed object. This step is the
-   operator's. `aic` cannot drive the console, and `managed object create`
-   does not write `"type": "Managed Object"`.
-2. `aic managed object delete <name>` — refused. The message names the marker
-   and `--force`. The object is still in `config/managed`.
-3. `aic managed object delete <name> --force` — the object is deleted.
-4. Read `config/managed` again and confirm the object is gone.
-
-A read-only census of this sandbox on 2026-11-14 found the marker only on the
-ten Ping realm objects (`alpha_`/`bravo_` × `application`, `assignment`,
-`organization`, `role`, `user`; there is no `group`). No custom object carried
-it. Whether the console adds the marker is still the client's report from
-2026-11-05. The guard itself was exercised on 2026-11-10 by writing the marker
-through the config API, not by a console create (`docs/api/10-managed-objects.md`).
+Object rename and delete protection is based on the object name only. A custom
+object carrying `"type": "Managed Object"` remains renameable and deletable
+without `--force`; Ping-shipped names remain refused.
 
 `--json` on a write prints what it changed, never the whole `config/managed`
 document: `object create`/`object rename`, `field …` and `hook add`/`hook delete` print the
