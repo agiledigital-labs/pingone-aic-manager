@@ -4,8 +4,8 @@
 //! (`fr-config-pull` `scripts.js` / `managed.js`, `saveJsonToFile` and
 //! `safeFileName` in `fr-config-common`). JSON is `JSON.stringify` of a
 //! deep-sorted value with a two-space indent and no trailing newline.
-//! `serde_json::Value` stores objects in a `BTreeMap`, and `to_vec_pretty`
-//! emits that shape for the keys and numbers these documents carry.
+//! `json` matches JS integer-key enumeration, UTF-16 string-key sorting,
+//! number formatting and string escaping; package-generated fixtures check it.
 //!
 //! `safe_file_name` is `sanitize-filename` 1.6.5 — the version `^1.6.3`
 //! resolves to — called as
@@ -15,6 +15,9 @@
 //! leaves as a dot.
 
 mod directory;
+mod json;
+#[cfg(test)]
+mod oracle_tests;
 use directory::Directory;
 use std::path::{Component, Path, PathBuf};
 
@@ -565,7 +568,7 @@ fn slash(path: &Path) -> String {
 }
 
 fn json_bytes(value: &Value) -> Result<Vec<u8>> {
-    Ok(serde_json::to_vec_pretty(value)?)
+    json::bytes(value)
 }
 
 fn field<'a>(object: &'a serde_json::Map<String, Value>, key: &str) -> Result<&'a str> {
