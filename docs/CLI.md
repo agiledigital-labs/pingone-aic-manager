@@ -811,7 +811,11 @@ DELETE failures retry, with confirm reads between attempts. An unsettled
 create or unresolved cleanup is explicitly reported with its UUID for manual
 removal. A 404 alone cannot settle an outstanding create. Ctrl-C is latched
 until bounded cleanup finishes, then exits non-zero; repeated Ctrl-C cannot
-skip cleanup.
+skip cleanup. After a normal probe, the same interruption latch covers the
+remaining verification and restoration waits. Interruption exits non-zero;
+map retains the capture and reports each confirmed restored link plus any
+pending request whose outcome is unresolved, in stderr and JSON (`restored`
+and `pending`). Keep link writers paused before inspecting or resuming it.
 
 Before writing, the plan names all script-shaped hooks (inline and file-backed,
 any event) and every sync mapping whose source or target is `managed/<object>`.

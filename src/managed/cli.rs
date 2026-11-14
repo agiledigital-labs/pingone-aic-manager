@@ -907,6 +907,7 @@ async fn relationship(command: RelationshipCommand) -> Result<()> {
                     "relationship set cannot use --enum, --clear-enum, --default, or --clear-default".into(),
                 ));
             }
+            let command = activation::CommandInterrupt::new();
             let (source_object, key) = parse_object_key(&field)?;
             let tenant = tenant_for(tenant)?;
             let ok = ensure_prod_confirmed(&tenant, yes)?;
@@ -1000,9 +1001,15 @@ async fn relationship(command: RelationshipCommand) -> Result<()> {
                 eprintln!(
                     "relationship {source_object}.{key} is already as requested; nothing written"
                 );
-                let storage_activation =
-                    activation::settle(&tenant, ok.confirmed_prod, &[], wait_activation, yes)
-                        .await?;
+                let storage_activation = activation::settle(
+                    &tenant,
+                    ok.confirmed_prod,
+                    &[],
+                    wait_activation,
+                    yes,
+                    &command,
+                )
+                .await?;
                 if !check {
                     let mut body = serde_json::json!({ "changed": [] });
                     activation::attach(&mut body, storage_activation.as_ref())?;
@@ -1010,7 +1017,12 @@ async fn relationship(command: RelationshipCommand) -> Result<()> {
                 }
                 // A re-run after a failed `--check` must not pass on the
                 // strength of having nothing to write: it checks again.
-                let activation = wait_for_ends(&tenant, ends).await;
+                let Some(activation) = command.run(wait_for_ends(&tenant, ends)).await else {
+                    let mut body = serde_json::json!({ "changed": [], "interrupted": true });
+                    activation::attach(&mut body, storage_activation.as_ref())?;
+                    output(json, &body)?;
+                    return Err(activation::command_interrupted());
+                };
                 let unverified = unverified_ends(&activation);
                 let mut body = serde_json::json!({
                     "changed": [],
@@ -1031,7 +1043,10 @@ async fn relationship(command: RelationshipCommand) -> Result<()> {
             let mapped = storage::set_with(
                 property.is_none(),
                 async || put_managed(&ok, &doc, updated.clone(), &expect).await,
-                async || map_created_pair(&ok, &source_object, &key, wait_activation, yes).await,
+                async || {
+                    map_created_pair(&ok, &source_object, &key, wait_activation, yes, &command)
+                        .await
+                },
             )
             .await?;
             confirmation(&format!("relationship {source_object}.{key} set"));
@@ -1046,21 +1061,53 @@ async fn relationship(command: RelationshipCommand) -> Result<()> {
                 output(json, &body)?;
                 return activation::check_interrupted(Some(storage));
             }
-            let activation = wait_for_ends(&tenant, ends).await;
-            let one_sided = match relink::reverse_added(&doc, &updated, &source_object, &key) {
-                Some((far, far_key)) => {
-                    sample_one_sided(&tenant, &updated, &source_object, &key, &far, &far_key).await
-                }
-                None => None,
-            };
-            let (mapping, storage_activation) = match mapped {
+            let remaining = command
+                .run(async {
+                    let activation = wait_for_ends(&tenant, ends).await;
+                    let one_sided =
+                        match relink::reverse_added(&doc, &updated, &source_object, &key) {
+                            Some((far, far_key)) => {
+                                sample_one_sided(
+                                    &tenant,
+                                    &updated,
+                                    &source_object,
+                                    &key,
+                                    &far,
+                                    &far_key,
+                                )
+                                .await
+                            }
+                            None => None,
+                        };
+                    (activation, one_sided)
+                })
+                .await;
+            let (mapping, mut storage_activation) = match mapped {
                 Some((verification, storage)) => (verification, storage),
                 None => (
                     None,
-                    activation::settle(&tenant, ok.confirmed_prod, &[], wait_activation, yes)
-                        .await?,
+                    activation::settle(
+                        &tenant,
+                        ok.confirmed_prod,
+                        &[],
+                        wait_activation,
+                        yes,
+                        &command,
+                    )
+                    .await?,
                 ),
             };
+            if command.mark(&mut storage_activation) || remaining.is_none() {
+                let mut body = serde_json::json!({
+                    "changed": changed_objects(&doc, &updated)?,
+                    "mapping_verification": mapping,
+                    "interrupted": true,
+                });
+                activation::attach(&mut body, storage_activation.as_ref())?;
+                output(json, &body)?;
+                return Err(activation::command_interrupted());
+            }
+            let (activation, one_sided) = remaining.unwrap();
             let unverified = unverified_ends(&activation);
             let mut body = serde_json::json!({
                 "changed": changed_objects(&doc, &updated)?,
@@ -2027,6 +2074,7 @@ async fn map_created_pair(
     key: &str,
     wait_activation: Option<u64>,
     yes: bool,
+    command: &activation::CommandInterrupt,
 ) -> Result<(
     Option<VerificationOutput>,
     Option<activation::StorageActivation>,
@@ -2061,7 +2109,7 @@ async fn map_created_pair(
             }
         ))
     })?;
-    let storage_activation = if let Some(plan) = prepared {
+    let mut storage_activation = if let Some(plan) = prepared {
         let added = activation::added_type_names(plan.addition());
         let pending = activation::prepare(ok.tenant, &added, wait_activation, yes)
             .await
@@ -2076,17 +2124,37 @@ async fn map_created_pair(
         let permit = repair::authorize(false, true)
             .ok_or_else(|| crate::Error::Config("mapping authorization failed".into()))?;
         apply_mapping(ok, &plan, &permit).await?;
-        activation::finish(ok.tenant, ok.confirmed_prod, &added, pending).await?
+        activation::finish(ok.tenant, ok.confirmed_prod, &added, pending, command).await?
     } else {
         check_orphans(ok.tenant, object, key, "existing mapping").await?;
-        activation::settle(ok.tenant, ok.confirmed_prod, &[], wait_activation, yes).await?
+        activation::settle(
+            ok.tenant,
+            ok.confirmed_prod,
+            &[],
+            wait_activation,
+            yes,
+            command,
+        )
+        .await?
     };
     // Return directly to rendering recovery evidence after bounded cleanup.
     if storage_activation.as_ref().is_some_and(|a| a.interrupted) {
         return Ok((None, storage_activation));
     }
-    let verification =
-        collect_verification(field, 5, 200, None, Some(ok.tenant.to_string())).await?;
+    let Some(verification) = command
+        .run(collect_verification(
+            field,
+            5,
+            200,
+            None,
+            Some(ok.tenant.to_string()),
+        ))
+        .await
+    else {
+        command.mark(&mut storage_activation);
+        return Ok((None, storage_activation));
+    };
+    let verification = verification?;
     verification_check(&verification)?;
     eprintln!(
         "mapping configuration verified; runtime storage mode is untested without links (run verify --probe later if appropriate)"
