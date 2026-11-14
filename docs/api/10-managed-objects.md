@@ -272,7 +272,7 @@ read-back, and remains so.
 | Shape                   | Accepted / observed                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Minimal custom object   | `{ "name": "...", "schema": { "type": "object", "title": "...", "properties": {}, "required": [], "order": [] } }`. Objects carry no `_id`/`$id`; the document's `_id: "managed"` is the only id.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
-| Standard object marker  | **Two markers, governing two different things — do not collapse them.** (a) Top-level `"type": "Managed Object"` marks a Ping-shipped _object_: all ten realm objects carry it, custom objects carry no `type` at all, and no other value of `type` occurs (verified 2026-08-07). **Reported from a client tenant 2026-11-05, not reproduced here:** console-created custom objects carry `"type": "Managed Object"` too (objects created through REST, as on the sandbox, carry no `type`). So the marker is not proof: `crate::managed::state::object_protection` refuses rename/delete by **name** (`alpha_`/`bravo_` × `user`, `role`, `group`, `organization`, `application`, `assignment`) and treats the marker under any other name as needing `--force`. (b) Top-level `meta` marks the objects whose _fields_ Ping constrains: **only `alpha_user` and `bravo_user`** carry it (verified 2026-07-27, re-confirmed 2026-08-07). This is the "additions need a `custom_` prefix, shipped fields are read-only" test — `object_class`. `role`/`organization`/`assignment`/`application` have `type` but no `meta`, and **accept ordinary un-prefixed properties** (confirmed by the maintainer against `alpha_organization`, 2026-08-07 — not independently re-run here), so they get full field freedom while the object stays protected. Keying field capability on `type` (2026-07-31 to 2026-08-07) forced `custom_` names the server never required. |
+| Standard object marker  | **Two markers, governing two different things — do not collapse them.** (a) Top-level `"type": "Managed Object"` was present on Ping's ten realm objects in the 2026-11-14 sandbox census; a console-created custom object carried no `type`. The census of 30 objects found exactly the ten Ping built-ins (`alpha_`/`bravo_` × `user`, `role`, `organization`, `application`, `assignment`) marked. Protection is by name only: `object_protection` refuses rename/delete for the existing `alpha_`/`bravo_` Ping-name list, regardless of marker, and allows custom names even when marked. The 2026-11-05 client report that console-created custom objects carry this marker is not reproduced in that sandbox. (b) Top-level `meta` marks the objects whose _fields_ Ping constrains: **only `alpha_user` and `bravo_user`** carry it (verified 2026-07-27, re-confirmed 2026-08-07). This is the `custom_` prefix and shipped-fields protection test — `object_class`. `role`/`organization`/`assignment`/`application` have `type` but no `meta`, and accept ordinary un-prefixed properties (maintainer confirmation against `alpha_organization`, 2026-08-07; not independently re-run here). Keying field capability on `type` would force `custom_` names the server never required.
 | Scalar property         | `{ "title": "...", "description": "...", "type": "string", "searchable": true, "viewable": true, "userEditable": true }` round-trips.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | Enum-constrained scalar | `{ "type": "string", "title": "...", "enum": ["new", "done"], "options": { "enum_titles": ["Brand new", "All done"] }, "searchable": …, "viewable": …, "userEditable": … }`. **`enum` is a constraint on a scalar, not a distinct property type** — the property keeps its `type` and gains a sibling `enum` array. Round-trips verbatim, including optional `options.enum_titles` display labels. Also works on `"type": "number"` (`enum: [1,2,3]`) and on an array's items (`{"type":"array","items":{"type":"string","enum":[…]}}`). **Enforced on record write**, not just UI metadata — see "Enum constraints" below. Verified 2026-07-31.                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | Single relationship     | `{ "type": "relationship", "resourceCollection": [{ "path": "managed/<target>" }] }`. `reversePropertyName`, `validate`, and explicit `_ref`/`_refProperties` are optional at config-write time.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
@@ -909,9 +909,10 @@ records creatable; mapping the pair then behaved as in the table.
 created *immediately* after a new per-type entry went in landed in the old
 generic store; once the entry activated the record could no longer be read, and
 reverting the entry exposed it again. Waiting before creating records avoided
-it. How long activation takes is unmeasured, so `relationship set`/`map` print a
+it. How long activation takes is unmeasured. `relationship set`/`map` print a
 warning after any write that adds a per-type entry
-(`storage::activation_warning`) rather than wait a guessed interval.
+(`storage::activation_warning`). `--wait-activation` does not wait a guessed
+interval either: it writes a probe record, as measured below.
 
 **Not reproduced on the sandbox (2026-11-09).** Two throwaway pairs, plain
 `{}` creates, every record read back by id and counted by `_queryFilter=true`
@@ -924,6 +925,84 @@ entry existed and during its write, and the run-2 records again several minutes
 later. So no activation lag was observable here at any timing, and there is no
 measured interval to wait for; the warning stays. What differs on the reporting
 tenant is unknown.
+
+**No validated read-only activation signal was found (2026-11-14).** A
+pending activation state could not be reproduced on this sandbox. The checks
+did not establish known pending and active runtime controls, so unchanged
+post-write responses cannot exclude a signal that flipped before sampling.
+Throwaway types `zzemuR3A_thing`, `zzemuR3A_ou`, and `zzemuR3A_rec` were
+created for the checks and deleted afterwards; `config/repo.ds` was backed up
+and restored to that backup.
+
+- Config read-back of the new `genericMapping` entry was immediate, for
+  `PUT /openidm/config/repo.ds` (0.102 s, 200) and the same PUT with
+  `waitForCompletion=true` (0.272 s, 200). The entry was present on the first
+  re-read. This establishes config visibility, without identifying the live store.
+- A record created in the generic store before the entry, and one created
+  immediately after it (body `{}`), both stayed `GET` 200 by id for the whole
+  ~20 s watch. The earlier record stayed readable after the entry was removed.
+  This control shows that immediate readability does not establish cutover.
+  The 2026-11-03 failure mode did not occur here.
+- **Candidates without a pending-state control:** `_queryFilter=true`
+  (plain, with `totalPagedResultsPolicy=EXACT`, and `_countOnly` with
+  `Accept-API-Version: protocol=2.2,resource=1.0`) kept the same envelope.
+  `resultCount` changed because a record was added. `info/ping` stayed
+  `ACTIVE_READY`. These observations do not disprove either candidate.
+- **Blocked or unavailable:** `GET /openidm/repo/managed/<object>` stayed
+  403, preventing inspection. `info/config`, `maintenance`, and `config/repo`
+  were 404. These provide no evidence about runtime activation.
+- **Disproved as a sufficient signal by a control:** the missing-id 404
+  changed from an OU message to a uid-under-OU message when the per-type entry
+  was added (first poll, dt 0.0 s), and remained that way for 15 s after removal.
+  Creating one generic record, with no per-type entry, flipped the same message;
+  deleting that record left it flipped. `managed/alpha_lock`, without a per-type
+  entry, also returned the uid form. OU existence therefore cannot establish
+  per-type store activation.
+
+`relationship set` and `relationship map` offer a consented fallback,
+`--wait-activation[=SECONDS]` (default 60, from 1 to 3600). After a write that
+adds a per-type entry, the command creates one probe in each such type with
+`POST /openidm/managed/<object>?_action=create` and a caller-chosen UUID in
+`_id`. This is the documented create-only path above. The UUID is printed
+before dispatch. Create is never retried, including after a lost response.
+The probe reads that UUID, deletes it, and confirms absence with GET 404.
+
+One shared deadline bounds create/read waits across all newly mapped types;
+no create starts after it. Each started type gets a separate **15-second
+cleanup allowance**. An outstanding create is awaited for up to the first ten
+seconds of cleanup, with deletion and confirmation time reserved afterwards.
+Cleanup requests each wait at most two seconds; transient DELETE failures
+retry within the allowance, with a confirm read between attempts. A missing
+read cannot settle an outstanding create. An unsettled write or unresolved
+cleanup retains its UUID and explicitly requests manual removal, even if a
+read returned 404. Ctrl-C is latched: cleanup finishes within its allowance
+before the command exits non-zero. Further Ctrl-C presses do not skip cleanup.
+
+`--json` adds `storage_activation` (`outcome` `readable`, `not_confirmed`,
+`declined`, or `not_needed`; `interrupted`; `seconds` and `timeout_seconds`
+on a probe; per object `outcome`, `seconds`, `detail`, and `id` unless
+`readable`). This is separate from `activation`, the relationship-end liveness
+wait. `readable` means the probe was read within the probe deadline and its
+delete was confirmed. It does not prove a later record cannot land in the old
+store. `not_confirmed` covers timeout, a rejected create (required fields),
+interruption, or unresolved cleanup. Ordinary unconfirmed probes keep the
+command successful because the mapping has landed; interruption exits non-zero
+after rendering the report. `declined` writes no probe. `not_needed` means no
+per-type entry was added. Without the flag the command only warns and omits
+`storage_activation`.
+
+The probe is a real record: hooks and sync mappings may have side effects.
+The consent plan names **every script-shaped hook** on the object, inline or
+file-backed, for any event name, and labels firing behavior unknown for this
+probe where unmeasured. It names every mapping whose `source` or `target` is
+`managed/<object>`. If either `config/managed` or `config/sync` cannot be
+inventoried, the plan says so and the command **refuses even with `--yes`**;
+unread inventory is never reported as empty. Otherwise the plan requires
+`--yes` or terminal consent. `--yes` is also the production gate. A
+non-interactive run without `--yes` refuses before creating a probe. On
+`relationship set` the schema write has landed but the per-type entry is not
+added; finish with `relationship map --wait-activation --yes`. On
+`relationship map` the switch has not been sent. `--dry-run` writes no probe.
 
 **Promotion (measured 2026-11-02, three real dev → UAT promotions of
 throwaway types).** `repo.ds` is promoted as a **whole document**: after each
@@ -2566,6 +2645,38 @@ on create, or when actually rotating it.
 
 ## Verified against
 
+- Date: 2026-11-14 — storage-activation signals, sandbox, throwaway
+  `zzemuR3A_thing`, `zzemuR3A_ou`, and `zzemuR3A_rec` (each `managed object
+  create`, no relationships). `config/repo.ds` was backed up first. A per-type
+  entry for `zzemuR3A_thing` was added by whole-document `PUT` without
+  `waitForCompletion` (200 in 0.102 s) and, on a second pass, with it (200 in
+  0.272 s). Both times the entry was on the first re-read. A record created
+  before the entry and one created immediately after (body `{}`) stayed `GET`
+  200 by id across a ~20 s watch; the earlier record stayed readable after the
+  entry was removed, then deleted (200, confirm `GET` 404). Query envelopes did
+  not change shape (`_countOnly` needs `Accept-API-Version:
+  protocol=2.2,resource=1.0`, then 200). `info/ping` stayed `ACTIVE_READY`.
+  `/openidm/repo/managed/<object>` stayed 403. `info/config`, `maintenance`,
+  and `config/repo` were 404. On a never-used name the missing-id 404 named
+  the OU as missing; the per-type entry flipped it to a uid under the OU at
+  the first poll (dt 0.0 s) and the uid form remained for 15 s after the entry
+  was removed. One generic record on `zzemuR3A_rec`, with no per-type entry,
+  flipped the same 404, and deleting the record left it flipped.
+  `managed/alpha_lock` has no per-type entry and already 404s as a uid under
+  its OU. `config/repo.ds` was restored to the backup (re-read matched; the
+  per-type entry was absent) and the three types were deleted. No read-only
+  signal was validated; a pending activation state could not be reproduced.
+  The 403/404 candidates were blocked/unavailable, and unchanged query/ping
+  responses had no pending-state control. The generic-create missing-id control
+  rules out OU existence as a sufficient activation signal.
+
+- Date: 2026-11-14 — name-only object protection, sandbox, read-only
+  `GET /openidm/config/managed`: a console-created custom object carried no
+  `type`; among 30 objects exactly the ten Ping built-ins (`alpha_`/`bravo_` ×
+  user, role, organization, application, assignment) carried
+  `"type": "Managed Object"`. Protection is by name only. This evidence does
+  not reproduce the 2026-11-05 client report that console-created custom
+  objects carry the marker.
 - Date: 2026-11-10 — removing the empty per-type `repo.ds` entry of an
   **existing** type, sandbox, throwaway `zzemuA_thing` and `zzemuA_owner`
   (`object create`, a `label` string each, `relationship set thing.owner
@@ -2587,16 +2698,6 @@ on create, or when actually rotating it.
   through a mapping (the mapping was removed first, so links through it
   were not read after), a restart of IDM, or a larger collection. All records
   and both types were then deleted.
-
-- Date: 2026-11-10 — console-marker delete guard, sandbox, throwaway
-  `zzemuA_mark` (`object create`, no relationships). The whole `config/managed`
-  document was backed up, then re-sent with `"type": "Managed Object"` added to
-  that one object (`PUT` 200; re-read equal to the document sent). `aic managed
-  object delete zzemuA_mark --yes` refused, exit 1, naming the marker and
-  `--force`, and the object stayed in the config. With `--force --yes` it was
-  deleted, and the rest of `config/managed` equalled the backup minus that
-  object, key for key. The marker write went by `curl` rather than an `aic`
-  verb, since no `aic` verb sets it.
 
 - Date: 2026-11-09 — mapping activation and last-mapping removal, sandbox,
   throwaway `zzemu_act_a`–`zzemu_act_d` built with `aic managed object create`

@@ -643,19 +643,19 @@ as workspace scripts via `aic script` (`managed/<object>.<hook>`).
 aic managed list [--json]                        # object types with property + hook counts
 aic managed get alpha_user [--fields GLOB] [--hook-sources] [--schema-only | --property NAME] [--json]
 aic managed object create custom_widget [--title T] [--description D] [--yes] [--json]
-aic managed object rename custom_widget custom_gadget [--force] [--yes] [--json]
-aic managed object delete custom_gadget [--force] [--yes] [--json]
+aic managed object rename custom_widget custom_gadget [--yes] [--json]
+aic managed object delete custom_gadget [--yes] [--json]
 aic managed field add custom_widget.code --type string|boolean|number|string[]|object|object[] [--nullable] [--after KEY] [--title T] [--required false] [--enum value[:Title] ...] [--default VALUE] [--yes] [--json]
 aic managed field edit custom_widget.code --searchable true [--enum value[:Title] ... | --clear-enum] [--default VALUE | --clear-default] [--force] [--yes] [--json]
 aic managed field rename custom_widget.code external_code [--yes] [--json]
 aic managed field delete custom_widget.external_code [--yes] [--json]
 aic managed hook add custom_widget onCreate [--yes] [--json]
 aic managed hook delete custom_widget onCreate [--yes] [--json]
-aic managed relationship set custom_widget.owner --target alpha_user --forward one [--reverse none|one|many] [--reverse-key widgets] [--check] [--yes] [--json]
+aic managed relationship set custom_widget.owner --target alpha_user --forward one [--reverse none|one|many] [--reverse-key widgets] [--check] [--wait-activation[=SECONDS]] [--yes] [--json]
 aic managed relationship delete custom_widget.owner [--remove-mapping [--force]] [--yes] [--json]
 aic managed relationship verify custom_widget[.owner] [--sample 5] [--scan 200] [--probe [--force] [--yes]] [--json]
 aic managed relationship relink custom_widget.owner [--dry-run] [--force] [--yes] [--json]
-aic managed relationship map custom_widget.owner [--capture FILE] [--acknowledge-request-finished] [--dry-run] [--force] [--yes] [--json]
+aic managed relationship map custom_widget.owner [--capture FILE] [--acknowledge-request-finished] [--dry-run] [--force] [--wait-activation[=SECONDS]] [--yes] [--json]
 aic managed relationship capture-links --lower dev --upper uat --output FILE [--new-pair object.key]... [--dry-run] [--force] [--yes] [--json]
 aic managed relationship restore-links FILE [--tenant uat] [--acknowledge-request-finished] [--dry-run] [--force] [--yes] [--json]
 aic managed relationship rollback-map FILE [--tenant dev] [--acknowledge-request-finished] [--dry-run] [--force] [--yes] [--json]
@@ -707,6 +707,9 @@ unaffected. With `--property`, only that property's pair is shown. The TUI
 relationship editor shows the same line under its title. What neither can show
 is whether the running IDM has *picked up* a `repo.ds` change: `aic` knows of
 no endpoint that reports it, so the line describes configuration, not runtime.
+`relationship set` and `relationship map` can follow a new per-type entry with
+`--wait-activation`, described with the relationship waits below. That probe is
+not what this line shows.
 
 stdout is the definition alone with or without `--json`; the notes above and
 "omitted N inline hook sources" / "showing N of M properties" go to stderr, so
@@ -733,11 +736,9 @@ hook's presence, `type` and `globals` are still compared. `--strict` applies
 neither. It exits non-zero when anything differs; `--json` prints
 `{"object", "normalised", "differences"}`.
 
-`object rename` and `object delete` refuse Ping's realm objects
-(`alpha_`/`bravo_` × `user`, `role`, `group`, `organization`, `application`,
-`assignment`) outright. An object that carries Ping's `"type": "Managed Object"`
-marker under any other name is refused unless `--force` is given, because
-console-created custom objects carry that marker too.
+Object rename and delete protection is based on the object name only. A custom
+object carrying `"type": "Managed Object"` remains renameable and deletable
+without `--force`; Ping-shipped names remain refused.
 
 `--json` on a write prints what it changed, never the whole `config/managed`
 document: `object create`/`object rename`, `field …` and `hook add`/`hook delete` print the
@@ -840,6 +841,58 @@ that has nothing to write still probes them: so re-running after a failed
 passing. No schema-level
 wait exists for a type with no records: nothing measured so far tells a live
 end from a pending one without a record to read through.
+
+That wait is the relationship end. It is separate from a new per-type
+`config/repo.ds` entry. No validated read-only activation signal was found,
+and a pending activation state could not be reproduced on this sandbox
+(2026-11-14). Config read-back was immediate. Query envelopes and `info/ping`
+were unchanged, without a demonstrated pending-state control. Raw repo access
+was blocked (403), and candidate state endpoints were unavailable (404);
+these do not disprove a signal. A generic-create control shows that the
+missing-id OU message cannot establish activation. Records stayed readable
+before and after adding the entry, so immediate readability does not establish
+cutover. The client-reported lag (2026-11-03) was not reproduced here on
+2026-11-09 or 2026-11-14. See `docs/api/10-managed-objects.md`.
+
+`--wait-activation[=SECONDS]` on `relationship set` and `relationship map`
+(default 60, from 1 to 3600) offers a consented probe when a per-type entry is
+added. It sends one create-only POST per type with a caller-chosen UUID in
+`_id`, reads that ID, deletes it, and confirms absence. It prints the UUID
+before dispatch and never retries create. One deadline bounds all create/read
+waits; no create starts after expiry. Each started type gets a separate
+15-second cleanup allowance, including up to ten seconds settling an
+outstanding create. Each cleanup request waits at most two seconds. Transient
+DELETE failures retry, with confirm reads between attempts. An unsettled
+create or unresolved cleanup is explicitly reported with its UUID for manual
+removal. A 404 alone cannot settle an outstanding create. Ctrl-C is latched
+until bounded cleanup finishes, then exits non-zero; repeated Ctrl-C cannot
+skip cleanup. After a normal probe, the same interruption latch covers the
+remaining verification and restoration waits. Interruption exits non-zero;
+map retains the capture and reports each confirmed restored link plus any
+pending request whose outcome is unresolved, in stderr and JSON (`restored`
+and `pending`). Keep link writers paused before inspecting or resuming it.
+
+Before writing, the plan names all script-shaped hooks (inline and file-backed,
+any event) and every sync mapping whose source or target is `managed/<object>`.
+Hook firing behavior is labeled unknown where unmeasured for this probe;
+hooks and mappings may have side effects on create/delete. If either inventory
+cannot be read, the command refuses even with `--yes`, and never calls that
+inventory empty. Otherwise `--yes` skips the prompt and is the production gate.
+Without a terminal or `--yes`, refusal creates no probe: on `relationship set`
+the schema write has landed and the per-type entry has not, so finish with
+`relationship map --wait-activation --yes`; on `relationship map` nothing is
+switched. `--dry-run` writes no probe.
+
+`--json` adds `storage_activation`, including `interrupted`. `readable` means
+the probe was read within the deadline and its delete was confirmed; it does
+not establish cutover or prevent a later generic-store write. `not_confirmed`
+covers timeout, a refused create, interruption, or unresolved cleanup. The UUID
+is retained unless the result is `readable`. Ordinary unconfirmed probes keep
+the command successful and print the warning; interruption renders recovery
+details then exits non-zero (map retains its capture). `declined` writes no
+probe and keeps the warning. `not_needed` means no per-type entry was added.
+Without the flag the command only warns and omits `storage_activation`.
+`activation`, above, remains the relationship-end liveness wait.
 
 Adding a reverse to a relationship that already has links leaves every one of
 them one-sided: IDM does not migrate them, so the new reverse end does not list

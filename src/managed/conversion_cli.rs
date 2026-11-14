@@ -16,7 +16,7 @@ use serde_json::{Value, json};
 use super::conversion::{
     self, Capture, Census, FileSession, Link, Observation, Origin, Pair, State,
 };
-use super::{api, conversion_records, relink, repair, storage, verify};
+use super::{activation, api, conversion_records, relink, repair, storage, verify};
 use crate::cli::force::OperationForce;
 use crate::cli::{WriteOk, ensure_prod_confirmed, print_json, tenant_config_for};
 use crate::config::ProjectConfig;
@@ -50,6 +50,7 @@ pub struct Flags {
     pub acknowledge_request_finished: bool,
     pub force: bool,
     pub yes: bool,
+    pub wait_activation: Option<u64>,
     pub json: bool,
 }
 impl From<Options> for Flags {
@@ -59,6 +60,7 @@ impl From<Options> for Flags {
             acknowledge_request_finished: false,
             force: options.force.operation(),
             yes: options.yes,
+            wait_activation: None,
             json: options.json,
         }
     }
@@ -227,10 +229,39 @@ fn stopped(path: &Path, capture: &Capture, error: Error) -> Error {
     };
     let reason = conversion::config_detail(error);
     let evidence = request_evidence(capture);
+    let progress = restoration_progress(capture);
     Error::Config(format!(
-        "{reason}\n{evidence}\nCapture retained at {}. Keep link writers paused. Correct the reported problem and re-run `aic managed relationship {resume}`; an in-place conversion can instead use rollback-map. No automatic rollback was attempted",
+        "{reason}\n{progress}\n{evidence}\nCapture retained at {}. Keep link writers paused. Correct the reported problem and re-run `aic managed relationship {resume}`; an in-place conversion can instead use rollback-map. No automatic rollback was attempted",
         path.display()
     ))
+}
+
+/// Receipts are confirmed reads; an intent can still land after we stop waiting.
+fn restoration_progress(capture: &Capture) -> String {
+    let mut lines = vec![format!(
+        "Confirmed restored links: {}",
+        capture.restored.len()
+    )];
+    for receipt in &capture.restored {
+        let pair = &capture.pairs[receipt.pair];
+        lines.push(format!(
+            "  {} {} (edge {})",
+            pair.forward.label(),
+            pair.links[receipt.link].label(),
+            receipt.edge_id
+        ));
+    }
+    if let Some(intent) = &capture.pending {
+        let pair = &capture.pairs[intent.pair];
+        lines.push(format!(
+            "Unresolved {:?}: {} {}; whether it landed is unknown (transaction id: {})",
+            intent.action,
+            pair.forward.label(),
+            pair.links[intent.link].label(),
+            intent.transaction_id.as_deref().unwrap_or("unavailable")
+        ));
+    }
+    lines.join("\n")
 }
 
 async fn census(tenant: &str, pair: &Pair) -> Result<Census> {
@@ -591,9 +622,6 @@ async fn write_plan(
             applied.readback
         )));
     }
-    if let Some(warning) = plan.addition().and_then(storage::activation_warning) {
-        eprintln!("{warning}");
-    }
     Ok(())
 }
 
@@ -603,6 +631,10 @@ pub async fn map(
     tenant: Option<String>,
     flags: Flags,
 ) -> Result<()> {
+    if let Some(seconds) = flags.wait_activation {
+        activation::parse_timeout(seconds).map_err(|error| Error::Config(error.to_string()))?;
+    }
+    let command = activation::CommandInterrupt::new();
     let (object, key) = super::cli::parse_object_key(&field)?;
     let configured = tenant_config_for(tenant)?;
     let path = path.unwrap_or_else(default_path);
@@ -665,6 +697,11 @@ pub async fn map(
         storage::mode(&report) == storage::Mode::Generic,
     );
     let Some(permit) = consent(&flags, "map", &capture)? else {
+        if flags.wait_activation.is_some() {
+            eprintln!(
+                "--dry-run writes nothing, so --wait-activation does not create a probe record"
+            );
+        }
         return output(
             &flags,
             &json!({"capture":path,"links":capture.count(),"dry_run":true,"mappings":capture.pairs[0].mappings}),
@@ -673,6 +710,7 @@ pub async fn map(
     let ok = ensure_prod_confirmed(&configured.name, flags.yes)?;
     let mut file = FileSession::open(path.clone(), previous).await?;
     file.save(&capture).await?;
+    let mut storage_activation = None;
     let result = async {
         let pair = capture.pairs[0].clone();
         let managed = api::get_managed(ok.tenant).await?;
@@ -688,29 +726,73 @@ pub async fn map(
                 if plan.addition().map(|addition| &addition.entries) != Some(&pair.mappings) {
                     return Err(Error::Config("column allocation changed since the capture; inspect before retrying with a new plan".into()));
                 }
+                let added = activation::added_type_names(plan.addition());
+                let pending = activation::prepare(ok.tenant, &added, flags.wait_activation, flags.yes).await?;
                 conversion::switch_with(&mut capture, &permit,
                     async |capture| file.save(capture).await,
                     async || { conversion::exact(&pair, &generic_snapshot(ok.tenant, &pair).await?)?; guard(ok.tenant, &pair, storage::Mode::Generic).await?; Ok(()) },
                     async || write_plan(&ok, &pair, &plan, storage::Mode::Generic).await).await?;
-                let records = api::present_records(ok.tenant, &object, &key).await?;
+                storage_activation = activation::finish(ok.tenant, ok.confirmed_prod, &added, pending, &command).await?;
+                if storage_activation.as_ref().is_some_and(|a| a.interrupted) {
+                    return Ok(());
+                }
+                let Some(records) = command.run(api::present_records(ok.tenant, &object, &key)).await else {
+                    return Ok(());
+                };
+                let records = records?;
                 storage::no_orphans(&object, &key, column(&pair), &records).map_err(Error::Config)?;
             },
             storage::Mode::Mapped => {
                 conversion::guard(&pair, &managed, &repo, storage::Mode::Mapped)?;
                 if matches!(capture.state, State::Captured | State::Switching) {
-                    let records = api::present_records(ok.tenant, &object, &key).await?;
+                    let Some(records) = command.run(api::present_records(ok.tenant, &object, &key)).await else {
+                        return Ok(());
+                    };
+                    let records = records?;
                     storage::no_orphans(&object, &key, column(&pair), &records).map_err(Error::Config)?;
                 }
             },
             storage::Mode::Mixed => return Err(Error::Config("pair is mixed; inspect mappings before resuming".into())),
         }
-        finish_restore(&ok, &mut capture, &mut file, &permit).await
+        command.run(finish_restore(&ok, &mut capture, &mut file, &permit)).await.unwrap_or(Ok(()))
     }.await;
     result.map_err(|error| stopped(&path, &capture, error))?;
-    output(
-        &flags,
-        &json!({"capture":path,"links":capture.count(),"complete":true}),
-    )
+    if storage_activation.is_none() && flags.wait_activation.is_some() {
+        storage_activation = activation::settle(
+            ok.tenant,
+            ok.confirmed_prod,
+            &[],
+            flags.wait_activation,
+            flags.yes,
+            &command,
+        )
+        .await?;
+    }
+    finish_map(&flags, &path, &capture, &mut storage_activation, &command)
+}
+
+fn finish_map(
+    flags: &Flags,
+    path: &Path,
+    capture: &Capture,
+    storage_activation: &mut Option<activation::StorageActivation>,
+    command: &activation::CommandInterrupt,
+) -> Result<()> {
+    let interrupted = command.mark(storage_activation);
+    if interrupted {
+        eprintln!(
+            "{}",
+            stopped(path, capture, activation::command_interrupted())
+        );
+    }
+    let mut body = json!({"capture": path, "links": capture.count(), "complete": !interrupted, "interrupted": interrupted,
+        "restored": capture.restored, "pending": capture.pending});
+    activation::attach(&mut body, storage_activation.as_ref())?;
+    output(flags, &body)?;
+    if interrupted {
+        return Err(activation::command_interrupted());
+    }
+    activation::check_interrupted(storage_activation.as_ref())
 }
 
 async fn read_promotion(lower: &str, upper: &str) -> Result<conversion::PromotionRead> {
@@ -1087,6 +1169,254 @@ mod tests {
             "{error}"
         );
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    // Real process signals after the production finish path returned normally.
+    // Only probe/record I/O is replaced; restore sequencing and reporting are real.
+    #[test]
+    fn post_probe_sigint_child() {
+        let Ok(mode) = std::env::var("AIC_POST_PROBE_SIGINT_CHILD") else {
+            return;
+        };
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let code = runtime.block_on(async {
+            use std::cell::RefCell;
+            use std::io::Write;
+            let command = activation::CommandInterrupt::new();
+            let mut storage = activation::lifecycle_tests::normal_probe(&command).await;
+            let path = PathBuf::from(std::env::var("AIC_POST_PROBE_CAPTURE").unwrap());
+            let (mut capture, _) = captured(true);
+            capture.state = State::Switching;
+            let mut second = capture.pairs[0].links[0].clone();
+            second.from_id = "a2".into();
+            capture.pairs[0].links.push(second);
+            let mut file = FileSession::open(path.clone(), None).await.unwrap();
+            file.save(&capture).await.unwrap();
+            let signal_point = || {
+                println!("POST_PROBE_AWAIT_PENDING");
+                std::io::stdout().flush().unwrap();
+            };
+            if mode == "verification" {
+                let result = command
+                    .run(async {
+                        signal_point();
+                        tokio::time::sleep(Duration::from_secs(2)).await;
+                    })
+                    .await;
+                if result.is_some() {
+                    return 0;
+                }
+            } else {
+                let records = RefCell::new(Vec::<relink::Edge>::new());
+                let permit = conversion::authorize(false, true).unwrap();
+                let result = command
+                    .run(conversion::restore_with(
+                        &mut capture,
+                        &permit,
+                        async |_| Ok(()),
+                        async |_, link| {
+                            if mode == "between" && link.from_id == "a2" {
+                                signal_point();
+                                tokio::time::sleep(Duration::from_secs(2)).await;
+                            }
+                            Ok(Observation {
+                                edges: records
+                                    .borrow()
+                                    .iter()
+                                    .filter(|edge| edge.link.from_id == link.from_id)
+                                    .cloned()
+                                    .collect(),
+                                rev: Some("r1".into()),
+                            })
+                        },
+                        async |capture| file.save(capture).await,
+                        async |_, link, _, _| {
+                            if mode == "inflight" && link.from_id == "a2" {
+                                signal_point();
+                                tokio::time::sleep(Duration::from_secs(2)).await;
+                            }
+                            let mut created = edge(link);
+                            created.link.edge_id = Some(format!("restored-{}", link.from_id));
+                            records.borrow_mut().push(created);
+                            Ok(Some(format!("restored-{}", link.from_id)))
+                        },
+                        async |_, _, _| Ok(()),
+                    ))
+                    .await;
+                if result.is_some() {
+                    return 0;
+                }
+                assert_eq!(records.borrow().len(), 1, "no second write may dispatch");
+            }
+            let flags = Flags {
+                dry_run: false,
+                acknowledge_request_finished: false,
+                force: true,
+                yes: true,
+                wait_activation: Some(1),
+                json: true,
+            };
+            finish_map(&flags, &path, &capture, &mut storage, &command)
+                .unwrap_err()
+                .exit_code()
+        });
+        std::process::exit(code);
+    }
+
+    #[test]
+    fn real_sigint_after_normal_probe_reports_verification_and_partial_restoration() {
+        use std::io::{BufRead, BufReader};
+        use std::process::{Command, Stdio};
+        for mode in ["verification", "between", "inflight"] {
+            let dir = std::env::temp_dir().join(format!("aic-post-probe-{}", uuid::Uuid::new_v4()));
+            std::fs::create_dir(&dir).unwrap();
+            let path = dir.join("capture.json");
+            let mut child = Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "managed::conversion_cli::tests::post_probe_sigint_child",
+                    "--nocapture",
+                ])
+                .env("AIC_POST_PROBE_SIGINT_CHILD", mode)
+                .env("AIC_POST_PROBE_CAPTURE", &path)
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap();
+            let mut stdout = BufReader::new(child.stdout.take().unwrap());
+            let mut before = String::new();
+            loop {
+                let mut line = String::new();
+                if stdout.read_line(&mut line).unwrap() == 0 {
+                    let output = child.wait_with_output().unwrap();
+                    panic!("{mode}: child exited before signal point: {before}; {output:?}");
+                }
+                before.push_str(&line);
+                if line.contains("POST_PROBE_AWAIT_PENDING") {
+                    break;
+                }
+            }
+            // The child announces from inside the later future, after readable.
+            assert_eq!(unsafe { libc::kill(child.id() as i32, libc::SIGINT) }, 0);
+            child.stdout = Some(stdout.into_inner());
+            let output = child.wait_with_output().unwrap();
+            assert_eq!(output.status.code(), Some(1), "{mode}: {output:?}");
+            let stdout = String::from_utf8(output.stdout).unwrap();
+            let stderr = String::from_utf8(output.stderr).unwrap();
+            let start = stdout.find('{').unwrap();
+            let body: Value = serde_json::from_str(&stdout[start..]).unwrap();
+            assert_eq!(body["complete"], false, "{body}");
+            assert_eq!(body["storage_activation"]["interrupted"], true, "{body}");
+            assert_eq!(
+                body["storage_activation"]["outcome"], "readable",
+                "normal probe result retained"
+            );
+            assert!(stderr.contains("Keep link writers paused"), "{stderr}");
+            let retained = conversion::load(&path).unwrap();
+            assert_eq!(
+                serde_json::to_value(&retained.restored).unwrap(),
+                body["restored"]
+            );
+            assert_eq!(
+                serde_json::to_value(&retained.pending).unwrap(),
+                body["pending"]
+            );
+            if mode == "verification" {
+                assert_eq!(body["restored"], json!([]));
+                assert!(stderr.contains("Confirmed restored links: 0"), "{stderr}");
+            } else {
+                assert_eq!(body["restored"].as_array().unwrap().len(), 1, "{body}");
+                assert_eq!(body["restored"][0]["edge_id"], "restored-a1");
+                assert!(
+                    stderr.contains("a.link a1 -> managed/b/b1 (edge restored-a1)"),
+                    "{stderr}"
+                );
+                if mode == "inflight" {
+                    assert_eq!(body["pending"]["link"], 1);
+                    assert!(
+                        body["pending"]["transaction_id"]
+                            .as_str()
+                            .unwrap()
+                            .starts_with("aic-")
+                    );
+                    assert!(stderr.contains("whether it landed is unknown"), "{stderr}");
+                } else {
+                    assert_eq!(body["pending"], Value::Null);
+                }
+            }
+            std::fs::remove_dir_all(&dir).unwrap();
+        }
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn repeated_sigint_after_cleanup_exits_with_stdout_backpressure() {
+        use std::io::{BufRead, BufReader, Write};
+        use std::os::unix::fs::OpenOptionsExt;
+        use std::process::{Command, Stdio};
+        let dir = std::env::temp_dir().join(format!("aic-blocked-report-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&dir).unwrap();
+        let mut child = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "managed::conversion_cli::tests::post_probe_sigint_child",
+                "--nocapture",
+            ])
+            .env("AIC_POST_PROBE_SIGINT_CHILD", "verification")
+            .env("AIC_POST_PROBE_CAPTURE", dir.join("capture.json"))
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut stdout = BufReader::new(child.stdout.take().unwrap());
+        loop {
+            let mut line = String::new();
+            assert_ne!(
+                stdout.read_line(&mut line).unwrap(),
+                0,
+                "no readiness marker"
+            );
+            if line.contains("POST_PROBE_AWAIT_PENDING") {
+                break;
+            }
+        }
+        // Fill the real renderer's pipe without draining or closing its reader.
+        let mut pipe = std::fs::OpenOptions::new()
+            .write(true)
+            .custom_flags(libc::O_NONBLOCK)
+            .open(format!("/proc/{}/fd/1", child.id()))
+            .unwrap();
+        loop {
+            match pipe.write(&[b'x'; 4096]) {
+                Ok(_) => (),
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
+                Err(error) => panic!("fill stdout: {error}"),
+            }
+        }
+        drop(pipe);
+        assert_eq!(unsafe { libc::kill(child.id() as i32, libc::SIGINT) }, 0);
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(
+            child.try_wait().unwrap().is_none(),
+            "report must be blocked"
+        );
+        assert_eq!(unsafe { libc::kill(child.id() as i32, libc::SIGINT) }, 0);
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let status = loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                break Some(status);
+            }
+            if std::time::Instant::now() >= deadline {
+                child.kill().unwrap();
+                child.wait().unwrap();
+                break None;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        // Keep stdout undrained until after the bounded exit check.
+        drop(stdout);
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(status.and_then(|status| status.code()), Some(130));
     }
 
     #[test]
