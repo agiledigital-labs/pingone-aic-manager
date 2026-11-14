@@ -93,10 +93,11 @@ measured call and a reject row for the call the old declaration let through:
 - `nextgen-may-act`: `getMayAct`/`getAct` nullable, `setMayAct(null)` accepted.
 - `nextgen-nameid-mapper` (measured 2026-11-14): `getNameIDValue()` is a
   string, `getNameIDFromSession()` is `null`, `shouldPersistNameIDFormat()` is
-  a boolean, and `session` is an object. `identity.store`, `setAttribute`,
+  `false`, and `session` is `unknown`. `identity.store`, `setAttribute`,
   `addAttribute` and `getUniversalId` are absent. Calling
-  `createNameIdentifier` is not a type error: its return type is `never`, and
-  the emulator faults the call.
+  `createNameIdentifier` is a type error: its signature is unmeasured and
+  the member is `unknown`. The mail result exposes only `.length` and `[0]`;
+  list operations and writes remain unsupported.
 - `nextgen-social-normalize` and `nextgen-config-provider`: the bindings the
   legacy default arm never declared, and absence rows for the legacy-only ones
   (`sharedState`, `outcome`, `identity`, `cacheManager`, `nodeState.keys`).

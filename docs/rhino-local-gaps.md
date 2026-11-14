@@ -1222,9 +1222,9 @@ What it approximates or leaves out:
 `packages/rhino-local/src/bindings/rhino/context-saml2-nameid-mapper.cjs`, on
 the same `context-common.cjs` views, so the view-level gaps above apply here
 too, with the prefix `saml2-nameid-mapper-unmeasured/`. The e2e
-(`test/bindings/saml2-nameid-mapper.e2e.test.ts`) runs the three probes from
-the SP-initiated SSO (a string completion, an empty completion, a throw) and
-the unmeasured calls. What it approximates or leaves out:
+(`test/bindings/saml2-nameid-mapper.e2e.test.ts`) checks the measured surface
+and outcomes from the SP-initiated SSO (a string completion, an undefined
+completion, a throw), plus the unmeasured calls. What it approximates or leaves out:
 
 - **One flow.** SP-initiated SSO with an existing IdP session, email NameID
   format, and the hosted IdP's email format mapped to `mail`. Other formats,
@@ -1238,17 +1238,18 @@ the unmeasured calls. What it approximates or leaves out:
 - **`NAMEID_FORMAT_*`.** Not enumerable in the live object, and no probe read
   one. A read faults.
 - **`createNameIdentifier()`.** Present, arity 0, not called. A call faults.
-- **`session`.** Bound as an object. No member was read, so a member read is
-  the ordinary missing-property `undefined`, and `String(session)` faults.
+- **`session`.** Bound as an object. No member was read. Any member read, write or call faults,
+  including when the script catches the exception.
 - **`getNameIDFromSession`.** Only `null` was returned. A persisted NameID was
   not observed (`shouldPersistNameIDFormat()` returned `false`).
 - **`identity.getAttributeValues`.** Only `"mail"` with one string. `.length`
-  and `[0]` were read. `.size()` was not. Any other attribute faults. `store`,
+  and `[0]` were read. `.size()` was not and faults; only `.length` and `[0]` are exposed.
+  Any other attribute faults. `store`,
   `setAttribute`, `addAttribute` and `getUniversalId` were not called and
   fault.
 - **The completion value.** A non-empty string is the NameID text.
   `undefined` is the refusal `Could not generate NameID`. The empty string,
-  `null`, a number and an object were not sent; anything other than a string
+  `null`, a number and an object were not sent; anything other than a nonempty string
   or `undefined` faults. The assertion's format stayed the format the SP
   requested. Nothing in the probe changed it.
 - **The AIC lane** runs only decision-node scripts, so a NameID mapper case

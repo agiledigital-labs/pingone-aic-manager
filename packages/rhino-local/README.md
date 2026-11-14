@@ -675,7 +675,8 @@ the missing channels marked unobserved. What the harness hands *to* your code
 (`RunResult`, `StepResult`, `CheckContext`, `StepContext`, `BeforeRunContext`)
 stays complete, so a test that builds one of those by hand needs the new
 fields. The one deliberate widening is `EvidenceChannel`, which gained
-`"accessToken"` and `"oidc"` for the access-token and OIDC claims contexts, so an
+`"accessToken"`, `"oidc"`, `"socialIdp"`, `"configProvider"`,
+`"validateScope"`, `"mayAct"`, `"returns"` and `"nameId"` for the added contexts, so an
 exhaustive `switch` over it written against 0.1.2 needs new arms. `test/compat/consumer-0.1.2.ts` holds this line: it compiles every
 0.1.2 export's shape against the current one, and `npm run typecheck` fails on
 any new break.
@@ -1488,7 +1489,7 @@ A may-act case runs locally only. The types are exported from `./case`:
 
 `context: "SAML2_NAMEID_MAPPER"` runs the remote service provider's NameID
 mapper (next-gen). The assertion's NameID text is the script's completion
-value when that value is a string. A completion of `undefined` fails SSO with
+value when that value is a nonempty string. A completion of `undefined` fails SSO with
 `Could not generate NameID`. A thrown script fails the run (`CaseRunError`)
 and the message contains the thrown value. Measured 2026-11-14
 (`docs/api/12-script-bindings-matrix.md`).
@@ -1531,7 +1532,7 @@ failure and cannot be combined with `value`; `refusal` then names the text
   string in the measured email-format case). `getNameIDFromSession()` returns
   `null`. `shouldPersistNameIDFormat()` returns `false`.
   `createNameIdentifier` is present and calling it faults. The
-  `NAMEID_FORMAT_*` constants were not readable in the live enumeration, so a
+  `NAMEID_FORMAT_*` constants were not read in the live probe, so a
   read faults.
 - `identity.exists()` and `identity.getName()` answer the fixture.
   `getName()` in the measured SSO was the managed object's `_id`, not the
@@ -1542,7 +1543,7 @@ failure and cannot be combined with `value`; `refusal` then names the text
   `logger.getName()` is
   `scripts.SAML2_NAMEID_MAPPER.<script id>.(<script name>)`.
 
-An unmeasured member or a completion other than a string or `undefined`
+An unmeasured member or a completion other than a nonempty string or `undefined`
 raises `saml2-nameid-mapper-unmeasured/<binding>.<member>`.
 
 A NameID mapper case runs locally only. The types are exported from `./case`:
