@@ -58,7 +58,7 @@ it("two files in one worker share one JVM and each starts from a clean scope", a
     expect(b).toBe(a);
     // The lease reuse itself: one runner JVM for the whole run, which both
     // leases and both pid borrows ran on. Linux only (it reads /proc).
-    if (procAvailable) expect([...jvms]).toEqual([a]);
+    if (procAvailable) expect([...(jvms ?? [])]).toEqual([a]);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

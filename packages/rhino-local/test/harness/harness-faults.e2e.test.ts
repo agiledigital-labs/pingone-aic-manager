@@ -108,7 +108,7 @@ it("a caught true refusal fails its case, a caught emulated error passes, and th
     expect(output).toContain(`tally: ${tallyPath}`);
 
     // The pool was on: both files' leases ran on one runner JVM. Linux only.
-    if (procAvailable) expect(jvms.size, output).toBe(1);
+    if (procAvailable) expect(jvms?.size, output).toBe(1);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
