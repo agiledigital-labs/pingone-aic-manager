@@ -3169,6 +3169,45 @@ IDM scripts are tenant-global (no realm). The IDM **endpoint**
 | `request`        | yes      | no       | **V**   | Discriminated union per CREST method (read/create/update/patch/delete/action/query). `docs/api/11`.                                                                                                                                                                                                                                                 |
 | `context`        | yes      | no       | **V**   | `context.http` = {method,path,headers,parameters}; `context.security` = {authenticationId,authorization}; `context.oauth2` = {scopes (a `JavaSet` — use `.contains()`), rawInfo, token, expiresAt}, present only behind `rsFilter`; `rawInfo` is AM's 15-key introspection record (`client_id`, `user_id`, `exp`, …) — full table in `docs/api/11`. `context.http.headers` and `.parameters` are single-valued **strings**, unlike AM's lists — a duplicated query parameter is rejected with `400` before the script runs and a duplicated header is comma-joined (verified 2026-09-08; `docs/api/11`). |
 
+### `openidm.query` result and has-many arrays — IDM (verified 2026-11-14)
+
+A throwaway custom endpoint on the sandbox, created for this probe and deleted
+afterwards (the config read and the route were both 404), described each value
+with `Array.isArray`, `instanceof Array`, `Object.prototype.toString.call`,
+`typeof` of `map` / `some` / `length` / `size` / `get`, whether `map` is
+`Array.prototype.map`, what calling `map` returns, and whether `[].concat(v)`
+is a real array of the same elements. A JS array literal in the same script
+was the control.
+
+The values were `openidm.query("managed/alpha_user", { _queryFilter: "true",
+_pageSize: 2 }, ["_id"]).result` (two records), the `result` of
+`_queryFilter: "false"` (zero records), `roles` from `openidm.read` of a
+throwaway `alpha_user` holding one `alpha_role` and of one holding none, and
+`members` from a read of that role (one). Those records were removed before
+the request returned; a following query and read found none of them.
+
+| Probe | Query `result` (2 and 0) and the relationship arrays (`roles` 1 and 0, `members` 1) | JS array literal (3 and 0) |
+| ----- | ------------------------------------------------------------------------------------ | --------------------------- |
+| `Array.isArray` / `instanceof Array` | `true` / `true` | `true` / `true` |
+| `Object.prototype.toString.call` | `[object Array]` | `[object Array]` |
+| `typeof map`, `typeof some` | `"function"`, `"function"` | `"function"`, `"function"` |
+| `map === Array.prototype.map` | `true` | `true` |
+| calling `map` | an array of the same length | an array of the same length |
+| `typeof length` | `"number"`, the element count | `"number"` |
+| `typeof size`, `typeof get` | `"undefined"`, `"undefined"` | `"undefined"`, `"undefined"` |
+| `[].concat(v)` | a real array of the same length, elements equal | a real array of the same length, elements equal |
+| `JSON.stringify(v)` first character | `{` | `[` |
+| `JSON.stringify([].concat(v))` first character | `[` | `[` |
+
+IDM answers these probes the way a JS array does: `.map()` and `.some()` are
+the ordinary array methods, and `size` / `get` are absent. The next-gen AM
+table in this file (verified 2026-11-08) records that engine's list, where
+`Array.isArray` is false and `map` is undefined. `JSON.stringify` of the IDM
+list value itself begins with `{`, including when the list is empty; the same
+quirk is in `docs/api/24-idm-script-runtime.md`. `[].concat(v)` begins with
+`[`. The IDM workspace and the TypeScript endpoint declarations keep
+`ReadList<T> = T[]`, and a type test pins `.map()` as accepted.
+
 ### IDM `identityServer.getProperty` missing ESV behavior (verified 2026-07-22)
 
 `identityServer.getProperty("esv.some.variable")` **does not throw** when the

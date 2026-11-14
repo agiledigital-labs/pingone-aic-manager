@@ -234,7 +234,7 @@ pub enum ScriptCommand {
         #[command(flatten)]
         force: SyntaxCheckForce,
     },
-    /// Delete a standalone script, retaining its local source file.
+    /// Delete a standalone script from the tenant. Keeps the local file and forgets its sync record.
     Delete {
         #[arg(help = "<namespace>/<name>")]
         reference: String,
