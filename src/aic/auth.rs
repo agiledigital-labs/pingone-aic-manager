@@ -43,7 +43,8 @@ impl TokenCache {
     /// process is out of our hands the moment we print it and has to outlive
     /// whatever that process does with it.
     pub fn get_with_min_ttl(&self, min_ttl: i64) -> Option<&str> {
-        if self.expires_at > unix_now() + min_ttl {
+        let now = unix_now();
+        if self.expires_at > now && self.expires_at >= now + min_ttl {
             self.token.as_deref()
         } else {
             None
@@ -337,6 +338,17 @@ mod tests {
         // point of the floor is to not hand out a token that dies mid-use.
         assert!(cache.expires_at() > unix_now());
         assert_eq!(cache.get_valid(), None);
+    }
+
+    #[test]
+    fn cache_reuses_exactly_at_a_positive_ttl_floor_but_not_when_expired_at_zero() {
+        let now = unix_now();
+        let mut cache = TokenCache::new();
+        cache.store("equal".into(), now + 120);
+        assert_eq!(cache.get_with_min_ttl(120), Some("equal"));
+
+        cache.store("expired".into(), now - 1);
+        assert_eq!(cache.get_with_min_ttl(0), None);
     }
 
     use super::mint_token;
