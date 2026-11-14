@@ -208,6 +208,7 @@ binary deliberately does not read passwords from environment variables.
 | `aic whoami --token`           | Print **only** the bearer token (for scripting, e.g. `curl -H "Authorization: Bearer $(aic whoami --token)"`). |
 | `aic whoami --json`            | The same identity as plain `whoami`, as JSON: `tenant`, `host`, `sa`, `operator`, `expires_at`, `expires_in`. `access_token` is present only with `--token`. |
 | `aic whoami --min-ttl <secs>`  | Return the cached token only when it has at least `<secs>` left; otherwise the agent mints a new one (still in memory). Replaces `--token`'s 840s floor, including a smaller one. Refused at or above 898. |
+| `aic whoami --idm [--json]`    | Show the IDM component, its roles, and the scopes the service-account token requested. Prints no token and no id. States that a management scope is not the IDM admin role. Cannot be combined with `--token` or `--min-ttl`. |
 | `aic whoami --token --host <url-or-host>` | As `--token`, for the context whose host the URL names (unless `--tenant` is given); refuses — no token printed, non-zero exit — unless the host is that context's own or one of its custom domains. |
 
 `aic ctx current` (or `aic ctx show`) answers "which tenant would a command
@@ -297,6 +298,17 @@ under it almost immediately. Verified 2026-11-14: a cached token reported
 `expires_in` 783; `--min-ttl 803` minted, and the following `--json`
 reported 898 with no `access_token`. `--min-ttl 898` exited non-zero and
 printed nothing. `--token` alone stayed one line.
+
+`whoami --idm` reports how IDM authenticates the service-account token. It reads
+`GET /openidm/info/login` and `GET /am/oauth2/realms/root/tokeninfo` and
+prints `component`, `roles`, and `scopes`. `--json` is the same facts plus
+`admin_role` (true only for `internal/role/openidm-admin`) and `note`.
+The note is always: a management scope is not the IDM admin role, and
+`fr:idm:*` does not grant `openidm-admin`. The login ids, and the access
+token that tokeninfo echoes, are not printed. Verified 2026-11-14: component
+`managed/svcacct`, roles `openidm-svcacct` and `openidm-authorized`,
+`admin_role` false, and `fr:idm:*` among the scopes. `--idm --token`
+exits non-zero and prints nothing.
 
 Unlike the other `ctx` verbs, `rm` needs an unlocked agent: it reads the vault
 to find out what the tenant owns, and withdraws a signing key from the tenant
