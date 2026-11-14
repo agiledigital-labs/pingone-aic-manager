@@ -222,6 +222,23 @@ pub enum ScriptCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Write one AM script the way `fr-config-pull scripts` writes it.
+    Export {
+        #[arg(help = "<realm>/<name>, for example alpha/custom_widget")]
+        reference: String,
+        /// Root of the fr-config-manager tree (`realms/` is created under it).
+        #[arg(long, value_name = "DIR")]
+        config_dir: crate::config::UserPath,
+        #[arg(long, help = "Tenant to target")]
+        tenant: Option<String>,
+        #[arg(long, help = "Print the result as JSON")]
+        json: bool,
+        #[arg(long, help = "List the paths and write nothing")]
+        dry_run: bool,
+        /// Overwrite a file that differs, after backing the old bytes up.
+        #[command(flatten)]
+        force: OperationForce,
+    },
     /// Copy a standalone script, including its complete raw config.
     Copy {
         source: String,
@@ -996,6 +1013,14 @@ pub(crate) async fn run_with_runtime(
             }
             Ok(())
         }
+        ScriptCommand::Export {
+            reference,
+            config_dir,
+            tenant,
+            json,
+            dry_run,
+            force,
+        } => export_script(reference, config_dir, tenant, json, dry_run, force).await,
         ScriptCommand::Delete {
             reference,
             force,
@@ -1710,6 +1735,51 @@ fn print_git_search(full: &str, repo: &std::path::Path, found: &script::gitfind:
         };
         println!("  {}  {short}  {}{link}", hit.reference, hit.path);
     }
+}
+
+async fn export_script(
+    reference: String,
+    config_dir: crate::config::UserPath,
+    tenant: Option<String>,
+    json: bool,
+    dry_run: bool,
+    force: OperationForce,
+) -> Result<()> {
+    // An IDM ref is not this layout. Say so before asking the tenant.
+    let (ns, name) = parse_one(&reference)?;
+    let realm = crate::fcm::am_export_realm(&ns)?;
+    let tenant = tenant_for(tenant)?;
+    let mut ids = Vec::new();
+    for (id, found) in script::am::id_to_name(&tenant, realm).await? {
+        if found == name {
+            ids.push(id);
+        }
+    }
+    let id = match ids.as_slice() {
+        [] => {
+            return Err(Error::Config(format!(
+                "no AM script named {name:?} in realm {realm}"
+            )));
+        }
+        [id] => id.clone(),
+        many => {
+            return Err(Error::Config(format!(
+                "{} AM scripts in realm {realm} are named {name:?}",
+                many.len()
+            )));
+        }
+    };
+    let fetched = script::Kind::Am.fetch(&tenant, realm, &id).await?;
+    let files = crate::fcm::script_files(realm, &fetched.raw_config)?;
+    let report = crate::fcm::install(&crate::fcm::Install {
+        config_dir: config_dir.as_ref(),
+        files: &files,
+        dry_run,
+        force: force.operation(),
+        backup_kind: "script",
+        backup_realm: realm,
+    })?;
+    crate::fcm::present(&report, json)
 }
 
 /// Pick the context that actually gives you the engine you asked for.
