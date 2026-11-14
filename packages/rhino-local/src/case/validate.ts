@@ -27,6 +27,7 @@ import type {
   ConfigProviderCaseInit,
   ValidateScopeCaseInit,
   MayActCaseInit,
+  NameIdCaseInit,
   LibraryCaseInit,
   Engine,
   Expect,
@@ -67,6 +68,9 @@ import {
   parseValidateScopeExpect,
   parseValidateScopeSeed,
   parseMayActExpect,
+  parseNameIdExpect,
+  parseNameIdSeed,
+  checkNameIdIdentity,
   parseLibraryExpect,
   parseLibrarySeed,
   parseSocialIdpSeed,
@@ -104,6 +108,7 @@ export function defineCase(
     | ConfigProviderCaseInit
     | ValidateScopeCaseInit
     | MayActCaseInit
+    | NameIdCaseInit
     | LibraryCaseInit
 ): Case {
   return validateCase(input);
@@ -350,6 +355,12 @@ function parseGiven(raw: unknown, path: string, context: ScriptContext): Given {
   if (raw.identity !== undefined) {
     given.identity = parseIdentitySeed(raw.identity, `${path}.identity`);
   }
+  if (raw.nameId !== undefined) {
+    given.nameId = parseNameIdSeed(raw.nameId, `${path}.nameId`);
+  }
+  if (context === "SAML2_NAMEID_MAPPER") {
+    checkNameIdIdentity(given.identity, `${path}.identity`);
+  }
   if (raw.client !== undefined) {
     given.client = parseClientSeed(raw.client, `${path}.client`);
   }
@@ -474,6 +485,9 @@ function parseExpectBody(raw: Record<string, unknown>, path: string, expect: Exp
   }
   if (raw.mayAct !== undefined) {
     expect.mayAct = parseMayActExpect(raw.mayAct, `${path}.mayAct`);
+  }
+  if (raw.nameId !== undefined) {
+    expect.nameId = parseNameIdExpect(raw.nameId, `${path}.nameId`);
   }
   if (raw.returns !== undefined) {
     expect.returns = parseLibraryExpect(raw.returns, `${path}.returns`);

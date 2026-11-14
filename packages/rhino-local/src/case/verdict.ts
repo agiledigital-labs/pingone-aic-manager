@@ -19,6 +19,7 @@ import type {
   ConfigProviderEffect,
   ValidateScopeEffect,
   MayActEffect,
+  NameIdEffect,
   LibraryEffect,
   AccessTokenState,
   AllowUndeclared,
@@ -153,6 +154,9 @@ export function judge(input: unknown, effects: unknown): Verdict {
       : []),
     ...(kase.context === "OAUTH2_MAY_ACT"
       ? judgeMayAct(kase.expect, recorded, strictness.mayAct)
+      : []),
+    ...(kase.context === "SAML2_NAMEID_MAPPER"
+      ? judgeNameId(kase.expect, recorded, strictness.nameId)
       : []),
     ...(kase.context === "LIBRARY"
       ? judgeLibrary(kase.expect, recorded, strictness.returns)
@@ -858,6 +862,70 @@ function libraryResultText(effect: LibraryEffect): string {
     return `thrown ${effect.phase}: ${effect.message}`;
   }
   return effect.undefined ? "undefined" : formatValue(effect.value);
+}
+
+function judgeNameId(expect: Expect, recorded: CompleteRecordedEffects, allowUndeclared: boolean): Mismatch[] {
+  const effect = recorded.nameId;
+  if (effect === undefined) {
+    return [
+      miss("nameId", "nameId", "a recorded result", "<none>",
+        "nameId: the runner recorded no result for a NameID mapper case"),
+    ];
+  }
+  const want = expect.nameId ?? {};
+  const mismatches: Mismatch[] = [];
+  const wantAccepted = want.accepted !== false;
+  if (effect.accepted !== wantAccepted) {
+    mismatches.push(
+      miss("nameId", "accepted", String(wantAccepted), String(effect.accepted),
+        effect.accepted
+          ? "nameId.accepted: expected the SSO to fail, but the script produced a NameID"
+          : `nameId.accepted: SSO failed: ${effect.refusal ?? ""}`)
+    );
+  }
+  if (want.format !== undefined && want.format !== effect.format) {
+    mismatches.push(
+      miss("nameId", "format", JSON.stringify(want.format), JSON.stringify(effect.format),
+        "nameId.format: differed")
+    );
+  }
+  if (effect.accepted !== wantAccepted) {
+    if (want.refusal !== undefined && want.refusal !== effect.refusal) {
+      mismatches.push(
+        miss("nameId", "refusal", JSON.stringify(want.refusal), formatValue(effect.refusal),
+          "nameId.refusal: differed")
+      );
+    }
+    return mismatches;
+  }
+  if (!wantAccepted) {
+    if (want.refusal !== undefined && want.refusal !== effect.refusal) {
+      mismatches.push(
+        miss("nameId", "refusal", JSON.stringify(want.refusal), formatValue(effect.refusal),
+          "nameId.refusal: differed")
+      );
+    } else if (want.refusal === undefined && !allowUndeclared) {
+      mismatches.push(
+        miss("nameId", "refusal", "a declared refusal", formatValue(effect.refusal),
+          "nameId.refusal: undeclared; declare expect.nameId.refusal or set allowUndeclared.nameId")
+      );
+    }
+    return mismatches;
+  }
+  if (want.value === undefined) {
+    if (!allowUndeclared) {
+      mismatches.push(
+        miss("nameId", "value", "a declared NameID", formatValue(effect.value),
+          "nameId.value: undeclared; declare expect.nameId.value or set allowUndeclared.nameId")
+      );
+    }
+  } else if (want.value !== effect.value) {
+    mismatches.push(
+      miss("nameId", "value", JSON.stringify(want.value), formatValue(effect.value),
+        "nameId.value: differed")
+    );
+  }
+  return mismatches;
 }
 
 function judgeMayAct(expect: Expect, recorded: CompleteRecordedEffects, allowUndeclared: boolean): Mismatch[] {
@@ -1613,6 +1681,9 @@ function parseEffects(raw: unknown): CompleteRecordedEffects {
   if (raw.mayAct !== undefined) {
     recorded.mayAct = parseMayActEffect(raw.mayAct);
   }
+  if (raw.nameId !== undefined) {
+    recorded.nameId = parseNameIdEffect(raw.nameId);
+  }
   if (raw.returns !== undefined) {
     recorded.returns = parseLibraryEffect(raw.returns);
   }
@@ -1709,6 +1780,28 @@ function parseLibraryEffect(raw: unknown): LibraryEffect {
     name: raw.name,
     message: raw.message,
   };
+}
+
+function parseNameIdEffect(raw: unknown): NameIdEffect {
+  if (!isPlainObject(raw)) {
+    throw new Error("rhino-local: effects.nameId is not an object");
+  }
+  if (typeof raw.accepted !== "boolean") {
+    throw new Error("rhino-local: effects.nameId.accepted must be a boolean");
+  }
+  if (raw.value !== null && typeof raw.value !== "string") {
+    throw new Error("rhino-local: effects.nameId.value must be a string or null");
+  }
+  if (typeof raw.format !== "string") {
+    throw new Error("rhino-local: effects.nameId.format must be a string");
+  }
+  if (raw.refusal !== null && typeof raw.refusal !== "string") {
+    throw new Error("rhino-local: effects.nameId.refusal must be a string or null");
+  }
+  if (raw.accepted !== (raw.value !== null) || raw.accepted !== (raw.refusal === null)) {
+    throw new Error("rhino-local: effects.nameId accepted, value and refusal disagree");
+  }
+  return { accepted: raw.accepted, value: raw.value, format: raw.format, refusal: raw.refusal };
 }
 
 function parseMayActEffect(raw: unknown): MayActEffect {

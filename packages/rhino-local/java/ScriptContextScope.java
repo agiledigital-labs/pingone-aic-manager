@@ -85,6 +85,21 @@ final class ScriptContextScope implements Scriptable {
     sealedNames = names;
   }
 
+  private final java.util.Map<String, org.mozilla.javascript.Function> guardedBindings =
+      new java.util.HashMap<>();
+
+  /** A context can refuse unmeasured writes to a seeded scalar binding. */
+  void guardBinding(String name, org.mozilla.javascript.Function fault) {
+    guardedBindings.put(name, fault);
+  }
+
+  private void checkBindingWrite(String name) {
+    org.mozilla.javascript.Function fault = guardedBindings.get(name);
+    if (fault != null) {
+      fault.call(Context.getCurrentContext(), this, this, new Object[0]);
+    }
+  }
+
   private boolean sealed(String name) {
     return sealedNames.contains(name);
   }
@@ -94,6 +109,7 @@ final class ScriptContextScope implements Scriptable {
     if (sealed(name)) {
       return;
     }
+    checkBindingWrite(name);
     int scope = scriptContext.getAttributesScope(name);
     if (scope == -1) {
       scope = ScriptContext.ENGINE_SCOPE;
@@ -114,6 +130,7 @@ final class ScriptContextScope implements Scriptable {
     if (sealed(name)) {
       return;
     }
+    checkBindingWrite(name);
     int scope = scriptContext.getAttributesScope(name);
     if (scope != -1) {
       scriptContext.removeAttribute(name, scope);
