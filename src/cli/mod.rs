@@ -2519,7 +2519,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn idm_diagnostic_errors_hide_transport_details_and_api_bodies() {
+    async fn idm_diagnostic_error_return_hides_transport_details_and_api_bodies() {
         for (error, fail_second) in [
             (
                 Error::Transport("https://synthetic.example/path bearer-marker-abc".into()),
@@ -2553,23 +2553,14 @@ mod tests {
             })
             .await;
             let safe = result.unwrap_err().to_string();
-            let stdout = Vec::<u8>::new();
-            let mut stderr = Vec::<u8>::new();
-            use std::io::Write as _;
-            writeln!(&mut stderr, "{safe}").unwrap();
             assert!(safe.contains(if fail_second {
                 "tokeninfo lookup"
             } else {
                 "login lookup"
             }));
-            if safe.contains("HTTP") {
-                assert!(safe.contains("HTTP 503"));
-            }
-            for stream in [&stdout[..], &stderr[..]] {
-                let stream = String::from_utf8_lossy(stream);
-                assert!(!stream.contains("synthetic.example"));
-                assert!(!stream.contains("bearer-marker-abc"));
-            }
+            assert_eq!(safe.contains("HTTP 503"), fail_second);
+            assert!(!safe.contains("synthetic.example"));
+            assert!(!safe.contains("bearer-marker-abc"));
         }
     }
 

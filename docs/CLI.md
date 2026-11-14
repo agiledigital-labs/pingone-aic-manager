@@ -293,9 +293,10 @@ subtraction `aic session status` uses for `Ns remaining` (zero or below is
 the object rather than the bare token and stderr stays empty. `--min-ttl`
 applies with or without `--token`: the agent returns the cached token when
 it still has that many seconds left, and otherwise mints a new one into the
-same in-memory cache. A value of 898 or more is refused before any request,
+same in-memory cache. A value of 898 or more is refused before `GetToken`,
 because that is the issued life the program records and a token is already
-under it almost immediately. Verified 2026-11-14: a cached token reported
+under it almost immediately. The unlock/status preflight still runs first.
+Verified 2026-11-14: a cached token reported
 `expires_in` 783; `--min-ttl 803` minted, and the following `--json`
 reported 898 with no `access_token`. `--min-ttl 898` exited non-zero and
 printed nothing. `--token` alone stayed one line.
