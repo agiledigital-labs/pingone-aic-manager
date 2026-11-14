@@ -107,6 +107,11 @@ pub enum PrivilegeCommand {
         #[arg(long, required = true, value_delimiter = ',')]
         permissions: Vec<String>,
         /// Attribute access in <name>:<ro|rw> form; repeat for each attribute.
+        ///
+        /// IDM returns `_id` and `_rev` on managed-object reads with no
+        /// accessFlags entry, and those flags are refused. Measured system
+        /// fields that IDM rejects (`_ref`, `_refProperties`, …) or accepts
+        /// only on some objects (`_meta`) are refused too.
         #[arg(long = "attr")]
         access_flags: Vec<spec::AccessFlag>,
         #[arg(long)]

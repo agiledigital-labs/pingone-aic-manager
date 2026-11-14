@@ -206,6 +206,47 @@ reports `name` and `description` from a following `GET`. The patch response
 itself is not the confirmation. The probe role was deleted afterwards; a
 following `GET` was **404**.
 
+
+### System fields on a privilege (verified 2026-11-14)
+
+A managed-object read returns `_id` and `_rev` with no `accessFlags` entry for
+either. Measured on `managed/alpha_user` (65 keys on a bare read; underscore
+keys `_id`, `_rev`) and `managed/alpha_organization` (bare read underscore keys
+`_id`, `_rev`). The caller's `GET /openidm/info/login` roles were
+`internal/role/openidm-svcacct` and `internal/role/openidm-authorized`.
+`openidm-authorized` and `openidm-admin` both exist and have an empty
+`privileges` array; `openidm-svcacct` is not an `internal/role` object (404).
+So those two fields are not coming from an accessFlags entry on the caller's
+roles.
+
+`_id` is a schema property on 8 of the sandbox's 29 managed objects and absent
+from the other 21. On `alpha_user` the property is `type: string`,
+`viewable: false`, `userEditable: false`, `searchable: false`. A privilege
+flag `{attribute: "_id", readOnly: true}` on `managed/alpha_user` was **200**
+and the re-read stored it, including a privilege whose only flag was `_id`.
+The same flag on `managed/alpha_organization` (schema does not declare `_id`)
+was **403** `INVALID_ACCESS_FLAG_ATTRIBUTE`, and the previous privilege was
+unchanged. The flag is not what puts `_id` on a read.
+
+`_fields=_id,_rev,_meta` on one `alpha_user` returned all three. The `_meta`
+value was an object with keys `_ref`, `_refProperties`,
+`_refResourceCollection`, `_refResourceId`. A bare read did not include
+`_meta`. An accessFlags entry for `_meta` on `managed/alpha_user` was **200**
+for both `readOnly: true` and `readOnly: false`, and the re-read stored each.
+The same entry on `managed/alpha_organization` was **403**
+`INVALID_ACCESS_FLAG_ATTRIBUTE`. It is not honoured on every object, so
+`aic role privilege add` does not send it.
+
+Explicit flags IDM rejected on `managed/alpha_user` (403
+`INVALID_ACCESS_FLAG_ATTRIBUTE`, privilege unchanged on the re-read): `_rev`,
+`_ref`, `_refProperties`, `_relationship`, `_notification`, `_parent`,
+`_schema`.
+
+`aic role privilege add` refuses `_id`, `_rev`, those rejected names, and
+`_meta` before the write. The `_id` refusal says IDM returns the field with
+no accessFlags entry. Any other name is still checked against
+`schema.properties`.
+
 ## Open questions
 
 - **Are `permissions` values enumerable from an API?** The role schema exposes

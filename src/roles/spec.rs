@@ -121,6 +121,39 @@ pub fn object_name(path: &str) -> Result<&str> {
     Ok(name)
 }
 
+/// Why an explicit access flag is refused for a measured system field.
+///
+/// `None` means the name is not one of those fields, so the schema check
+/// decides. Checked before the schema: `_id` is a property of some objects
+/// (alpha_user) and absent from others, and neither case is what exposes it.
+pub fn system_field_refusal(attribute: &str) -> Option<String> {
+    let message = match attribute {
+        "_id" => concat!(
+            "attribute \"_id\" cannot be an access flag: IDM returns `_id` on ",
+            "managed-object reads with no accessFlags entry for it. An explicit ",
+            "flag is not how that field is exposed — omit `--attr _id`"
+        ),
+        "_rev" => concat!(
+            "attribute \"_rev\" cannot be an access flag: IDM returns `_rev` on ",
+            "managed-object reads with no accessFlags entry for it, and rejects ",
+            "an explicit flag (INVALID_ACCESS_FLAG_ATTRIBUTE). Omit `--attr _rev`"
+        ),
+        "_ref" | "_refProperties" | "_relationship" | "_notification" | "_parent" | "_schema" => {
+            return Some(format!(
+                "attribute {attribute:?} cannot be an access flag: IDM rejects it \
+                 (INVALID_ACCESS_FLAG_ATTRIBUTE) and does not take an accessFlags entry for it"
+            ));
+        }
+        "_meta" => concat!(
+            "attribute \"_meta\" cannot be an access flag: IDM stored one on ",
+            "managed/alpha_user and rejected it on managed/alpha_organization ",
+            "(INVALID_ACCESS_FLAG_ATTRIBUTE), so it is not a field this command sets"
+        ),
+        _ => return None,
+    };
+    Some(message.to_string())
+}
+
 /// Validate every access flag against the target object's live properties.
 pub fn validate_attributes(object: &Value, flags: &[AccessFlag], path: &str) -> Result<()> {
     let properties = object
@@ -132,6 +165,9 @@ pub fn validate_attributes(object: &Value, flags: &[AccessFlag], path: &str) -> 
             ))
         })?;
     for flag in flags {
+        if let Some(refusal) = system_field_refusal(&flag.attribute) {
+            return Err(Error::Config(refusal));
+        }
         if !properties.contains_key(&flag.attribute) {
             return Err(Error::Config(format!(
                 "attribute {:?} is not a property of privilege path {path:?}",
@@ -586,6 +622,45 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.to_string().contains("not confirmed"));
+    }
+
+    #[test]
+    fn system_fields_are_refused_even_when_the_schema_lists_them() {
+        let object = json!({
+            "schema": {"properties": {"userName": {"type": "string"}, "_id": {"type": "string"}}}
+        });
+        let flags = |names: &[&str]| {
+            names
+                .iter()
+                .map(|name| AccessFlag {
+                    attribute: (*name).to_string(),
+                    read_only: true,
+                })
+                .collect::<Vec<_>>()
+        };
+        validate_attributes(&object, &flags(&["userName"]), "managed/alpha_user").unwrap();
+
+        for (attribute, needle) in [
+            ("_id", "returns `_id`"),
+            ("_rev", "returns `_rev`"),
+            ("_ref", "INVALID_ACCESS_FLAG_ATTRIBUTE"),
+            ("_refProperties", "INVALID_ACCESS_FLAG_ATTRIBUTE"),
+            ("_meta", "alpha_organization"),
+        ] {
+            let error = validate_attributes(&object, &flags(&[attribute]), "managed/alpha_user")
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains(needle), "{attribute} refusal was {error}");
+            assert!(
+                !error.contains("not a property"),
+                "{attribute} fell through to the schema check"
+            );
+        }
+
+        let missing = validate_attributes(&object, &flags(&["mail"]), "managed/alpha_user")
+            .unwrap_err()
+            .to_string();
+        assert!(missing.contains("not a property"));
     }
 
     #[test]
