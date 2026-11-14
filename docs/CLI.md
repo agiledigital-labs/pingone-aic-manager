@@ -206,6 +206,8 @@ binary deliberately does not read passwords from environment variables.
 | `aic ctx rm <tenant>`          | Remove a tenant entry and the local artifacts belonging to it. See below.                                      |
 | `aic whoami [--tenant <name>]` | Mint and print token info plus the local operator name and host for a context.                                 |
 | `aic whoami --token`           | Print **only** the bearer token (for scripting, e.g. `curl -H "Authorization: Bearer $(aic whoami --token)"`). |
+| `aic whoami --json`            | The same identity as plain `whoami`, as JSON: `tenant`, `host`, `sa`, `operator`, `expires_at`, `expires_in`. `access_token` is present only with `--token`. |
+| `aic whoami --min-ttl <secs>`  | Return the cached token only when it has at least `<secs>` left; otherwise the agent mints a new one (still in memory). Replaces `--token`'s 840s floor, including a smaller one. Refused at or above 898. |
 | `aic whoami --token --host <url-or-host>` | As `--token`, for the context whose host the URL names (unless `--tenant` is given); refuses — no token printed, non-zero exit — unless the host is that context's own or one of its custom domains. |
 
 `aic ctx current` (or `aic ctx show`) answers "which tenant would a command
@@ -280,6 +282,21 @@ than fourteen minutes, and the cached token is reused only within the first
 minute of its life. Plain `whoami` deliberately sends no floor: its job is to
 report the cache, and refreshing would make `expires:` say the same thing every
 time.
+
+`--json` prints that same report as one object. `expires_at` is the unix
+second the agent stored, and `expires_in` is `expires_at` minus now — the
+subtraction `aic session status` uses for `Ns remaining` (zero or below is
+`expired` there; `--json` keeps the signed number). There is no
+`access_token` field unless `--token` is also set, in which case stdout is
+the object rather than the bare token and stderr stays empty. `--min-ttl`
+applies with or without `--token`: the agent returns the cached token when
+it still has that many seconds left, and otherwise mints a new one into the
+same in-memory cache. A value of 898 or more is refused before any request,
+because that is the issued life the program records and a token is already
+under it almost immediately. Verified 2026-11-14: a cached token reported
+`expires_in` 783; `--min-ttl 803` minted, and the following `--json`
+reported 898 with no `access_token`. `--min-ttl 898` exited non-zero and
+printed nothing. `--token` alone stayed one line.
 
 Unlike the other `ctx` verbs, `rm` needs an unlocked agent: it reads the vault
 to find out what the tenant owns, and withdraws a signing key from the tenant

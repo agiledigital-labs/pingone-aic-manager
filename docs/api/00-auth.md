@@ -56,6 +56,19 @@ a JWK at account creation).
 ```
 
 - TTL is **898 seconds** (~15 min). Refresh proactively at ~60s before expiry.
+  The program treats 898 as the issued life. On 2026-11-14 a fresh token's
+  `aic whoami --json` `expires_in` was 898, and an earlier mint the same day
+  reported 899: the cache sets `expires_at` from a clock read taken before
+  the POST plus the response's `expires_in`, so the reported remainder can
+  sit one second over 898. `whoami --json` is how a script reads that
+  remainder (`expires_at`, `expires_in`) without decoding the token.
+  `access_token` is in the object only with `--token`.
+  `whoami --min-ttl <secs>` returns the in-memory token when it still has
+  that long left and otherwise the agent mints a new one; nothing is written
+  to disk. A floor at or above 898 is refused. The same day, a cached
+  remainder of 783s was below a floor of 803s, the agent minted, and the
+  next `--json` reported 898. A floor of 898 exited non-zero and printed
+  no token.
 - `scope` may be a re-ordered subset of requested scopes — compare as a set.
 
 ## Scopes (observed working in sandbox)

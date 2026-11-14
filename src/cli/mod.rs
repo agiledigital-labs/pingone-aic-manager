@@ -141,10 +141,29 @@ pub enum Command {
         tenant: Option<String>,
         #[arg(
             long,
-            help = "Print only the full bearer token for scripting (freshly minted \
-                    unless the cached one still has most of its life left)"
+            help = "Print only the full bearer token for scripting (the cached \
+                    token when it still has at least 840s left, otherwise a \
+                    freshly minted one). With --json the token is one field of \
+                    the object, not the whole of stdout"
         )]
         token: bool,
+        #[arg(
+            long,
+            help = "Print tenant, host, sa, operator, expires_at and expires_in \
+                    as JSON. access_token is included only together with --token, \
+                    so a script can read the expiry without decoding a token"
+        )]
+        json: bool,
+        #[arg(
+            long,
+            value_name = "SECS",
+            help = "Return the cached token only when it has at least this many \
+                    seconds left; otherwise the agent mints a new one, still kept \
+                    in memory. Replaces the 840s floor --token uses on its own, \
+                    including a smaller floor. Refused at or above the issued \
+                    life (898s), which a token is already below the instant it exists"
+        )]
+        min_ttl: Option<u32>,
         #[arg(
             long,
             value_name = "URL-OR-HOST",
@@ -437,7 +456,9 @@ pub(crate) async fn dispatch(
             tenant,
             token,
             host,
-        }) => whoami(tenant, token, host).await,
+            json,
+            min_ttl,
+        }) => whoami(tenant, token, host, json, min_ttl).await,
         Some(Command::Esv { command }) => crate::esv::cli::run(command).await,
         Some(Command::Managed { command }) => crate::managed::cli::run(command).await,
         Some(Command::Idm { command }) => crate::idmstore::cli::run(command).await,
@@ -1494,12 +1515,7 @@ async fn print_status_block() -> Result<()> {
         println!("tenants:  {}", info.tenants.join(", "));
     }
     for t in &info.cached_tokens {
-        let ttl = t.expires_at - now;
-        if ttl > 0 {
-            println!("  token {} → {}s remaining", t.tenant, ttl);
-        } else {
-            println!("  token {} → expired", t.tenant);
-        }
+        println!("{}", cached_token_line(&t.tenant, t.expires_at, now));
     }
     Ok(())
 }
@@ -1618,11 +1634,99 @@ async fn ctx(cmd: CtxCommand) -> Result<()> {
 /// more life, because a token is below its own issue TTL the instant it exists.
 const SCRIPTED_TOKEN_MIN_TTL: u32 = 840;
 
+/// Seconds from `now` until `expires_at`. Negative once that instant has passed.
+/// `aic session status` and `aic whoami` both use this subtraction.
+fn remaining_secs(expires_at: i64, now: i64) -> i64 {
+    expires_at - now
+}
+
+/// The `aic session status` line for one cached token.
+fn cached_token_line(tenant: &str, expires_at: i64, now: i64) -> String {
+    let ttl = remaining_secs(expires_at, now);
+    if ttl > 0 {
+        format!("  token {tenant} → {ttl}s remaining")
+    } else {
+        format!("  token {tenant} → expired")
+    }
+}
+
+/// The floor sent to the agent. An explicit `--min-ttl` replaces the 840s
+/// `--token` floor, including a smaller one. Plain `whoami` sends none, so it
+/// reports the cache instead of refreshing it.
+fn token_floor(token_only: bool, min_ttl: Option<u32>) -> Result<Option<u32>> {
+    let Some(secs) = min_ttl else {
+        return Ok(token_only.then_some(SCRIPTED_TOKEN_MIN_TTL));
+    };
+    if i64::from(secs) >= crate::aic::auth::ISSUED_TOKEN_TTL {
+        return Err(Error::Config(format!(
+            "--min-ttl {secs} is at or above the issued token life ({}s); a token \
+             is already below that the instant it exists, so the agent would mint \
+             on every call and still return less life",
+            crate::aic::auth::ISSUED_TOKEN_TTL
+        )));
+    }
+    Ok(Some(secs))
+}
+
+fn operator_text(operator: &ResolvedOperator) -> String {
+    match operator.source {
+        NameSource::Placeholder => format!(
+            "name not set on {} (run `aic settings set operator.name <name>`)",
+            operator.host
+        ),
+        NameSource::Settings => format!("{} on {}", operator.name, operator.host),
+        NameSource::ServiceAccount => format!(
+            "{} on {} (guessed from service account)",
+            operator.name, operator.host
+        ),
+    }
+}
+
+/// Machine form of `whoami`. `access_token` is omitted unless the caller passed
+/// `--token`; the expiry fields are always present, so a script does not have
+/// to decode the token to know when it dies.
+#[derive(Debug, Serialize, PartialEq, Eq)]
+struct WhoamiView {
+    tenant: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    host: Option<String>,
+    sa: String,
+    operator: String,
+    expires_at: i64,
+    expires_in: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    access_token: Option<String>,
+}
+
+fn whoami_view(
+    tenant: &str,
+    host: Option<&str>,
+    sa: &str,
+    operator: &ResolvedOperator,
+    expires_at: i64,
+    now: i64,
+    access_token: Option<&str>,
+) -> WhoamiView {
+    WhoamiView {
+        tenant: tenant.to_string(),
+        host: host.map(str::to_string),
+        sa: sa.to_string(),
+        operator: operator_text(operator),
+        expires_at,
+        expires_in: remaining_secs(expires_at, now),
+        access_token: access_token.map(str::to_string),
+    }
+}
+
 async fn whoami(
     tenant_arg: Option<String>,
     token_only: bool,
     host_arg: Option<String>,
+    json: bool,
+    min_ttl: Option<u32>,
 ) -> Result<()> {
+    // Before any mint: a floor the tenant cannot satisfy must not touch the agent.
+    let min_ttl_secs = token_floor(token_only, min_ttl)?;
     let cfg =
         ProjectConfig::load()?.ok_or_else(|| Error::Config("no .aic/config.toml here".into()))?;
     let contexts: Vec<(&str, &str)> = cfg
@@ -1663,11 +1767,11 @@ async fn whoami(
             tenant: tenant.clone(),
             // `--token` hands the bearer to another process, which then holds it
             // for as long as it likes; the daemon's own 60s floor is far too
-            // short for that, and the caller cannot see how much life is left
-            // because it only ever receives the string. Plain `whoami` sends no
-            // floor on purpose — its job is to REPORT the cache, and a refresh
-            // would make its `expires:` line say the same thing every time.
-            min_ttl_secs: token_only.then_some(SCRIPTED_TOKEN_MIN_TTL),
+            // short for that. `--min-ttl` replaces that 840s floor. Plain
+            // `whoami` sends no floor on purpose — its job is to REPORT the
+            // cache, and a refresh would make its `expires:` line say the same
+            // thing every time.
+            min_ttl_secs,
         })
         .await?
     {
@@ -1675,20 +1779,32 @@ async fn whoami(
             access_token,
             expires_at,
         } => {
-            let ttl = expires_at - chrono::Utc::now().timestamp();
-            if token_only {
+            let now = chrono::Utc::now().timestamp();
+            // The service account is worth printing even though it's local
+            // config: it's the `iss`/`sub` of the assertion that minted this
+            // token, so it names which of several same-titled accounts in the
+            // console this tenant actually authenticates as.
+            let sa = cfg
+                .tenants
+                .iter()
+                .find(|candidate| candidate.name == tenant)
+                .and_then(|candidate| candidate.sa_id.as_deref())
+                .unwrap_or("(none — log-only tenant)");
+            if json {
+                let host = tenant_config.map(|config| identity::host(&config.base_url));
+                let view = whoami_view(
+                    &tenant,
+                    host,
+                    sa,
+                    &operator,
+                    expires_at,
+                    now,
+                    token_only.then_some(access_token.as_str()),
+                );
+                print_json(&view)?;
+            } else if token_only {
                 println!("{access_token}");
             } else {
-                // The service account is worth printing even though it's local
-                // config: it's the `iss`/`sub` of the assertion that minted this
-                // token, so it names which of several same-titled accounts in the
-                // console this tenant actually authenticates as.
-                let sa = cfg
-                    .tenants
-                    .iter()
-                    .find(|candidate| candidate.name == tenant)
-                    .and_then(|candidate| candidate.sa_id.as_deref())
-                    .unwrap_or("(none — log-only tenant)");
                 println!("tenant:  {tenant}");
                 if let Some(tenant_config) = tenant_config {
                     println!("host:    {}", identity::host(&tenant_config.base_url));
@@ -1698,20 +1814,8 @@ async fn whoami(
                     identity::custom_domains(&tenant).await.describe()
                 );
                 println!("sa:      {sa}");
-                match operator.source {
-                    NameSource::Placeholder => println!(
-                        "operator: name not set on {} (run `aic settings set operator.name \
-                         <name>`)",
-                        operator.host
-                    ),
-                    NameSource::Settings => {
-                        println!("operator: {} on {}", operator.name, operator.host)
-                    }
-                    NameSource::ServiceAccount => println!(
-                        "operator: {} on {} (guessed from service account)",
-                        operator.name, operator.host
-                    ),
-                }
+                println!("operator: {}", operator_text(&operator));
+                let ttl = remaining_secs(expires_at, now);
                 println!("expires: in {ttl}s (unix {expires_at})");
                 println!("token:   {}", redact(&access_token));
             }
@@ -2079,6 +2183,99 @@ mod tests {
         let floor = i64::from(super::SCRIPTED_TOKEN_MIN_TTL);
         assert!(floor > crate::aic::auth::MIN_TTL_FOR_OUR_OWN_REQUEST);
         assert!(floor < crate::aic::auth::ISSUED_TOKEN_TTL);
+    }
+
+    #[test]
+    fn remaining_life_is_the_same_subtraction_status_prints() {
+        assert_eq!(super::remaining_secs(1_000, 900), 100);
+        assert_eq!(super::remaining_secs(1_000, 1_000), 0);
+        assert_eq!(super::remaining_secs(1_000, 1_050), -50);
+        assert_eq!(
+            super::cached_token_line("sandbox", 1_000, 900),
+            "  token sandbox → 100s remaining"
+        );
+        assert_eq!(
+            super::cached_token_line("sandbox", 1_000, 1_000),
+            "  token sandbox → expired"
+        );
+        assert_eq!(
+            super::cached_token_line("sandbox", 1_000, 1_050),
+            "  token sandbox → expired"
+        );
+    }
+
+    #[test]
+    fn min_ttl_replaces_the_scripted_floor_and_refuses_the_issue_ttl() {
+        assert_eq!(super::token_floor(false, None).unwrap(), None);
+        assert_eq!(
+            super::token_floor(true, None).unwrap(),
+            Some(super::SCRIPTED_TOKEN_MIN_TTL)
+        );
+        // A caller may ask for less than 840s; the flag replaces the floor.
+        assert_eq!(super::token_floor(true, Some(30)).unwrap(), Some(30));
+        assert_eq!(super::token_floor(false, Some(30)).unwrap(), Some(30));
+        let issued = u32::try_from(crate::aic::auth::ISSUED_TOKEN_TTL).unwrap();
+        let err = super::token_floor(true, Some(issued)).unwrap_err();
+        assert!(err.to_string().contains(&issued.to_string()));
+        assert!(super::token_floor(true, Some(issued - 1)).is_ok());
+    }
+
+    #[test]
+    fn whoami_json_carries_expiry_and_the_token_only_when_asked() {
+        let operator = crate::config::operator::ResolvedOperator {
+            name: "ada".into(),
+            host: "workstation".into(),
+            source: crate::config::operator::NameSource::Settings,
+        };
+        let hidden = super::whoami_view(
+            "sandbox",
+            Some("tenant.example.com"),
+            "sa-1",
+            &operator,
+            1_700_000_100,
+            1_700_000_000,
+            None,
+        );
+        let body = serde_json::to_value(&hidden).unwrap();
+        assert!(body.get("access_token").is_none());
+        assert_eq!(body["expires_at"], 1_700_000_100);
+        assert_eq!(body["expires_in"], 100);
+        assert_eq!(body["operator"], "ada on workstation");
+        assert_eq!(body["host"], "tenant.example.com");
+
+        let shown = super::whoami_view(
+            "sandbox",
+            None,
+            "sa-1",
+            &operator,
+            1_700_000_000,
+            1_700_000_050,
+            Some("bearer-for-test"),
+        );
+        let body = serde_json::to_value(&shown).unwrap();
+        assert_eq!(body["access_token"], "bearer-for-test");
+        assert_eq!(body["expires_in"], -50);
+        assert!(body.get("host").is_none());
+    }
+
+    #[test]
+    fn whoami_json_and_min_ttl_parse() {
+        let cli = Cli::try_parse_from(["aic", "whoami", "--json", "--token", "--min-ttl", "120"])
+            .unwrap();
+        match cli.command {
+            Some(Command::Whoami {
+                json,
+                token,
+                min_ttl,
+                host,
+                tenant,
+            }) => {
+                assert!(json && token);
+                assert_eq!(min_ttl, Some(120));
+                assert!(host.is_none() && tenant.is_none());
+            }
+            other => panic!("expected whoami, got {other:?}"),
+        }
     }
 
     use super::*;
