@@ -627,9 +627,14 @@ async fn finish_with(
             timeout,
             consent: ProbeConsent::Granted,
         } => {
+            command
+                .interrupt
+                .cleanup_done
+                .store(false, Ordering::SeqCst);
             command.listen()?;
             let activation =
                 probe_types_with(io, added, timeout, LIMITS, command.interrupt.clone()).await;
+            command.interrupt.cleanup_done.store(true, Ordering::SeqCst);
             announce(added, &activation);
             activation
         }
@@ -760,6 +765,7 @@ pub(crate) fn command_interrupted() -> Error {
 #[derive(Default)]
 struct Interrupt {
     latched: AtomicBool,
+    cleanup_done: AtomicBool,
     wake: tokio::sync::Notify,
 }
 
@@ -785,6 +791,10 @@ impl Interrupt {
         let listener = interrupt;
         let watch = tokio::spawn(async move {
             while signals.recv().await.is_some() {
+                // Repeated signals cannot skip cleanup, but must escape blocked reporting.
+                if listener.cleanup_done.load(Ordering::SeqCst) && listener.is_set() {
+                    std::process::exit(130);
+                }
                 listener.trip();
             }
         });
