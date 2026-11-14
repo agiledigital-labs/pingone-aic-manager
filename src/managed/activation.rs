@@ -33,7 +33,9 @@ separate 15-second cleanup allowance, including up to ten seconds settling an ou
 create. Cleanup requests wait at most two seconds and transient DELETE failures retry. The \
 create-only POST carries a caller-chosen UUID, printed before dispatch, and is never retried. \
 An unsettled create or unresolved cleanup is reported with its UUID for manual removal. \
-Ctrl-C is latched until bounded cleanup finishes, then exits non-zero.
+Ctrl-C is latched until bounded cleanup finishes, then exits non-zero. After a normal probe, \
+Ctrl-C also interrupts remaining verification/restoration waits; map reports confirmed restored \
+links and any unresolved request, and retains its capture.
 
 No validated read-only activation signal was found, and a pending activation state could not \
 be reproduced on this sandbox (2026-11-14). Config read-back was immediate. Unchanged query \
@@ -579,6 +581,25 @@ pub(crate) async fn finish(
     confirmed_prod: bool,
     added: &[String],
     pending: Pending,
+    command: &CommandInterrupt,
+) -> Result<Option<StorageActivation>> {
+    finish_with(
+        Arc::new(TenantIo {
+            tenant: tenant.into(),
+            confirmed_prod,
+        }),
+        added,
+        pending,
+        command,
+    )
+    .await
+}
+
+async fn finish_with(
+    io: Arc<impl ProbeIo + 'static>,
+    added: &[String],
+    pending: Pending,
+    command: &CommandInterrupt,
 ) -> Result<Option<StorageActivation>> {
     let activation = match pending {
         Pending::Quiet => return Ok(None),
@@ -606,18 +627,9 @@ pub(crate) async fn finish(
             timeout,
             consent: ProbeConsent::Granted,
         } => {
-            let (interrupt, _watch) = Interrupt::install()?;
-            let activation = probe_types_with(
-                Arc::new(TenantIo {
-                    tenant: tenant.into(),
-                    confirmed_prod,
-                }),
-                added,
-                timeout,
-                LIMITS,
-                interrupt,
-            )
-            .await;
+            command.listen()?;
+            let activation =
+                probe_types_with(io, added, timeout, LIMITS, command.interrupt.clone()).await;
             announce(added, &activation);
             activation
         }
@@ -632,9 +644,10 @@ pub(crate) async fn settle(
     added: &[String],
     wait_seconds: Option<u64>,
     yes: bool,
+    command: &CommandInterrupt,
 ) -> Result<Option<StorageActivation>> {
     let pending = prepare(tenant, added, wait_seconds, yes).await?;
-    finish(tenant, confirmed_prod, added, pending).await
+    finish(tenant, confirmed_prod, added, pending, command).await
 }
 
 fn announce(added: &[String], activation: &StorageActivation) {
@@ -700,6 +713,50 @@ pub(crate) fn check_interrupted(activation: Option<&StorageActivation>) -> Resul
     Ok(())
 }
 
+/// Own the listener through command completion, including post-probe awaits.
+/// Probe I/O observes the same latch but must finish bounded cleanup before
+/// returning; only subsequent work is cancelled by `run`.
+#[derive(Default)]
+pub(crate) struct CommandInterrupt {
+    interrupt: Arc<Interrupt>,
+    watch: std::sync::OnceLock<InterruptWatch>,
+}
+
+impl CommandInterrupt {
+    pub(crate) fn new() -> Self {
+        Self::default()
+    }
+
+    fn listen(&self) -> Result<()> {
+        if self.watch.get().is_none() {
+            let watch = Interrupt::listen(self.interrupt.clone())?;
+            // Installation happens on the command task before the probe starts.
+            let _ = self.watch.set(watch);
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn run<F: std::future::Future>(&self, work: F) -> Option<F::Output> {
+        tokio::select! {
+            biased;
+            () = self.interrupt.cancelled() => None,
+            result = work => Some(result),
+        }
+    }
+
+    pub(crate) fn mark(&self, activation: &mut Option<StorageActivation>) -> bool {
+        let interrupted = self.interrupt.is_set();
+        if interrupted && let Some(activation) = activation {
+            activation.interrupted = true;
+        }
+        interrupted
+    }
+}
+
+pub(crate) fn command_interrupted() -> Error {
+    Error::Config("interrupted; schema and mapping writes may already have landed; verification or restoration is incomplete. Keep link writers paused and inspect the reported progress before resuming".into())
+}
+
 #[derive(Default)]
 struct Interrupt {
     latched: AtomicBool,
@@ -714,18 +771,24 @@ impl Drop for InterruptWatch {
 }
 
 impl Interrupt {
+    #[cfg(test)]
     fn install() -> Result<(Arc<Self>, InterruptWatch)> {
+        let interrupt = Arc::new(Self::default());
+        let watch = Self::listen(interrupt.clone())?;
+        Ok((interrupt, watch))
+    }
+
+    fn listen(interrupt: Arc<Self>) -> Result<InterruptWatch> {
         // Register synchronously before any create can be dispatched.
         let mut signals = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())
             .map_err(|e| Error::Config(format!("cannot protect probe cleanup from Ctrl-C: {e}")))?;
-        let interrupt = Arc::new(Self::default());
-        let listener = interrupt.clone();
+        let listener = interrupt;
         let watch = tokio::spawn(async move {
             while signals.recv().await.is_some() {
                 listener.trip();
             }
         });
-        Ok((interrupt, InterruptWatch(watch)))
+        Ok(InterruptWatch(watch))
     }
 
     fn trip(&self) {
@@ -1284,7 +1347,7 @@ mod tests {
 }
 
 #[cfg(test)]
-mod lifecycle_tests {
+pub(super) mod lifecycle_tests {
     use super::*;
     use std::sync::Mutex;
 
@@ -1616,6 +1679,23 @@ mod lifecycle_tests {
             assert_eq!(calls[calls.len() - 2].0, "DELETE");
             assert_eq!(calls[calls.len() - 1].0, "GET");
         }
+    }
+
+    pub(crate) async fn normal_probe(command: &CommandInterrupt) -> Option<StorageActivation> {
+        let result = finish_with(
+            Arc::new(Fake::default()),
+            &["thing".into()],
+            Pending::Probe {
+                timeout: Duration::from_secs(1),
+                consent: ProbeConsent::Granted,
+            },
+            command,
+        )
+        .await
+        .unwrap();
+        assert_eq!(result.as_ref().unwrap().outcome, "readable");
+        assert!(!result.as_ref().unwrap().interrupted);
+        result
     }
 
     #[test]
