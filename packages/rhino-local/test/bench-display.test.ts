@@ -4,6 +4,51 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test } from "vitest";
 
+// Makes every read under /proc fail, as on macOS, for the driver child only.
+const NO_PROC = `
+const fs = require("node:fs");
+const hide = (name) => {
+  const real = fs[name];
+  fs[name] = function (path, ...rest) {
+    if (String(path).startsWith("/proc")) {
+      if (name === "existsSync") return false;
+      const error = new Error("ENOENT: " + path); error.code = "ENOENT"; throw error;
+    }
+    return real.call(this, path, ...rest);
+  };
+};
+["existsSync", "readFileSync", "readdirSync", "statSync"].forEach(hide);
+`;
+
+function runDriver(noProc: boolean) {
+  const dir = mkdtempSync(join(tmpdir(), "rhino-bench-display-"));
+  try {
+    const bin = join(dir, "bin");
+    mkdirSync(bin);
+    writeFileSync(join(bin, "npx"), `#!/usr/bin/env node
+const fs = require("node:fs");
+fs.writeFileSync(process.env.AIC_SCRIPT_TESTER_TIMING, JSON.stringify({
+  type: "job", lineBytes: 9180474, jvm: { totalMs: 100 }
+}) + "\\n");
+`, { mode: 0o755 });
+    writeFileSync(join(dir, "no-proc.cjs"), NO_PROC);
+    const preload = noProc ? ["--require", join(dir, "no-proc.cjs")] : [];
+    return spawnSync(process.execPath, [...preload, new URL("../bench/run.ts", import.meta.url).pathname], {
+      env: { ...process.env, PATH: `${bin}:${process.env.PATH ?? ""}`, BENCH_TIMING: join(dir, "timing.jsonl") },
+      encoding: "utf8",
+    });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+test("benchmark driver runs where there is no /proc", () => {
+  const run = runDriver(true);
+  expect(run.status, run.stderr).toBe(0);
+  expect(run.stdout).toMatch(/line bytes\s+9180474 bytes/);
+  expect(run.stdout).toMatch(/unavailable \(no \/proc\)/);
+});
+
 test("benchmark driver prints transport bytes as a size", () => {
   const dir = mkdtempSync(join(tmpdir(), "rhino-bench-display-"));
   try {
