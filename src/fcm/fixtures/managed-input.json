@@ -1,0 +1,19 @@
+{
+  "name": "custom_widget",
+  "schema": {
+    "type": "object",
+    "properties": {
+      "10": { "type": "number", "minimum": 0.0 },
+      "2": { "type": "number", "minimum": 1.5 },
+      "thing": { "type": "number", "enum": [1e21, 1e-7, 1e20, 1e-6, -0.0, 1e23, 1000000000000000100, 9007199254740993, 5e-324, 1.7976931348623157e308, 51.248178375505404, -93.31137037688033] },
+      "owner": { "type": "string", "title": "line paragraph end", "description": "quote\" slash/ backslash\\ tab\t newline\n control\u0001" },
+      "02": { "type": "boolean" },
+      "4294967294": { "type": "boolean" },
+      "4294967295": { "type": "boolean" },
+      "😀": { "type": "boolean" },
+      "": { "type": "boolean" }
+    }
+  },
+  "extra": { "__proto__": { "ignored": true }, "keep": [] },
+  "onCreate": { "type": "text/javascript", "source": "// generic hook\n" }
+}

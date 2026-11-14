@@ -663,8 +663,20 @@ aic managed relationship repair custom_widget.oldOwner [--dry-run] [--force] [--
 aic managed relationship repair gone_widget --empty-entry [--dry-run] [--force] [--yes] [--json]
 aic managed relationship snapshot custom_widget.owner [--output FILE]
 aic managed relationship restore FILE [--dry-run] [--yes] [--json]
+aic managed export <name> --config-dir DIR [--dry-run] [--force] [--json] [--tenant TENANT] # one object, fr-config-pull layout
 aic managed diff custom_widget repo/managed-objects/custom_widget/custom_widget.json [--strict] [--json]
 ```
+
+`aic managed export` writes that one object the way `fr-config-pull managed-objects`
+does by default (no `--custom-relationships` schema files). The files are
+`DIR/managed-objects/<name>/<name>.json` and one file per inline
+`text/javascript` source that pull splits out. Object-level hooks become
+`<name>.<key>.js` and `actions` entries become `<name>.actions.<key>.js`.
+Property hooks are split only for `onStore`, `onRetrieve` and `onValidate`
+(`<name>.<property>.<hook>.js`). Each split script is removed from the JSON
+and replaced with `"file": "<filename>"`. An empty `source`, or a type other
+than `text/javascript`, stays inline. The same overwrite, backup, `--dry-run`
+and `--json` rules as `script export` apply.
 
 `managed get` prints one object's definition as JSON. Inline hook `source`
 bodies are omitted by default and replaced with the argument `aic script pull`
@@ -3073,6 +3085,7 @@ aic script create <ref> --context <ctx> [--from FILE] [--language LANG] [--evalu
 aic script copy <src-ref> <dst-ref> [--tenant TENANT] [--yes] [--force=syntax-check]
 aic script rename <realm>/<name> <new-name> [--tenant TENANT] [--yes] [--force=syntax-check] # AM only; keeps the id
 aic script ids <DIR> [--realm REALM] [--tenant TENANT] [--json] # repo vs tenant script UUIDs, read-only
+aic script export <realm>/<name> --config-dir DIR [--dry-run] [--force] [--json] [--tenant TENANT] # one AM script, fr-config-pull layout
 aic script delete <ref> --force [--tenant TENANT] [--yes]
 aic script pull [<ref>] [--unmodified-only] [--force] [--force=backup] # protected pull; no ref → fuzzy picker
 aic script push [<ref>] [--force] [--force=syntax-check] [--yes] # independent convergence/syntax permissions
@@ -3082,6 +3095,28 @@ aic script status [<ref>] [--against FILE] [--check] [--json] # in sync / modifi
 aic script diff [<ref>] [--local-vs-snapshot | --snapshot-vs-remote | --find-in-git REPO]
 aic script who <ref> [--history] [--minutes N] [--json]   # who created/last modified it
 ```
+
+`aic script export` writes that one AM script the way `fr-config-pull scripts` does.
+The files are `DIR/realms/<realm>/scripts/scripts-config/<id>.json` and
+`DIR/realms/<realm>/scripts/scripts-content/<context>/<name>.js`. The JSON is
+the script resource with its base64 `script` replaced by
+`{ "file": "scripts-content/<context>/<name>.js" }`, keys sorted, two-space
+indent, and no trailing newline. The `.js` file is the decoded source, with no
+newline added. Only `language` `JAVASCRIPT` is written. A file that already
+differs is refused unless `--force`, which backs the old bytes up under
+`DIR/.aic-backups/` first. `--dry-run` lists the paths and writes nothing.
+`--json` prints `{ "dry_run", "files": [{ "path", "action", "backup?" }] }`.
+An IDM ref (`endpoint/`, `schedule/`, `managed/`, `sync/`) is refused: that
+layout is one AM realm script.
+
+Both export commands accept parent-relative roots such as `--config-dir ../fr-config`
+and symlinks in the selected root path. Generated paths beneath that root refuse
+`..` and symlinks. Output is staged before checking for local changes; a change
+stops the batch and the report names files already written. Forced replacement
+checks the authorized bytes again after backup. New destinations use Linux's
+atomic no-replace rename, so a concurrent creation is refused. If the platform,
+kernel or filesystem lacks that operation, installing a new file fails without
+replacing the destination.
 
 `aic script delete` removes the script from the tenant, keeps the local file, and forgets its sync record.
 
