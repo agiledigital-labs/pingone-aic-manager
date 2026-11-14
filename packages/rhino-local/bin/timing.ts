@@ -6,6 +6,9 @@
  *   AIC_SCRIPT_TESTER_TIMING=timing.jsonl npx vitest run
  *   npx aic-script-tester-timing timing.jsonl
  *
+ * The summary names this build (`<version> (<commit>[-dirty])`, or
+ * `<version> (commit unknown)` from a checkout that has not been packed),
+ * as the first line of the table and as `harness` in `--json`.
  * `--json` prints the summary as JSON instead of a table. `--share` replaces
  * every library id and source name with a salted hash (random salt; give
  * `--salt=<text>` to make two summaries comparable), for a summary that can be

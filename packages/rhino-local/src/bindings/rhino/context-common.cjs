@@ -493,7 +493,10 @@ function __rhinoLocalCtxCopy(value) {
 
 // `opts.tag`: the measured Object.prototype.toString tag (`"JavaObject"` for
 // may-act, 2026-11-10). Absent, the tag stays unmeasured and faults, as it
-// did before that option existed.
+// did before that option existed. `opts.writes`: setAttribute and store are
+// measured (access-token modification, 2026-11-14). setAttribute is not
+// visible until store(); store records one identityWrites entry per attribute.
+// addAttribute stays unmeasured.
 function __rhinoLocalCtxBuildIdentity(seed, opts) {
   // Measured 2026-11-10: String(identity) is the wrapper's Java toString
   // (class@hash) while identity.toString() is "Cannot find function
@@ -502,6 +505,8 @@ function __rhinoLocalCtxBuildIdentity(seed, opts) {
   // read as it does on AIC.
   var identity = Object.create(null);
   var attrs = seed.attributes;
+  var writes = opts && opts.writes === true;
+  var pending = {};
   var ngCls = "org.forgerock.openam.scripting.api.identity.ScriptedIdentityScriptWrapper";
   __rhinoLocalCtxMethod(identity, "identity", ngCls, "getName", 0, function () {
     return seed.name;
@@ -514,14 +519,56 @@ function __rhinoLocalCtxBuildIdentity(seed, opts) {
   });
   __rhinoLocalCtxMethod(identity, "identity", ngCls, "getAttributeValues", 1, function (name) {
     var key = String(name);
-    // An attribute the identity lacks reads as an empty list.
+    // An attribute the identity lacks reads as an empty list. Pending
+    // setAttribute values are not visible until store().
     return __rhinoLocalCtxList(Object.prototype.hasOwnProperty.call(attrs, key) ? attrs[key].slice() : []);
   });
+  if (writes) {
+    __rhinoLocalCtxMethod(identity, "identity", ngCls, "setAttribute", 2, function (name, values) {
+      var copy = [];
+      var i;
+      if (typeof name !== "string") {
+        throw __rhinoLocalCtxUnmeasured("identity.setAttribute()", "with a " + typeof name + " attribute name");
+      }
+      if (!Array.isArray(values) || values.length === 0) {
+        throw __rhinoLocalCtxUnmeasured("identity.setAttribute()",
+          "with a value that is not a non-empty array of strings");
+      }
+      for (i = 0; i < values.length; i += 1) {
+        if (typeof values[i] !== "string") {
+          throw __rhinoLocalCtxUnmeasured("identity.setAttribute()", "with a non-string value");
+        }
+        copy.push(values[i]);
+      }
+      Object.defineProperty(pending, name, {
+        value: copy, enumerable: true, configurable: true, writable: true,
+      });
+      return undefined;
+    });
+    __rhinoLocalCtxMethod(identity, "identity", ngCls, "store", 0, function () {
+      var names = Object.keys(pending);
+      var i;
+      var stored;
+      for (i = 0; i < names.length; i += 1) {
+        stored = pending[names[i]].slice();
+        Object.defineProperty(attrs, names[i], {
+          value: stored, enumerable: true, configurable: true, writable: true,
+        });
+        __rhinoLocal.identityWrites.push({
+          identity: String(seed.name),
+          attribute: names[i],
+          values: stored.slice(),
+        });
+        delete pending[names[i]];
+      }
+      return undefined;
+    });
+  }
   __rhinoLocalHide(identity, "valueOf", function () {
     return ngCls + "@rhino-local";
   });
-  __rhinoLocalCtxFaulting(identity, "identity", ["setAttribute", "addAttribute", "store", "getClass", "hashCode",
-    "equals", "wait", "notify", "notifyAll"]);
+  __rhinoLocalCtxFaulting(identity, "identity", (writes ? [] : ["setAttribute", "store"]).concat(
+    ["addAttribute", "getClass", "hashCode", "equals", "wait", "notify", "notifyAll"]));
   __rhinoLocalCtxToJSON(identity, "identity");
   // The tag is unmeasured except where the caller measured one (Sol ctx r2 P2-5).
   __rhinoLocalCtxTag(identity, opts && opts.tag ? opts.tag : null, "identity");

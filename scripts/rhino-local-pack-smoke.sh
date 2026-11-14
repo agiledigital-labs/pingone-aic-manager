@@ -51,6 +51,24 @@ fi
 (cd "$PKG" && rm -rf dist && npm pack --pack-destination "$WORK" >/dev/null 2>&1)
 tarball="$(find "$WORK" -maxdepth 1 -name '*.tgz' -print -quit)"
 [[ -n "$tarball" ]] || fail "npm pack produced no tarball"
+# prepack records the packed tree's commit. The tarball name is a glob, so a
+# version bump does not change this lookup; the identity file must still ship.
+identity="$(tar -xOf "$tarball" package/dist/build-identity.json)" \
+  || fail "tarball has no package/dist/build-identity.json"
+node -e '
+const id = JSON.parse(process.argv[1]);
+if (typeof id.commit !== "string" || !/^[0-9a-f]{7,}$/.test(id.commit) || typeof id.dirty !== "boolean") {
+  console.error(id);
+  process.exit(1);
+}
+' "$identity" || fail "build identity must be {commit, dirty}"
+short="$(git -C "$ROOT" rev-parse --short=12 HEAD)"
+dirty="$(git -C "$ROOT" status --porcelain)"
+node -e '
+const id = JSON.parse(process.argv[1]);
+if (id.commit !== process.argv[2]) process.exit(1);
+if (id.dirty !== (process.argv[3] !== "")) process.exit(1);
+' "$identity" "$short" "$dirty" || fail "build identity does not match HEAD ($(printf %s "$identity"))"
 name="$(node -p 'require(process.argv[1]).name' "$PKG/package.json")"
 dev() { node -p 'require(process.argv[1]).devDependencies[process.argv[2]]' "$PKG/package.json" "$1"; }
 

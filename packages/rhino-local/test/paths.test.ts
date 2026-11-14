@@ -5,7 +5,11 @@ import {
   amEslintConfigPath,
   bindingsJsonPath,
   bindingsIdentityPolicyPath,
+  buildIdentity,
+  buildIdentityPath,
+  formatBuildIdentity,
   packageRoot,
+  packageVersion,
   sourceBindingsJsonPath,
 } from "../src/paths.ts";
 
@@ -46,6 +50,26 @@ describe("paths", () => {
 
   // An installed package has no repo around it: anything the run-time code
   // reads through repoRoot would be missing in a consumer's node_modules.
+  it("formats a packed commit and an unpacked checkout", () => {
+    expect(formatBuildIdentity("0.4.0-emulator.2", undefined)).toBe("0.4.0-emulator.2 (commit unknown)");
+    expect(formatBuildIdentity("0.4.0-emulator.2", { commit: "abcdef123456", dirty: false })).toBe(
+      "0.4.0-emulator.2 (abcdef123456)",
+    );
+    expect(formatBuildIdentity("0.4.0-emulator.2", { commit: "abcdef123456", dirty: true })).toBe(
+      "0.4.0-emulator.2 (abcdef123456-dirty)",
+    );
+  });
+
+  it("uses the packed identity file when it is present, and never invents a commit", () => {
+    expect(packageVersion).toBe("0.4.0-emulator.2");
+    if (!existsSync(buildIdentityPath)) {
+      expect(buildIdentity).toBe("0.4.0-emulator.2 (commit unknown)");
+      return;
+    }
+    const parsed = JSON.parse(readFileSync(buildIdentityPath, "utf8")) as { commit: string; dirty: boolean };
+    expect(buildIdentity).toBe(formatBuildIdentity(packageVersion, parsed));
+  });
+
   it("keeps repo-only paths out of run-time code", () => {
     const allowed = new Set(["paths.ts", "generate.ts"]);
     const offenders = sourceFiles(join(packageRoot, "src"))
