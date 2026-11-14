@@ -1,11 +1,10 @@
 //! Storage-activation follow-up after a new per-type `config/repo.ds` entry.
 //!
-//! Config read-back is immediate and does not say the new store is live. On
-//! the sandbox (2026-11-14) no read-only check flipped from "not yet active"
-//! to "active" once the entry was visible, so `--wait-activation` writes one
-//! record, reads it back by id, deletes it, and confirms the delete. The
-//! functions above [`prepare`] take no network; [`prepare`] and [`finish`] do
-//! the I/O.
+//! Config read-back is immediate and does not identify the live store. No
+//! validated read-only activation signal was found, and a pending activation
+//! state could not be reproduced on the sandbox (2026-11-14). The consented
+//! fallback creates one recoverable record, reads it, deletes it, and confirms
+//! absence. The I/O lifecycle is tested through [`ProbeIo`].
 
 use std::time::{Duration, Instant};
 
@@ -28,34 +27,36 @@ pub(crate) const WAIT_ACTIVATION_HELP: &str =
 
 pub(crate) const WAIT_ACTIVATION_LONG: &str = "\
 After a write that adds a per-type config/repo.ds entry, create one record in each such type, \
-read it back by id, delete it, and read again to confirm the delete. SECONDS bounds create/read \
-across all types (default 60, from 1 to 3600). Cleanup has a separate 15-second allowance per \
-started type; each cleanup request waits at most 2 seconds. No create starts after the deadline.
+read it by id, delete it, and confirm the delete. SECONDS bounds create/read waits across all \
+types (default 60, from 1 to 3600); no create starts after expiry. Each started type gets a \
+separate 15-second cleanup allowance, including up to ten seconds settling an outstanding \
+create. Cleanup requests wait at most two seconds and transient DELETE failures retry. The \
+create-only POST carries a caller-chosen UUID, printed before dispatch, and is never retried. \
+An unsettled create or unresolved cleanup is reported with its UUID for manual removal. \
+Ctrl-C is latched until bounded cleanup finishes, then exits non-zero.
 
-Config read-back is immediate and does not show that the new store is live. On the sandbox \
-(2026-11-14) no read-only check flipped from \"not yet active\" to \"active\" after the entry \
-was visible: query shape, _countOnly, info/ping, and the raw repo endpoints did not distinguish \
-the stores, and a missing-id 404 changes when the object's OU is first created (a record in the \
-generic store does that too) and does not change back when the entry is removed. A record \
-written just after the entry stayed readable for the whole watch.
+No validated read-only activation signal was found, and a pending activation state could not \
+be reproduced on this sandbox (2026-11-14). Config read-back was immediate. Unchanged query \
+shape, _countOnly and info/ping lacked a pending-state control; raw repo access was blocked \
+(403), and candidate state endpoints were unavailable (404). These do not disprove a signal. \
+A generic-create control shows the missing-id OU message cannot establish activation. \
+Records remained readable before and after adding the entry, so readability does not establish \
+cutover or prevent a later generic-store write.
 
 The probe is a real record. Hooks such as onCreate or onDelete and sync mappings may run. \
 The command names every script-shaped hook, including file-backed hooks and any event name; \
 firing behavior is unknown where unmeasured for this probe. It refuses even with --yes if \
 either config/managed or config/sync cannot be inventoried. Otherwise it lists hooks and \
-mappings and asks before writing. --yes skips that \
-prompt and is also the production gate. A non-interactive run without --yes refuses before any \
-probe record is created. On relationship set the schema write has already landed and the \
-per-type entry is not added: finish with relationship map --wait-activation --yes. On \
-relationship map nothing is switched. A readable probe means the record was read back and the delete was \
-confirmed. It does not prove a later record cannot land in the old generic store: that lag was \
-reported from a client tenant (2026-11-03) and was not reproducible here. Without this flag the \
-command only warns.
+mappings and asks before writing. --yes skips the prompt and is also the production gate. \
+A non-interactive run without --yes refuses before any probe record is created. On relationship \
+set the schema write has already landed and the per-type entry is not added: finish with \
+relationship map --wait-activation --yes. On relationship map nothing is switched.
 
---json adds storage_activation with outcome readable, not_confirmed, declined, or not_needed. \
-That is separate from activation, the relationship-end liveness wait. --dry-run writes no \
-probe. A type that rejects an empty create (required fields) ends not_confirmed and is not \
-retried.";
+--json adds storage_activation with outcome readable, not_confirmed, declined, or not_needed, \
+and interrupted. Recovery ids are retained unless readable. The JSON report is rendered before \
+an interrupted command exits non-zero. This is separate from activation, the relationship-end \
+liveness wait. --dry-run writes no probe. A type rejecting the empty content plus _id (required \
+fields) ends not_confirmed and is not retried. Without the flag the command only warns.";
 
 /// What to do with a per-type entry that was, or was not, added.
 #[derive(Debug, PartialEq, Eq)]
@@ -208,8 +209,8 @@ pub(crate) fn plan_text(effects: &[SideEffects]) -> String {
             .to_string(),
         "A readable record was stored and then deleted. It does not prove a later record cannot \
          land in the old generic store: on the sandbox (2026-11-14) a record written just after \
-         the entry stayed readable, and no read-only check separated \"not yet active\" from \
-         \"active\"."
+         the entry stayed readable. No validated read-only activation signal was found, and a \
+         pending activation state could not be reproduced on this sandbox."
             .to_string(),
         "Hook firing behavior is unknown for this probe; every script-shaped hook is listed, \
          including file-backed hooks and events whose support is unmeasured. A sync mapping \
@@ -606,20 +607,17 @@ pub(crate) async fn finish(
             consent: ProbeConsent::Granted,
         } => {
             let (interrupt, _watch) = Interrupt::install()?;
-            let started = Instant::now();
-            let deadline = started + timeout;
-            let mut objects = Vec::with_capacity(added.len());
-            for name in added {
-                objects.push(
-                    probe_object(tenant, confirmed_prod, name, deadline, interrupt.clone()).await,
-                );
-            }
-            let mut activation = from_objects(timeout, started.elapsed().as_secs_f64(), objects);
-            activation.interrupted = interrupt.is_set();
-            if activation.interrupted {
-                activation.outcome = "not_confirmed";
-                activation.detail = Some("interrupted; bounded probe cleanup finished; inspect per-object cleanup results".into());
-            }
+            let activation = probe_types_with(
+                Arc::new(TenantIo {
+                    tenant: tenant.into(),
+                    confirmed_prod,
+                }),
+                added,
+                timeout,
+                LIMITS,
+                interrupt,
+            )
+            .await;
             announce(added, &activation);
             activation
         }
@@ -781,24 +779,29 @@ impl ProbeIo for TenantIo {
     }
 }
 
-async fn probe_object(
-    tenant: &str,
-    confirmed_prod: bool,
-    object: &str,
-    deadline: Instant,
+async fn probe_types_with(
+    io: Arc<impl ProbeIo>,
+    added: &[String],
+    timeout: Duration,
+    limits: ProbeLimits,
     interrupt: Arc<Interrupt>,
-) -> ObjectProbe {
-    probe_run(
-        Arc::new(TenantIo {
-            tenant: tenant.into(),
-            confirmed_prod,
-        }),
-        object,
-        deadline,
-        LIMITS,
-        interrupt,
-    )
-    .await
+) -> StorageActivation {
+    let started = Instant::now();
+    let deadline = started + timeout;
+    let mut objects = Vec::with_capacity(added.len());
+    for name in added {
+        objects.push(probe_run(io.clone(), name, deadline, limits, interrupt.clone()).await);
+    }
+    let mut activation = from_objects(timeout, started.elapsed().as_secs_f64(), objects);
+    activation.interrupted = interrupt.is_set();
+    if activation.interrupted {
+        activation.outcome = "not_confirmed";
+        activation.detail = Some(
+            "interrupted; bounded probe cleanup finished; inspect per-object cleanup results"
+                .into(),
+        );
+    }
+    activation
 }
 
 #[derive(Clone, Copy)]
@@ -911,18 +914,17 @@ async fn probe_run(
     // second of the probe deadline. Reserve its last third for deletion.
     let cleanup_started = Instant::now();
     let cleanup_deadline = cleanup_started + limits.cleanup;
-    if create_pending {
-        if let Ok(reply) = tokio::time::timeout_at(
+    if create_pending
+        && let Ok(reply) = tokio::time::timeout_at(
             (cleanup_started + limits.cleanup * 2 / 3).into(),
             &mut create,
         )
         .await
-        {
-            create_pending = false;
-            record_create_reply(reply, &mut facts);
-            if matches!(facts.create, CreateAttempt::Rejected { .. }) {
-                return object_probe(object, &facts, started.elapsed().as_secs_f64());
-            }
+    {
+        create_pending = false;
+        record_create_reply(reply, &mut facts);
+        if matches!(facts.create, CreateAttempt::Rejected { .. }) {
+            return object_probe(object, &facts, started.elapsed().as_secs_f64());
         }
     }
     if !create_pending
@@ -1412,6 +1414,50 @@ mod lifecycle_tests {
     };
 
     #[tokio::test]
+    async fn shared_deadline_or_interrupt_prevents_the_next_type_from_creating() {
+        for interrupted in [false, true] {
+            let interrupt = Arc::new(Interrupt::default());
+            let io = Arc::new(Fake {
+                create_delay: if interrupted {
+                    Duration::ZERO
+                } else {
+                    Duration::from_millis(35)
+                },
+                interrupt_on_read: interrupted.then(|| interrupt.clone()),
+                ..Fake::default()
+            });
+            let result = probe_types_with(
+                io.clone(),
+                &["thing".into(), "other".into()],
+                Duration::from_millis(10),
+                FAST,
+                interrupt,
+            )
+            .await;
+            assert_eq!(result.outcome, "not_confirmed");
+            assert_eq!(result.interrupted, interrupted);
+            assert!(result.objects[1].id.is_none());
+            assert!(
+                result.objects[1]
+                    .detail
+                    .as_ref()
+                    .unwrap()
+                    .contains("not started")
+            );
+            assert_eq!(
+                io.calls
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .filter(|c| c.0 == "POST")
+                    .count(),
+                1
+            );
+            assert!(io.record.lock().unwrap().is_none());
+        }
+    }
+
+    #[tokio::test]
     async fn either_failed_inventory_refuses_instead_of_claiming_none() {
         for missing_managed in [true, false] {
             let io = Fake {
@@ -1578,17 +1624,17 @@ mod lifecycle_tests {
             return;
         };
         let runtime = tokio::runtime::Runtime::new().unwrap();
-        runtime.block_on(async {
+        let exit_code = runtime.block_on(async {
             let (interrupt, _watch) = Interrupt::install().unwrap();
             let io = Arc::new(Fake {
                 signal_on_read: true,
                 hang_delete: mode == "unresolved",
                 ..Fake::default()
             });
-            let object = probe_run(
+            let activation = probe_types_with(
                 io.clone(),
-                "thing",
-                Instant::now() + Duration::from_secs(1),
+                &["thing".into()],
+                Duration::from_secs(1),
                 FAST,
                 interrupt.clone(),
             )
@@ -1598,14 +1644,14 @@ mod lifecycle_tests {
             assert!(calls.iter().any(|c| c.0 == "DELETE"));
             assert_eq!(calls.last().unwrap().0, "GET");
             drop(calls);
-            let mut activation = from_objects(Duration::from_secs(1), 0.1, vec![object]);
-            activation.interrupted = true;
             let mut body = json!({});
             attach(&mut body, Some(&activation)).unwrap();
             println!("{body}");
-            assert!(check_interrupted(Some(&activation)).is_err());
+            check_interrupted(Some(&activation))
+                .unwrap_err()
+                .exit_code()
         });
-        std::process::exit(130);
+        std::process::exit(exit_code);
     }
 
     #[test]
@@ -1620,7 +1666,7 @@ mod lifecycle_tests {
                 .env("AIC_ACTIVATION_SIGINT_CHILD", mode)
                 .output()
                 .unwrap();
-            assert_eq!(output.status.code(), Some(130), "{output:?}");
+            assert_eq!(output.status.code(), Some(1), "{output:?}");
             let stdout = String::from_utf8(output.stdout).unwrap();
             assert!(stdout.contains("\"interrupted\":true"), "{stdout}");
             assert!(stdout.contains("\"id\":"), "{stdout}");

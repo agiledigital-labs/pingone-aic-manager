@@ -1054,7 +1054,7 @@ async fn relationship(command: RelationshipCommand) -> Result<()> {
                 None => None,
             };
             let (mapping, storage_activation) = match mapped {
-                Some((verification, storage)) => (Some(verification), storage),
+                Some((verification, storage)) => (verification, storage),
                 None => (
                     None,
                     activation::settle(&tenant, ok.confirmed_prod, &[], wait_activation, yes)
@@ -2027,7 +2027,10 @@ async fn map_created_pair(
     key: &str,
     wait_activation: Option<u64>,
     yes: bool,
-) -> Result<(VerificationOutput, Option<activation::StorageActivation>)> {
+) -> Result<(
+    Option<VerificationOutput>,
+    Option<activation::StorageActivation>,
+)> {
     let field = format!("{object}.{key}");
     let mut generic = false;
     let prepared = async {
@@ -2058,7 +2061,7 @@ async fn map_created_pair(
             }
         ))
     })?;
-    let probe = if let Some(plan) = prepared {
+    let storage_activation = if let Some(plan) = prepared {
         let added = activation::added_type_names(plan.addition());
         let pending = activation::prepare(ok.tenant, &added, wait_activation, yes)
             .await
@@ -2073,26 +2076,23 @@ async fn map_created_pair(
         let permit = repair::authorize(false, true)
             .ok_or_else(|| crate::Error::Config("mapping authorization failed".into()))?;
         apply_mapping(ok, &plan, &permit).await?;
-        Some((added, pending))
+        activation::finish(ok.tenant, ok.confirmed_prod, &added, pending).await?
     } else {
         check_orphans(ok.tenant, object, key, "existing mapping").await?;
-        None
+        activation::settle(ok.tenant, ok.confirmed_prod, &[], wait_activation, yes).await?
     };
+    // Return directly to rendering recovery evidence after bounded cleanup.
+    if storage_activation.as_ref().is_some_and(|a| a.interrupted) {
+        return Ok((None, storage_activation));
+    }
     let verification =
         collect_verification(field, 5, 200, None, Some(ok.tenant.to_string())).await?;
     verification_check(&verification)?;
     eprintln!(
         "mapping configuration verified; runtime storage mode is untested without links (run verify --probe later if appropriate)"
     );
-    // Complete mapping reads before probing: Ctrl-C during the probe must
-    // return directly to rendering recovery evidence after bounded cleanup.
-    let storage_activation = match probe {
-        Some((added, pending)) => {
-            activation::finish(ok.tenant, ok.confirmed_prod, &added, pending).await?
-        }
-        None => activation::settle(ok.tenant, ok.confirmed_prod, &[], wait_activation, yes).await?,
-    };
-    Ok((verification, storage_activation))
+
+    Ok((Some(verification), storage_activation))
 }
 
 async fn apply_mapping(
