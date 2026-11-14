@@ -146,13 +146,21 @@ pub(crate) fn jwk_to_encoding_key(jwk: &serde_json::Value) -> Result<EncodingKey
     Ok(EncodingKey::from_rsa_der(der.as_bytes()))
 }
 
+/// A token the tenant just issued. `scopes` is the `scope` field of that
+/// response, not the list we asked for.
+#[derive(Debug)]
+pub struct MintedToken {
+    pub access_token: String,
+    pub expires_at: i64,
+    pub scopes: Vec<String>,
+}
+
 /// Mint a service-account access token using RS256 JWT assertion.
-/// Returns (access_token, expires_at_unix_seconds).
 pub async fn mint_token(
     client: &reqwest::Client,
     tenant: &Tenant,
     jwk: &serde_json::Value,
-) -> Result<(String, i64)> {
+) -> Result<MintedToken> {
     let sa_id = tenant.sa_id.as_ref().ok_or_else(|| {
         Error::Auth(format!(
             "tenant {} is log-only (no service account); cannot mint a bearer token",
@@ -215,8 +223,74 @@ pub async fn mint_token(
         .to_string();
     let expires_in = json["expires_in"].as_i64().unwrap_or(ISSUED_TOKEN_TTL);
     let expires_at = now + expires_in;
+    let scopes = parse_issued_scopes(&json)?;
 
-    Ok((access_token, expires_at))
+    Ok(MintedToken {
+        access_token,
+        expires_at,
+        scopes,
+    })
+}
+
+/// The `scope` field of a token response. A string is the grant's form; an
+/// array is what `/tokeninfo` returns. Anything else is refused rather than
+/// treated as the scopes we requested.
+pub fn parse_issued_scopes(body: &serde_json::Value) -> Result<Vec<String>> {
+    match body.get("scope") {
+        Some(serde_json::Value::String(text)) => {
+            Ok(text.split_whitespace().map(str::to_string).collect())
+        }
+        Some(serde_json::Value::Array(items)) => {
+            let mut scopes = Vec::with_capacity(items.len());
+            for scope in items {
+                let Some(scope) = scope.as_str() else {
+                    return Err(Error::Auth("token scope has a non-string entry".into()));
+                };
+                scopes.push(scope.to_string());
+            }
+            Ok(scopes)
+        }
+        _ => Err(Error::Auth("token response has no scope".into())),
+    }
+}
+
+/// A tenant whose token request carries `requested` and nothing else.
+///
+/// Every name has to already be in `tenant.scopes` (the list this install
+/// asks for). The grant refuses a scope the service account does not hold
+/// with `400 invalid_scope` and issues no token, so an unknown name is
+/// rejected here before that call. Duplicates are rejected too.
+pub fn downscoped_tenant(tenant: &Tenant, requested: &[String]) -> Result<Tenant> {
+    if requested.is_empty() {
+        return Err(Error::Config(
+            "whoami --scope needs at least one scope".into(),
+        ));
+    }
+    let mut narrowed = Vec::with_capacity(requested.len());
+    let mut unknown = Vec::new();
+    for scope in requested {
+        if narrowed.iter().any(|seen| seen == scope) {
+            return Err(Error::Config(format!(
+                "scope {scope} was given to whoami --scope more than once"
+            )));
+        }
+        if !tenant.scopes.iter().any(|have| have == scope) {
+            unknown.push(scope.as_str());
+        }
+        narrowed.push(scope.clone());
+    }
+    if !unknown.is_empty() {
+        return Err(Error::Config(format!(
+            "whoami --scope only narrows scopes this install already requests. {} {} not \
+             among them (`aic ctx scopes`). A scope the service account does not hold fails \
+             the whole token with 400 invalid_scope and is not dropped",
+            unknown.join(", "),
+            if unknown.len() == 1 { "is" } else { "are" },
+        )));
+    }
+    let mut tenant = tenant.clone();
+    tenant.scopes = narrowed;
+    Ok(tenant)
 }
 
 /// Extract the public JWK fields from a private JWK.
@@ -290,5 +364,44 @@ mod tests {
                 if message
                     == "tenant logs is log-only (no service account); cannot mint a bearer token"
         ));
+    }
+
+    #[test]
+    fn issued_scopes_follow_the_token_response_and_not_the_request() {
+        let string = super::parse_issued_scopes(&serde_json::json!({
+            "scope": "fr:am:* fr:idm:*"
+        }))
+        .unwrap();
+        assert_eq!(string, ["fr:am:*", "fr:idm:*"]);
+        let list = super::parse_issued_scopes(&serde_json::json!({
+            "scope": ["fr:idm:*"]
+        }))
+        .unwrap();
+        assert_eq!(list, ["fr:idm:*"]);
+        assert!(super::parse_issued_scopes(&serde_json::json!({})).is_err());
+        assert!(super::parse_issued_scopes(&serde_json::json!({"scope": 1})).is_err());
+    }
+
+    #[test]
+    fn downscoped_tenant_keeps_only_requested_scopes_that_are_already_configured() {
+        let tenant = Tenant {
+            name: "sandbox".into(),
+            base_url: "https://tenant.example.com".into(),
+            theme: TenantTheme::Sandbox,
+            sa_id: Some("sa".into()),
+            scopes: vec!["fr:am:*".into(), "fr:idm:*".into(), "fr:idc:esv:*".into()],
+            provenance: crate::config::Provenance::default(),
+        };
+        let narrowed = super::downscoped_tenant(&tenant, &["fr:idm:*".into()]).unwrap();
+        assert_eq!(narrowed.scopes, ["fr:idm:*"]);
+        assert_eq!(tenant.scopes.len(), 3);
+
+        let unknown =
+            super::downscoped_tenant(&tenant, &["fr:am:*".into(), "fr:zzemu:r3n:*".into()])
+                .unwrap_err();
+        assert!(unknown.to_string().contains("fr:zzemu:r3n:*"));
+        assert!(unknown.to_string().contains("invalid_scope"));
+        assert!(super::downscoped_tenant(&tenant, &[]).is_err());
+        assert!(super::downscoped_tenant(&tenant, &["fr:am:*".into(), "fr:am:*".into()]).is_err());
     }
 }

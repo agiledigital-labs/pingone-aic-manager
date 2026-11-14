@@ -49,8 +49,10 @@ pub use protocol::{ApiCallRequest, CachedTokenInfo, Request, Response, StatusInf
 
 /// CLI-to-agent wire protocol version. Bump this when ignoring a new field
 /// would be unsafe (v4 preserves pre-journaled transaction ids; v5 replies to
-/// a transport failure with `Transport`, so a writer can settle it).
-pub const PROTOCOL_VERSION: u32 = 5;
+/// a transport failure with `Transport`, so a writer can settle it; v6 carries
+/// `GetToken.scopes`, which an older daemon would ignore and answer with the
+/// cached full-scope token).
+pub const PROTOCOL_VERSION: u32 = 6;
 
 pub fn socket_path() -> PathBuf {
     project_paths().agent_socket_path()

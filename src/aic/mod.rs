@@ -108,12 +108,22 @@ impl AicClient {
             }
         }
         // Mint a fresh token
-        let (token, expires_at) = auth::mint_token(&self.http, &self.tenant, &self.jwk).await?;
+        let minted = auth::mint_token(&self.http, &self.tenant, &self.jwk).await?;
         {
             let mut cache = self.token_cache.lock().unwrap();
-            cache.store(token.clone(), expires_at);
+            cache.store(minted.access_token.clone(), minted.expires_at);
         }
-        Ok(token)
+        Ok(minted.access_token)
+    }
+
+    /// Mint a token that carries only `scopes`, and do not store it.
+    ///
+    /// The normal cache is the full scope list this install requests. A
+    /// down-scoped token must not replace it: the next ordinary call would
+    /// then go out with less access than it asked for.
+    pub async fn mint_downscoped(&self, scopes: &[String]) -> Result<auth::MintedToken> {
+        let tenant = auth::downscoped_tenant(&self.tenant, scopes)?;
+        auth::mint_token(&self.http, &tenant, &self.jwk).await
     }
 
     /// `GET` a JSON document. On a [`retry_safe`] path a `502`/`503`/`504`
@@ -469,6 +479,29 @@ mod tests {
             Err(Error::ProdConfirmRequired)
         ));
         assert!(client.ensure_write_allowed(true).is_ok());
+    }
+
+    #[tokio::test]
+    async fn a_downscoped_mint_leaves_the_normal_cache_empty() {
+        let mut configured = tenant("https://127.0.0.1:1".into());
+        configured.sa_id = Some("sa".into());
+        configured.scopes = vec!["fr:am:*".into(), "fr:idm:*".into()];
+        let client = AicClient::new(configured, serde_json::Value::Null);
+
+        let refused = client
+            .mint_downscoped(&["fr:zzemu:r3n:*".into()])
+            .await
+            .unwrap_err();
+        assert!(refused.to_string().contains("fr:zzemu:r3n:*"));
+        assert_eq!(client.token_cache.lock().unwrap().expires_at(), 0);
+
+        // The grant itself fails (nothing is listening). The cache must still
+        // be the empty one a normal caller would use.
+        let _failed = client
+            .mint_downscoped(&["fr:am:*".into()])
+            .await
+            .unwrap_err();
+        assert_eq!(client.token_cache.lock().unwrap().expires_at(), 0);
     }
 
     #[test]
