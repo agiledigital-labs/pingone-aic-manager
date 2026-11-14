@@ -608,11 +608,11 @@ aic managed field rename custom_widget.code external_code [--yes] [--json]
 aic managed field delete custom_widget.external_code [--yes] [--json]
 aic managed hook add custom_widget onCreate [--yes] [--json]
 aic managed hook delete custom_widget onCreate [--yes] [--json]
-aic managed relationship set custom_widget.owner --target alpha_user --forward one [--reverse none|one|many] [--reverse-key widgets] [--check] [--yes] [--json]
+aic managed relationship set custom_widget.owner --target alpha_user --forward one [--reverse none|one|many] [--reverse-key widgets] [--check] [--wait-activation[=SECONDS]] [--yes] [--json]
 aic managed relationship delete custom_widget.owner [--remove-mapping [--force]] [--yes] [--json]
 aic managed relationship verify custom_widget[.owner] [--sample 5] [--scan 200] [--probe [--force] [--yes]] [--json]
 aic managed relationship relink custom_widget.owner [--dry-run] [--force] [--yes] [--json]
-aic managed relationship map custom_widget.owner [--capture FILE] [--acknowledge-request-finished] [--dry-run] [--force] [--yes] [--json]
+aic managed relationship map custom_widget.owner [--capture FILE] [--acknowledge-request-finished] [--dry-run] [--force] [--wait-activation[=SECONDS]] [--yes] [--json]
 aic managed relationship capture-links --lower dev --upper uat --output FILE [--new-pair object.key]... [--dry-run] [--force] [--yes] [--json]
 aic managed relationship restore-links FILE [--tenant uat] [--acknowledge-request-finished] [--dry-run] [--force] [--yes] [--json]
 aic managed relationship rollback-map FILE [--tenant dev] [--acknowledge-request-finished] [--dry-run] [--force] [--yes] [--json]
@@ -652,6 +652,9 @@ unaffected. With `--property`, only that property's pair is shown. The TUI
 relationship editor shows the same line under its title. What neither can show
 is whether the running IDM has *picked up* a `repo.ds` change: `aic` knows of
 no endpoint that reports it, so the line describes configuration, not runtime.
+`relationship set` and `relationship map` can follow a new per-type entry with
+`--wait-activation`, described with the relationship waits below. That probe is
+not what this line shows.
 
 stdout is the definition alone with or without `--json`; the notes above and
 "omitted N inline hook sources" / "showing N of M properties" go to stderr, so
@@ -683,6 +686,23 @@ neither. It exits non-zero when anything differs; `--json` prints
 `assignment`) outright. An object that carries Ping's `"type": "Managed Object"`
 marker under any other name is refused unless `--force` is given, because
 console-created custom objects carry that marker too.
+
+To check that guard on a console-created object:
+
+1. In the admin console, create a throwaway managed object. This step is the
+   operator's. `aic` cannot drive the console, and `managed object create`
+   does not write `"type": "Managed Object"`.
+2. `aic managed object delete <name>` — refused. The message names the marker
+   and `--force`. The object is still in `config/managed`.
+3. `aic managed object delete <name> --force` — the object is deleted.
+4. Read `config/managed` again and confirm the object is gone.
+
+A read-only census of this sandbox on 2026-11-14 found the marker only on the
+ten Ping realm objects (`alpha_`/`bravo_` × `application`, `assignment`,
+`organization`, `role`, `user`; there is no `group`). No custom object carried
+it. Whether the console adds the marker is still the client's report from
+2026-11-05. The guard itself was exercised on 2026-11-10 by writing the marker
+through the config API, not by a console create (`docs/api/10-managed-objects.md`).
 
 `--json` on a write prints what it changed, never the whole `config/managed`
 document: `object create`/`object rename`, `field …` and `hook add`/`hook delete` print the
@@ -785,6 +805,45 @@ that has nothing to write still probes them: so re-running after a failed
 passing. No schema-level
 wait exists for a type with no records: nothing measured so far tells a live
 end from a pending one without a record to read through.
+
+That wait is the relationship end. It is separate from a new per-type
+`config/repo.ds` entry. Config read-back of the entry is immediate and does
+not say the new store is live. On the sandbox (2026-11-14) no read-only check
+flipped from "not yet active" to "active" after the entry was already visible:
+query shape, `_countOnly`, `info/ping`, and the raw repo endpoints did not
+distinguish the stores, and a missing-id 404 changes when the object's OU is
+first created (a record in the generic store does that too) and does not change
+back when the entry is removed. A record written just after the entry stayed
+readable for the whole watch (~20 s). The same lag was reported from a client
+tenant on 2026-11-03 and was not reproducible here on 2026-11-09 or 2026-11-14
+(`docs/api/10-managed-objects.md`).
+
+`--wait-activation[=SECONDS]` on `relationship set` and `relationship map`
+(default 60, from 1 to 3600) runs only when the write added a per-type entry.
+It creates one record in each such type (`POST` with `{}`), reads it back by
+id, deletes it, and reads again to confirm the delete, under one shared
+deadline. Before that write it lists every hook present on the object and
+every sync mapping whose source or target is `managed/<object>`, and asks.
+`--yes` skips the prompt and is the production gate. The create runs
+`onCreate` and `postCreate` when the object has them; the delete runs
+`onDelete` and `postDelete` when it has them. `onUpdate` and `postUpdate` are
+not invoked. A sync mapping on the object can run on both. With no terminal,
+the command refuses before any probe record exists: on `relationship set` the
+schema write has landed and the per-type entry has not, so finish with
+`relationship map --wait-activation --yes`; on `relationship map` nothing is
+switched. `--dry-run` writes no probe.
+
+`--json` adds `storage_activation`. `readable` means the probe was read back
+and the delete was confirmed, after N seconds. It does not prove a later
+record cannot land in the old generic store. `not_confirmed` is the timeout, a
+create the type refuses (required fields; a 400 is not retried), or a delete
+that did not read back as gone — the probe id is included when the delete is
+unconfirmed. The command still succeeds, and the warning is printed as well.
+`declined` means the prompt was answered no; no probe was written, and the
+warning remains. `not_needed` means the flag was set and no per-type entry was
+added. Without the flag the command only warns, and `storage_activation` is
+absent. `storage_activation` is this per-type store check. `activation`, above,
+is the relationship-end liveness wait.
 
 Adding a reverse to a relationship that already has links leaves every one of
 them one-sided: IDM does not migrate them, so the new reverse end does not list

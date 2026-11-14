@@ -16,7 +16,7 @@ use serde_json::{Value, json};
 use super::conversion::{
     self, Capture, Census, FileSession, Link, Observation, Origin, Pair, State,
 };
-use super::{api, conversion_records, relink, repair, storage, verify};
+use super::{activation, api, conversion_records, relink, repair, storage, verify};
 use crate::cli::force::OperationForce;
 use crate::cli::{WriteOk, ensure_prod_confirmed, print_json, tenant_config_for};
 use crate::config::ProjectConfig;
@@ -50,6 +50,7 @@ pub struct Flags {
     pub acknowledge_request_finished: bool,
     pub force: bool,
     pub yes: bool,
+    pub wait_activation: Option<u64>,
     pub json: bool,
 }
 impl From<Options> for Flags {
@@ -59,6 +60,7 @@ impl From<Options> for Flags {
             acknowledge_request_finished: false,
             force: options.force.operation(),
             yes: options.yes,
+            wait_activation: None,
             json: options.json,
         }
     }
@@ -591,9 +593,6 @@ async fn write_plan(
             applied.readback
         )));
     }
-    if let Some(warning) = plan.addition().and_then(storage::activation_warning) {
-        eprintln!("{warning}");
-    }
     Ok(())
 }
 
@@ -603,6 +602,9 @@ pub async fn map(
     tenant: Option<String>,
     flags: Flags,
 ) -> Result<()> {
+    if let Some(seconds) = flags.wait_activation {
+        activation::parse_timeout(seconds).map_err(|error| Error::Config(error.to_string()))?;
+    }
     let (object, key) = super::cli::parse_object_key(&field)?;
     let configured = tenant_config_for(tenant)?;
     let path = path.unwrap_or_else(default_path);
@@ -665,6 +667,11 @@ pub async fn map(
         storage::mode(&report) == storage::Mode::Generic,
     );
     let Some(permit) = consent(&flags, "map", &capture)? else {
+        if flags.wait_activation.is_some() {
+            eprintln!(
+                "--dry-run writes nothing, so --wait-activation does not create a probe record"
+            );
+        }
         return output(
             &flags,
             &json!({"capture":path,"links":capture.count(),"dry_run":true,"mappings":capture.pairs[0].mappings}),
@@ -673,6 +680,7 @@ pub async fn map(
     let ok = ensure_prod_confirmed(&configured.name, flags.yes)?;
     let mut file = FileSession::open(path.clone(), previous).await?;
     file.save(&capture).await?;
+    let mut storage_activation = None;
     let result = async {
         let pair = capture.pairs[0].clone();
         let managed = api::get_managed(ok.tenant).await?;
@@ -688,10 +696,13 @@ pub async fn map(
                 if plan.addition().map(|addition| &addition.entries) != Some(&pair.mappings) {
                     return Err(Error::Config("column allocation changed since the capture; inspect before retrying with a new plan".into()));
                 }
+                let added = activation::added_type_names(plan.addition());
+                let pending = activation::prepare(ok.tenant, &added, flags.wait_activation, flags.yes).await?;
                 conversion::switch_with(&mut capture, &permit,
                     async |capture| file.save(capture).await,
                     async || { conversion::exact(&pair, &generic_snapshot(ok.tenant, &pair).await?)?; guard(ok.tenant, &pair, storage::Mode::Generic).await?; Ok(()) },
                     async || write_plan(&ok, &pair, &plan, storage::Mode::Generic).await).await?;
+                storage_activation = activation::finish(ok.tenant, ok.confirmed_prod, &added, pending).await?;
                 let records = api::present_records(ok.tenant, &object, &key).await?;
                 storage::no_orphans(&object, &key, column(&pair), &records).map_err(Error::Config)?;
             },
@@ -707,10 +718,19 @@ pub async fn map(
         finish_restore(&ok, &mut capture, &mut file, &permit).await
     }.await;
     result.map_err(|error| stopped(&path, &capture, error))?;
-    output(
-        &flags,
-        &json!({"capture":path,"links":capture.count(),"complete":true}),
-    )
+    if storage_activation.is_none() && flags.wait_activation.is_some() {
+        storage_activation = activation::settle(
+            ok.tenant,
+            ok.confirmed_prod,
+            &[],
+            flags.wait_activation,
+            flags.yes,
+        )
+        .await?;
+    }
+    let mut body = json!({"capture": path, "links": capture.count(), "complete": true});
+    activation::attach(&mut body, storage_activation.as_ref())?;
+    output(&flags, &body)
 }
 
 async fn read_promotion(lower: &str, upper: &str) -> Result<conversion::PromotionRead> {
