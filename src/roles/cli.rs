@@ -40,6 +40,35 @@ pub enum RoleCommand {
         #[arg(long)]
         yes: bool,
     },
+    /// Change an internal role's name and/or description.
+    ///
+    /// Writes an IDM patch of those fields and reports what a following read
+    /// shows. `--dry-run` prints the change and writes nothing.
+    #[command(group(
+        clap::ArgGroup::new("change")
+            .required(true)
+            .multiple(true)
+    ))]
+    Edit {
+        /// Caller-chosen internal-role id.
+        id: String,
+        /// New display name. Omit to leave the current name.
+        #[arg(long, group = "change")]
+        name: Option<String>,
+        /// New description. Omit to leave the current description.
+        #[arg(long, group = "change")]
+        description: Option<String>,
+        /// Show the change and write nothing.
+        #[arg(long)]
+        dry_run: bool,
+        #[arg(long)]
+        json: bool,
+        #[arg(long)]
+        tenant: Option<String>,
+        /// Confirm a write to a production-themed tenant.
+        #[arg(long)]
+        yes: bool,
+    },
     /// Delete an IDM internal role, prompting unless --force is supplied.
     Delete {
         id: String,
@@ -115,6 +144,25 @@ pub async fn run(command: RoleCommand) -> Result<()> {
             tenant,
             yes,
         } => create(&id, name, description, tenant, yes).await,
+        RoleCommand::Edit {
+            id,
+            name,
+            description,
+            dry_run,
+            json,
+            tenant,
+            yes,
+        } => {
+            edit(
+                &id,
+                spec::RoleTextEdit { name, description },
+                dry_run,
+                json,
+                tenant,
+                yes,
+            )
+            .await
+        }
         RoleCommand::Delete {
             id,
             force,
@@ -177,6 +225,100 @@ async fn create(
     let created_id = string_field(&created, "_id");
     let created_name = string_field(&created, "name");
     println!("created internal role {created_id} (name: {created_name})");
+    Ok(())
+}
+
+async fn edit(
+    id: &str,
+    text: spec::RoleTextEdit,
+    dry_run: bool,
+    json_output: bool,
+    tenant_arg: Option<String>,
+    yes: bool,
+) -> Result<()> {
+    validate_id(id)?;
+    let tenant = tenant_for(tenant_arg)?;
+    let before = match api::read_role(&tenant, id).await {
+        Ok(role) => role,
+        Err(Error::Api { status: 404, .. }) => {
+            return Err(Error::Config(format!(
+                "internal role {id:?} does not exist"
+            )));
+        }
+        Err(error) => return Err(error),
+    };
+    let changes = spec::plan_text_edit(&before, &text)?;
+    if changes.is_empty() || dry_run {
+        return print_text_edit(id, &changes, dry_run, json_output, None);
+    }
+    let ok = ensure_prod_confirmed(&tenant, yes)?;
+    let revision = spec::role_revision(&before)?;
+    match api::patch_role_if_match(
+        &tenant,
+        id,
+        spec::text_patch(&changes),
+        &revision,
+        ok.confirmed_prod,
+    )
+    .await
+    {
+        Err(Error::Api { status: 412, .. }) => {
+            return Err(Error::Config(format!(
+                "internal role {id:?} changed since it was read; nothing was written — re-run the command"
+            )));
+        }
+        Err(error) => return Err(error),
+        Ok(_) => {}
+    }
+    let after = api::read_role(&tenant, id).await.map_err(|error| {
+        Error::Config(format!(
+            "internal role {id:?} was patched but the read-back failed ({error}); the name and description were not confirmed"
+        ))
+    })?;
+    spec::confirm_text_edit(&before, &after, &changes)?;
+    print_text_edit(id, &changes, false, json_output, Some(&after))
+}
+
+fn print_text_edit(
+    id: &str,
+    changes: &[spec::TextChange],
+    dry_run: bool,
+    json_output: bool,
+    read_back: Option<&Value>,
+) -> Result<()> {
+    if json_output {
+        let report = json!({
+            "id": id,
+            "dry_run": dry_run,
+            "changed": !changes.is_empty(),
+            "changes": changes.iter().map(|change| json!({
+                "field": change.field,
+                "before": change.before,
+                "after": change.after,
+            })).collect::<Vec<_>>(),
+            "name": read_back.map(|role| string_field(role, "name")),
+            "description": read_back.map(|role| string_field(role, "description")),
+        });
+        return print_json(&report);
+    }
+    if changes.is_empty() {
+        println!("internal role {id} already has that name and description");
+        return Ok(());
+    }
+    let verb = if dry_run { "would set" } else { "set" };
+    println!(
+        "{} internal role {id}",
+        if dry_run { "would update" } else { "updated" }
+    );
+    for change in changes {
+        let before = change.before.as_deref().unwrap_or("<none>");
+        // The value after a write is the re-read, which `confirm_text_edit`
+        // has already checked against what was sent.
+        let after = read_back
+            .and_then(|role| role.get(change.field).and_then(Value::as_str))
+            .unwrap_or(change.after.as_str());
+        println!("{verb} {field}: {before} → {after}", field = change.field);
+    }
     Ok(())
 }
 
@@ -480,6 +622,7 @@ mod tests {
     fn every_role_mutation_parses_and_forwards_production_consent() {
         let commands = [
             parsed(&["aic", "role", "create", "support", "--yes"]),
+            parsed(&["aic", "role", "edit", "support", "--name", "Desk", "--yes"]),
             parsed(&["aic", "role", "delete", "support", "--force", "--yes"]),
             parsed(&[
                 "aic",
@@ -507,7 +650,9 @@ mod tests {
 
         for command in commands {
             let yes = match command {
-                RoleCommand::Create { yes, .. } | RoleCommand::Delete { yes, .. } => yes,
+                RoleCommand::Create { yes, .. }
+                | RoleCommand::Edit { yes, .. }
+                | RoleCommand::Delete { yes, .. } => yes,
                 RoleCommand::Privilege {
                     command: PrivilegeCommand::Add { yes, .. } | PrivilegeCommand::Rm { yes, .. },
                 } => yes,
@@ -517,6 +662,42 @@ mod tests {
         }
 
         assert_production_consent(false);
+    }
+
+    #[test]
+    fn role_edit_requires_a_name_or_a_description_and_previews_without_writing() {
+        assert!(
+            crate::cli::Cli::try_parse_from(["aic", "role", "edit", "support"]).is_err(),
+            "an edit with nothing to change should not parse"
+        );
+        match parsed(&[
+            "aic",
+            "role",
+            "edit",
+            "support",
+            "--description",
+            "desk",
+            "--dry-run",
+            "--json",
+        ]) {
+            RoleCommand::Edit {
+                id,
+                name,
+                description,
+                dry_run,
+                json,
+                yes,
+                ..
+            } => {
+                assert_eq!(id, "support");
+                assert_eq!(name, None);
+                assert_eq!(description.as_deref(), Some("desk"));
+                assert!(dry_run);
+                assert!(json);
+                assert!(!yes);
+            }
+            other => panic!("expected edit, got {other:?}"),
+        }
     }
 
     #[test]

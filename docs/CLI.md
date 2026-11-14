@@ -1536,6 +1536,7 @@ command makes the caller-chosen id the default name as well.
 aic role list [--json]
 aic role show <id> [--json]
 aic role create <id> [--name <name>] [--description <text>] [--yes]
+aic role edit <id> [--name <name>] [--description <text>] [--dry-run] [--json] [--yes]
 aic role delete <id> [--force] [--yes]
 aic role privilege list <role-id> [--json]
 aic role privilege add <role-id> --path managed/alpha_user --permissions VIEW,UPDATE --attr mail:rw --attr userName:ro [--privilege-name <name>] [--actions action1,action2] [--yes]
@@ -1543,7 +1544,14 @@ aic role privilege rm <role-id> --path managed/alpha_user [--yes]
 ```
 
 `create` refuses an existing id because IDM's `PUT` is a destructive full
-replace; use `role privilege add` to amend privileges. `privilege add` validates
+replace; use `role privilege add` to amend privileges. `role edit` changes
+`name` and `description` only: it sends an IDM patch of those fields with
+`If-Match` set to the revision it just read, then prints the name and
+description from a following read. A value that already matches is left
+unsent. `--dry-run` prints the change and writes nothing. `--json` prints
+`id`, `dry_run`, `changed`, and `changes` (`field`, `before`, `after`); after
+a write it also includes the read-back `name` and `description`. `--yes`
+confirms a production tenant, and a dry run does not ask for it. `privilege add` validates
 the path and attribute names against the tenant's managed-object schema, then
 replaces an existing privilege with the same path or appends a new one. Each
 `--attr` uses `name:ro` or `name:rw`. Known permissions are `VIEW`, `CREATE`,
