@@ -32,6 +32,7 @@ in.
 | Read                      | `GET`    | `/openidm/internal/role/{id}`              | A bare read returns everything. `_fields` **projects** — see the trap below. |
 | **Create with chosen id** | `PUT`    | `/openidm/internal/role/{id}`              | **201**, `_id` equals the path segment. Neither header required.             |
 | Replace                   | `PUT`    | `/openidm/internal/role/{id}`              | 200. **Destructive full replace** — see below.                               |
+| Edit name/description     | `PATCH`  | `/openidm/internal/role/{id}`              | Re-read and confirm; preserves privileges.                                  |
 | Create with generated id  | `POST`   | `/openidm/internal/role?_action=create`    | 201 with a **random UUID** `_id`. This is what the admin console does.       |
 | Delete                    | `DELETE` | `/openidm/internal/role/{id}`              | 200; a follow-up `GET` 404s.                                                 |
 | Field schema              | `GET`    | `/openidm/schema/internal/role`            | Titles and types. **One key is wrong** — see the `accessFlags` quirk.        |
