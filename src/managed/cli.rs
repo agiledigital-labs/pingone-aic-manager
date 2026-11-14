@@ -2058,7 +2058,7 @@ async fn map_created_pair(
             }
         ))
     })?;
-    let storage_activation = if let Some(plan) = prepared {
+    let probe = if let Some(plan) = prepared {
         let added = activation::added_type_names(plan.addition());
         let pending = activation::prepare(ok.tenant, &added, wait_activation, yes)
             .await
@@ -2073,10 +2073,10 @@ async fn map_created_pair(
         let permit = repair::authorize(false, true)
             .ok_or_else(|| crate::Error::Config("mapping authorization failed".into()))?;
         apply_mapping(ok, &plan, &permit).await?;
-        activation::finish(ok.tenant, ok.confirmed_prod, &added, pending).await?
+        Some((added, pending))
     } else {
         check_orphans(ok.tenant, object, key, "existing mapping").await?;
-        activation::settle(ok.tenant, ok.confirmed_prod, &[], wait_activation, yes).await?
+        None
     };
     let verification =
         collect_verification(field, 5, 200, None, Some(ok.tenant.to_string())).await?;
@@ -2084,6 +2084,14 @@ async fn map_created_pair(
     eprintln!(
         "mapping configuration verified; runtime storage mode is untested without links (run verify --probe later if appropriate)"
     );
+    // Complete mapping reads before probing: Ctrl-C during the probe must
+    // return directly to rendering recovery evidence after bounded cleanup.
+    let storage_activation = match probe {
+        Some((added, pending)) => {
+            activation::finish(ok.tenant, ok.confirmed_prod, &added, pending).await?
+        }
+        None => activation::settle(ok.tenant, ok.confirmed_prod, &[], wait_activation, yes).await?,
+    };
     Ok((verification, storage_activation))
 }
 

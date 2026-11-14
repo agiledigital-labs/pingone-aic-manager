@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use serde::Serialize;
 use serde_json::{Value, json};
 
-use super::{api, state, storage};
+use super::{api, storage};
 use crate::{Error, Result};
 use std::sync::{
     Arc,
@@ -39,10 +39,11 @@ the stores, and a missing-id 404 changes when the object's OU is first created (
 generic store does that too) and does not change back when the entry is removed. A record \
 written just after the entry stayed readable for the whole watch.
 
-The probe is a real record. It runs onCreate and postCreate when the object has them, and \
-onDelete and postDelete when it has them. onUpdate and postUpdate are not invoked. Any sync \
-mapping whose source or target is managed/<object> can run on both the create and the delete. \
-The command lists the hooks and mappings it found and asks before writing. --yes skips that \
+The probe is a real record. Hooks such as onCreate or onDelete and sync mappings may run. \
+The command names every script-shaped hook, including file-backed hooks and any event name; \
+firing behavior is unknown where unmeasured for this probe. It refuses even with --yes if \
+either config/managed or config/sync cannot be inventoried. Otherwise it lists hooks and \
+mappings and asks before writing. --yes skips that \
 prompt and is also the production gate. A non-interactive run without --yes refuses before any \
 probe record is created. On relationship set the schema write has already landed and the \
 per-type entry is not added: finish with relationship map --wait-activation --yes. On \
@@ -131,22 +132,56 @@ pub(crate) fn side_effects(
 }
 
 fn present_hooks(object: &Value) -> Vec<String> {
-    state::HOOK_EVENTS
+    object
+        .as_object()
         .into_iter()
-        .filter(|event| matches!(object.get(*event), Some(value) if !value.is_null()))
-        .map(str::to_string)
+        .flatten()
+        .filter(|(key, value)| {
+            key.as_str() != "schema"
+                && value.get("type").is_some_and(Value::is_string)
+                && (value.get("source").is_some_and(Value::is_string)
+                    || value.get("file").is_some_and(Value::is_string))
+        })
+        .map(|(key, _)| key.clone())
         .collect()
+}
+
+fn require_inventory(effects: &[SideEffects]) -> Result<()> {
+    let mut unread = Vec::new();
+    for effect in effects {
+        if effect.hooks_unknown {
+            unread.push(format!("managed/{} hooks (config/managed)", effect.object));
+        }
+        if effect.mappings_unknown {
+            unread.push(format!("managed/{} mappings (config/sync)", effect.object));
+        }
+    }
+    if !unread.is_empty() {
+        return Err(Error::Config(format!(
+            "probe refused: inventory could not be read: {}; rerun after both inventories can be read; --yes cannot bypass this refusal",
+            unread.join(", ")
+        )));
+    }
+    Ok(())
 }
 
 /// `None` when `mappings` is present and not an array: the document was read
 /// and still could not be listed. A missing `mappings` member is an empty list.
 fn listed_mappings(object: &str, sync: &Value) -> Option<Vec<String>> {
     let resource = format!("managed/{object}");
-    let items = match sync.get("mappings") {
+    let document = sync.as_object()?;
+    let items = match document.get("mappings") {
         None => return Some(Vec::new()),
         Some(Value::Array(items)) => items,
         Some(_) => return None,
     };
+    if items.iter().any(|mapping| {
+        !mapping.is_object()
+            || mapping.get("source").and_then(Value::as_str).is_none()
+            || mapping.get("target").and_then(Value::as_str).is_none()
+    }) {
+        return None;
+    }
     Some(
         items
             .iter()
@@ -176,20 +211,30 @@ pub(crate) fn plan_text(effects: &[SideEffects]) -> String {
          the entry stayed readable, and no read-only check separated \"not yet active\" from \
          \"active\"."
             .to_string(),
-        "The create runs onCreate and postCreate when the object has them. The delete runs \
-         onDelete and postDelete when the object has them. onUpdate and postUpdate are not \
-         invoked. A sync mapping whose source or target is the object can run on both."
+        "Hook firing behavior is unknown for this probe; every script-shaped hook is listed, \
+         including file-backed hooks and events whose support is unmeasured. A sync mapping \
+         whose source or target is the object can run on create or delete."
             .to_string(),
     ];
     for effect in effects {
         lines.push(format!("managed/{}:", effect.object));
         lines.push(format!(
             "  hooks present: {}",
-            named(&effect.hooks, effect.hooks_unknown)
+            if effect.hooks_unknown || effect.hooks.is_empty() {
+                named(&effect.hooks, effect.hooks_unknown)
+            } else {
+                effect
+                    .hooks
+                    .iter()
+                    .map(|hook| format!("{hook} (firing behavior unknown)"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            }
         ));
         if effect.mappings_unknown {
             lines.push(
-                "  sync mappings: could not be listed (config/sync was not read)".to_string(),
+                "  sync mappings: could not be listed (config/sync unavailable or malformed)"
+                    .to_string(),
             );
         } else if effect.mappings.is_empty() {
             lines.push("  sync mappings: none".to_string());
@@ -199,6 +244,12 @@ pub(crate) fn plan_text(effects: &[SideEffects]) -> String {
                 lines.push(format!("    {mapping}"));
             }
         }
+    }
+    if effects
+        .iter()
+        .any(|effect| effect.hooks_unknown || effect.mappings_unknown)
+    {
+        lines.push("Inventory incomplete: refusing to probe, including with --yes. Re-read both inventories before consenting.".into());
     }
     lines.join("\n")
 }
@@ -500,6 +551,7 @@ pub(crate) async fn prepare(
     };
     let effects = load_effects(tenant, added).await;
     eprintln!("{}", plan_text(&effects));
+    require_inventory(&effects)?;
     let granted = if yes {
         consent(true, None)
     } else {
@@ -615,8 +667,22 @@ fn announce(added: &[String], activation: &StorageActivation) {
 }
 
 async fn load_effects(tenant: &str, added: &[String]) -> Vec<SideEffects> {
-    let managed = api::get_managed(tenant).await.ok();
-    let sync = crate::aic::api::get(tenant, SYNC_PATH).await.ok();
+    load_effects_with(
+        &TenantIo {
+            tenant: tenant.into(),
+            confirmed_prod: false,
+        },
+        added,
+    )
+    .await
+}
+
+async fn load_effects_with(io: &impl ProbeIo, added: &[String]) -> Vec<SideEffects> {
+    let managed = io
+        .request("GET", "/openidm/config/managed".into(), None)
+        .await
+        .ok();
+    let sync = io.request("GET", SYNC_PATH.into(), None).await.ok();
     added
         .iter()
         .map(|name| {
@@ -867,12 +933,14 @@ async fn probe_run(
     {
         facts.create = CreateAttempt::Created;
     }
+    // Preserve a confirmation window even if the last DELETE hangs.
+    let delete_deadline = cleanup_deadline - limits.request.min(limits.cleanup / 3);
     let mut retry_delete = true;
     let mut permanent_delete_failure = false;
     while Instant::now() < cleanup_deadline {
-        if retry_delete {
+        if retry_delete && Instant::now() < delete_deadline {
             facts.delete_attempted = true;
-            match request_until(&*io, "DELETE", &record_path, cleanup_deadline, limits).await {
+            match request_until(&*io, "DELETE", &record_path, delete_deadline, limits).await {
                 Ok(_) => retry_delete = false,
                 Err(error) => {
                     let status = api_status(&error);
@@ -1009,7 +1077,7 @@ mod tests {
         let object = json!({
             "name": "thing",
             "onCreate": { "type": "text/javascript", "source": "a" },
-            "onUpdate": { "source": "b" },
+            "onUpdate": { "type": "text/javascript", "source": "b" },
             "onDelete": null,
             "postDelete": { "type": "text/javascript", "source": "c" }
         });
@@ -1058,7 +1126,7 @@ mod tests {
         let plan = plan_text(&[empty]);
         assert!(plan.contains("hooks present: none"), "{plan}");
         assert!(plan.contains("sync mappings: none"), "{plan}");
-        assert!(plan.contains("onCreate"), "{plan}");
+        assert!(plan.contains("firing behavior is unknown"), "{plan}");
         assert!(plan.contains("does not prove"), "{plan}");
 
         let unreadable_shape = side_effects(
@@ -1234,6 +1302,8 @@ mod lifecycle_tests {
         interrupt_on_create: Option<Arc<Interrupt>>,
         interrupt_on_read: Option<Arc<Interrupt>>,
         signal_on_read: bool,
+        managed_inventory: Option<Value>,
+        sync_inventory: Option<Value>,
     }
 
     fn api_error(status: u16) -> Error {
@@ -1253,7 +1323,13 @@ mod lifecycle_tests {
             self.calls
                 .lock()
                 .unwrap()
-                .push((method, path, body.clone()));
+                .push((method, path.clone(), body.clone()));
+            if path == "/openidm/config/managed" {
+                return self.managed_inventory.clone().ok_or_else(|| api_error(503));
+            }
+            if path == SYNC_PATH {
+                return self.sync_inventory.clone().ok_or_else(|| api_error(403));
+            }
             match method {
                 "POST" => {
                     if self.hang_create {
@@ -1334,6 +1410,63 @@ mod lifecycle_tests {
         request: Duration::from_millis(15),
         poll: Duration::from_millis(2),
     };
+
+    #[tokio::test]
+    async fn either_failed_inventory_refuses_instead_of_claiming_none() {
+        for missing_managed in [true, false] {
+            let io = Fake {
+                managed_inventory: (!missing_managed)
+                    .then(|| json!({"objects": [{"name": "thing"}]})),
+                sync_inventory: missing_managed.then(|| json!({"mappings": []})),
+                ..Fake::default()
+            };
+            let effects = load_effects_with(&io, &["thing".into()]).await;
+            let error = require_inventory(&effects).unwrap_err().to_string();
+            assert!(error.contains("--yes cannot bypass"), "{error}");
+            let plan = plan_text(&effects);
+            assert!(plan.contains("refusing to probe"), "{plan}");
+            assert!(
+                !plan.contains(if missing_managed {
+                    "hooks present: none"
+                } else {
+                    "sync mappings: none"
+                }),
+                "{plan}"
+            );
+            assert!(io.calls.lock().unwrap().iter().all(|c| c.0 == "GET"));
+        }
+    }
+
+    #[test]
+    fn inventories_all_inline_and_file_hooks_regardless_of_event_or_language() {
+        let object = json!({
+            "name": "thing",
+            "onRead": {"type": "text/javascript", "source": "a"},
+            "onValidate": {"type": "text/javascript", "file": "validate.js"},
+            "customEvent": {"type": "text/groovy", "source": "b"},
+            "postDelete": {"type": "text/javascript", "file": "delete.js"},
+            "schema": {"type": "object", "properties": {"source": {"type": "string"}}}
+        });
+        let effects = side_effects(
+            "thing",
+            Some(&object),
+            Some(&json!({"mappings": []})),
+            false,
+        );
+        assert_eq!(
+            effects.hooks,
+            ["customEvent", "onRead", "onValidate", "postDelete"]
+        );
+        require_inventory(std::slice::from_ref(&effects)).unwrap();
+        let plan = plan_text(&[effects]);
+        for name in ["customEvent", "onRead", "onValidate", "postDelete"] {
+            assert!(
+                plan.contains(&format!("{name} (firing behavior unknown)")),
+                "{plan}"
+            );
+        }
+        assert!(side_effects("thing", Some(&object), Some(&Value::Null), false).mappings_unknown);
+    }
 
     #[tokio::test]
     async fn transient_delete_is_retried_and_absence_confirmed() {
