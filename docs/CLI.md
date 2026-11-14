@@ -3026,6 +3026,8 @@ aic script diff [<ref>] [--local-vs-snapshot | --snapshot-vs-remote | --find-in-
 aic script who <ref> [--history] [--minutes N] [--json]   # who created/last modified it
 ```
 
+`aic script delete` removes the script from the tenant, keeps the local file, and forgets its sync record.
+
 When `sync` finds a synced script missing on the tenant, it prompts to skip,
 re-create from the local source, or forget the sync record while keeping the
 local file. `--resolve local` re-creates standalone resources with their saved
