@@ -132,19 +132,12 @@ pub const PING_SHIPPED_KINDS: [&str; 6] = [
 pub enum ObjectProtection {
     /// One of Ping's realm objects, by name. Never renamed or deleted.
     Shipped,
-    /// Carries Ping's top-level `"type": "Managed Object"` marker under a name
-    /// that is not a known Ping object. Console-created custom objects carry
-    /// the marker too (reported from a client tenant, 2026-11-05), so the
-    /// marker alone is not proof; the operator may override it.
-    Marked,
     /// Neither: an ordinary custom object.
     None,
 }
 
-/// Keyed on the name first, because the `type` marker is shared with
-/// console-created custom objects; the marker alone only asks for consent. A
-/// wider set than [`object_class`], which keys on `meta` to decide field
-/// freedom.
+/// Protects the known Ping objects by name only. A wider set than
+/// [`object_class`], which keys on `meta` to decide field freedom.
 pub fn object_protection(object_def: &Value) -> ObjectProtection {
     let name = object_def.get("name").and_then(Value::as_str).unwrap_or("");
     let shipped = name.split_once('_').is_some_and(|(realm, kind)| {
@@ -152,8 +145,6 @@ pub fn object_protection(object_def: &Value) -> ObjectProtection {
     });
     if shipped {
         ObjectProtection::Shipped
-    } else if object_def.get("type").and_then(Value::as_str) == Some("Managed Object") {
-        ObjectProtection::Marked
     } else {
         ObjectProtection::None
     }
@@ -1723,12 +1714,10 @@ mod tests {
         assert!(validate_object_name("gamma_2", &names, "alpha").is_ok());
     }
 
-    /// The name decides; the marker alone only asks for consent, because
-    /// console-created custom objects carry it too. The discriminating rows
-    /// are a marked custom name (`Marked`, not `Shipped`) and an unmarked
-    /// Ping name (`Shipped` regardless).
+    /// The object type marker does not affect protection; names alone identify
+    /// Ping-shipped realm objects.
     #[test]
-    fn ping_shipped_guard_keys_on_the_name_and_the_marker_only_asks() {
+    fn object_protection_uses_names_only() {
         use ObjectProtection::*;
         let marker = |name: &str| json!({"name": name, "type": "Managed Object"});
         for realm in ["alpha", "bravo"] {
@@ -1738,18 +1727,18 @@ mod tests {
                 assert_eq!(object_protection(&json!({"name": name})), Shipped, "{name}");
             }
         }
-        for (def, want) in [
-            (marker("console_widget"), Marked),
-            (marker("alpha_widget"), Marked),
-            (marker("gamma_user"), Marked),
-            (marker("alpha_user_extra"), Marked),
-            (json!({"type": "Managed Object"}), Marked),
-            (json!({"name": "test_object"}), None),
-            (json!({"name": "alpha_lock", "type": "custom"}), None),
+        for def in [
+            marker("custom_widget"),
+            marker("alpha_widget"),
+            marker("gamma_user"),
+            marker("alpha_user_extra"),
+            json!({"type": "Managed Object"}),
+            json!({"name": "test_object"}),
+            json!({"name": "alpha_lock", "type": "custom"}),
         ] {
-            assert_eq!(object_protection(&def), want, "{def}");
+            assert_eq!(object_protection(&def), None, "{def}");
         }
-        assert!(!is_ping_shipped_object(&marker("console_widget")));
+        assert!(!is_ping_shipped_object(&marker("custom_widget")));
     }
 
     #[test]
