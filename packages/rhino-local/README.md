@@ -675,7 +675,8 @@ the missing channels marked unobserved. What the harness hands *to* your code
 (`RunResult`, `StepResult`, `CheckContext`, `StepContext`, `BeforeRunContext`)
 stays complete, so a test that builds one of those by hand needs the new
 fields. The one deliberate widening is `EvidenceChannel`, which gained
-`"accessToken"` and `"oidc"` for the access-token and OIDC claims contexts, so an
+`"accessToken"`, `"oidc"`, `"socialIdp"`, `"configProvider"`,
+`"validateScope"`, `"mayAct"`, `"returns"` and `"nameId"` for the added contexts, so an
 exhaustive `switch` over it written against 0.1.2 needs new arms. `test/compat/consumer-0.1.2.ts` holds this line: it compiles every
 0.1.2 export's shape against the current one, and `npm run typecheck` fails on
 any new break.
@@ -1483,6 +1484,79 @@ token-exchange entry points were not measured.
 
 A may-act case runs locally only. The types are exported from `./case`:
 `MayActCaseInit`, `MayActExpect` and the recorded `MayActEffect`.
+
+### SAML2 NameID mapper scripts
+
+`context: "SAML2_NAMEID_MAPPER"` runs the remote service provider's NameID
+mapper (next-gen). The assertion's NameID text is the script's completion
+value when that value is a nonempty string. A completion of `undefined` fails SSO with
+`Could not generate NameID`. A thrown script fails the run (`CaseRunError`)
+and the message contains the thrown value. Measured 2026-11-14
+(`docs/api/12-script-bindings-matrix.md`).
+
+```ts
+defineCase({
+  name: "returns a stable NameID",
+  context: "SAML2_NAMEID_MAPPER",
+  script, // next-gen: the last expression is the NameID text
+  given: {
+    identity: {
+      name: "subject-id",
+      attributes: { mail: ["user@example.com"] },
+    },
+  },
+  expect: { nameId: { value: "user@example.com" } },
+});
+```
+
+**Fixtures.** `given.nameId` seeds `format` (default the email URN
+`urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress`), `remoteEntityId`
+(default `http://localhost/sp`), `hostedEntityId` (default
+`https://idp.example.com`) and `mappedValue`. `identity` seeds `name`
+(default `"subject"`), `exists` (default `true`) and `attributes`. The only
+attribute the measurement read is one `mail` string, so the context-specific
+`NameIdIdentitySeed` type accepts only `attributes: { mail: [string] }` and
+omits `universalId`. Other attributes and mail cardinalities are rejected
+at validation too. `mappedValue` defaults to that mail string. `loggerScriptId` and `cookieName` are accepted
+too. `realm` defaults to `"/alpha"`.
+
+**Assertions.** `expect.nameId.value` is the NameID text. Omitting it on a
+success is a mismatch unless `allowUndeclared: { nameId: true }`. `format` is
+compared only when declared. `accepted: false` expects the measured void
+failure and cannot be combined with `value`; `refusal` then names the text
+(`Could not generate NameID` on a completion of `undefined`), and omitting
+`refusal` is a mismatch unless `allowUndeclared.nameId` is set.
+
+**Bindings.** Only measured members are emulated (2026-11-14):
+
+- `nameIDScriptHelper.getNameIDValue()` returns `mappedValue` (the mail
+  string in the measured email-format case). `getNameIDFromSession()` returns
+  `null`. `shouldPersistNameIDFormat()` returns `false`. All three calls fault
+  outside the measured email format.
+  `createNameIdentifier` is present and calling it faults. The
+  `NAMEID_FORMAT_*` constants were not read in the live probe, so a
+  read faults. Unmeasured helper member reads fault, including capability
+  checks with `typeof`; the names measured as `undefined` still return it
+  (`class`, `equals`, `getClass`, `hashCode`, `notify`, `notifyAll`, `toString`,
+  `wait`, `nameIDFromSession` and `nameIDValue`).
+- `identity.exists()` and `identity.getName()` answer the fixture.
+  `getName()` in the measured SSO was the managed object's `_id`, not the
+  userName. `getAttributeValues("mail")` is a list of that one string.
+  `store`, `setAttribute`, `addAttribute` and `getUniversalId` fault, as do
+  unmeasured member reads such as `typeof identity.getAttributes`.
+- `nameIDFormat`, `remoteEntityId` and `hostedEntityId` are the seeded
+  strings. Assigning to `nameIDFormat` faults, including assignment of the
+  current value or an assignment whose exception the script catches.
+  `session` is an object; no member of it was read.
+  `logger.getName()` is
+  `scripts.SAML2_NAMEID_MAPPER.<script id>.(<script name>)`.
+
+An unmeasured member or a completion other than a nonempty string or `undefined`
+raises `saml2-nameid-mapper-unmeasured/<binding>.<member>`.
+
+A NameID mapper case runs locally only. The types are exported from `./case`:
+`NameIdCaseInit`, `NameIdIdentitySeed`, `NameIdSeed`, `NameIdExpect` and the
+recorded `NameIdEffect`.
 
 ### Library scripts
 

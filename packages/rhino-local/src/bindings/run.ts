@@ -12,6 +12,7 @@ import {
   socialIdpClassAllowList,
   validateScopeClassAllowList,
   mayActClassAllowList,
+  nameIdMapperClassAllowList,
 } from "./allowlist.ts";
 import { checkSeededManaged } from "../profile/seed.ts";
 import type { EnvProfile } from "../profile/types.ts";
@@ -144,6 +145,8 @@ function classAllowListFor(kase: Case): string[] {
       return validateScopeClassAllowList();
     case "OAUTH2_MAY_ACT":
       return mayActClassAllowList();
+    case "SAML2_NAMEID_MAPPER":
+      return nameIdMapperClassAllowList();
     case "SCRIPTED_DECISION_NODE":
     case undefined:
       return decisionNodeClassAllowList();

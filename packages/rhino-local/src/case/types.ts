@@ -49,6 +49,7 @@ export const SCRIPT_CONTEXTS = [
   "CONFIG_PROVIDER_NODE",
   "OAUTH2_VALIDATE_SCOPE",
   "OAUTH2_MAY_ACT",
+  "SAML2_NAMEID_MAPPER",
   "LIBRARY",
 ] as const;
 export type ScriptContext = (typeof SCRIPT_CONTEXTS)[number];
@@ -94,6 +95,7 @@ export const GIVEN_KEYS = [
   "socialIdp",
   "validateScope",
   "library",
+  "nameId",
 ] as const;
 export type GivenKey = (typeof GIVEN_KEYS)[number];
 
@@ -128,6 +130,7 @@ export const EXPECT_KEYS = [
   "configProvider",
   "validateScope",
   "mayAct",
+  "nameId",
   "returns",
 ] as const;
 export type ExpectKey = (typeof EXPECT_KEYS)[number];
@@ -151,6 +154,7 @@ export const ALLOW_UNDECLARED_CHANNELS = [
   "configProvider",
   "validateScope",
   "mayAct",
+  "nameId",
   "returns",
 ] as const;
 export type AllowUndeclaredChannel = (typeof ALLOW_UNDECLARED_CHANNELS)[number];
@@ -185,6 +189,7 @@ export const DEFAULT_ALLOW_UNDECLARED: {
   configProvider: false,
   validateScope: false,
   mayAct: false,
+  nameId: false,
   returns: false,
 };
 
@@ -227,8 +232,8 @@ export const STATE_CHANNELS = [
   "secureState",
 ] as const;
 export type StateChannel = (typeof STATE_CHANNELS)[number];
-/** `accessToken`, `oidc`, `socialIdp`, `configProvider`, `validateScope` and `mayAct` are judged only for their context, so none is a `Channel` every runner must record. */
-export type EvidenceChannel = Channel | "nodeState" | "accessToken" | "oidc" | "socialIdp" | "configProvider" | "validateScope" | "mayAct" | "returns";
+/** `accessToken`, `oidc`, `socialIdp`, `configProvider`, `validateScope`, `mayAct` and `nameId` are judged only for their context, so none is a `Channel` every runner must record. */
+export type EvidenceChannel = Channel | "nodeState" | "accessToken" | "oidc" | "socialIdp" | "configProvider" | "validateScope" | "mayAct" | "nameId" | "returns";
 
 export const ENV_INPUT_KEYS = ["esv", "secrets", "managed", "http", "openidmActions", "openidmFailures", "bindingOverrides"] as const;
 export type EnvInputKey = (typeof ENV_INPUT_KEYS)[number];
@@ -436,7 +441,7 @@ export interface Given {
   bindings?: Record<string, JsonValue>;
   /** `OAUTH2_ACCESS_TOKEN_MODIFICATION`: the token as AM hands it to the script. */
   accessToken?: AccessTokenSeed;
-  /** `OAUTH2_ACCESS_TOKEN_MODIFICATION` and `OIDC_CLAIMS`: the resource owner's identity. */
+  /** `OAUTH2_ACCESS_TOKEN_MODIFICATION`, `OIDC_CLAIMS` and `SAML2_NAMEID_MAPPER`: the resource owner's identity. */
   identity?: IdentitySeed;
   /** `OAUTH2_ACCESS_TOKEN_MODIFICATION` and `OIDC_CLAIMS`: `clientProperties`. */
   client?: ClientSeed;
@@ -460,6 +465,11 @@ export interface Given {
    * `AUTHENTICATION_TREE_DECISION_NODE`.
    */
   library?: LibrarySeed;
+  /**
+   * `SAML2_NAMEID_MAPPER`: the NameID format and the two entity ids, plus the
+   * value `getNameIDValue()` returns when it should not be the single `mail`.
+   */
+  nameId?: NameIdSeed;
 }
 
 /**
@@ -823,6 +833,52 @@ export interface IdentitySeed {
   attributes?: Record<string, string[]>;
 }
 
+/** Identity fixture for the measured NameID mapper mail read. */
+export interface NameIdIdentitySeed {
+  name?: string;
+  exists?: boolean;
+  attributes?: { mail: [string] };
+}
+
+/**
+ * The NameID mapper's scalar bindings, and the string `getNameIDValue()`
+ * returns. Every field is optional. Defaults (measured 2026-11-14, the email
+ * format the SP requested): format the email URN, remote `http://localhost/sp`,
+ * hosted `https://idp.example.com`. `mappedValue` defaults to the single
+ * `identity.attributes.mail` value when that is the only mail value.
+ */
+export interface NameIdSeed {
+  /** Default `urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress`. */
+  format?: string;
+  /** Default `http://localhost/sp`. */
+  remoteEntityId?: string;
+  /** Default `https://idp.example.com`. */
+  hostedEntityId?: string;
+  /** What `getNameIDValue()` returns. Default: the one `mail` value, when seeded. */
+  mappedValue?: string;
+}
+
+/** What the assertion's NameID is. Fail-closed. `accepted: false` is the measured void completion. */
+export interface NameIdExpect {
+  /** The NameID text. Required unless `accepted` is `false`. */
+  value?: string;
+  /** Compared only when declared. */
+  format?: string;
+  /** Default `true`. `false` is a completion of `undefined` (`Could not generate NameID`). */
+  accepted?: boolean;
+  /** The refusal text. On a failure, omitting it is an undeclared mismatch. */
+  refusal?: string;
+}
+
+/** The NameID the harvest reports. */
+export interface NameIdEffect {
+  accepted: boolean;
+  /** The completion string, or `null` when the completion was `undefined`. */
+  value: string | null;
+  format: string;
+  refusal: string | null;
+}
+
 /** `clientProperties`. */
 export interface ClientSeed {
   /** Default the token's `clientId`. */
@@ -935,6 +991,8 @@ export interface Expect {
   validateScope?: ValidateScopeExpect;
   /** `OAUTH2_MAY_ACT` only. */
   mayAct?: MayActExpect;
+  /** `SAML2_NAMEID_MAPPER` only. */
+  nameId?: NameIdExpect;
   /** `LIBRARY` only. */
   returns?: LibraryExpect;
 }
@@ -1147,6 +1205,37 @@ export interface MayActCaseInit {
 }
 
 /**
+ * A `SAML2_NAMEID_MAPPER` case: the script's completion value is the assertion
+ * NameID. A completion of `undefined` fails SSO. A throw fails the run.
+ */
+export interface NameIdCaseInit {
+  name: string;
+  script: string;
+  context: "SAML2_NAMEID_MAPPER";
+  given?: Pick<
+    Given,
+    | "engine"
+    | "realm"
+    | "scriptName"
+    | "esv"
+    | "esvUndeclared"
+    | "secrets"
+    | "libraries"
+    | "managed"
+    | "http"
+    | "openidmActions"
+    | "openidmFailures"
+    | "bindingOverrides"
+    | "loggerScriptId"
+    | "cookieName"
+    | "nameId"
+  > & {
+    identity?: NameIdIdentitySeed;
+  };
+  expect: Pick<Expect, "nameId" | "openidm" | "http" | "logs" | "allowUndeclared">;
+}
+
+/**
  * A `LIBRARY` case: the script is the library body. The harness `require()`s
  * it and calls `given.library.export` with `given.library.args`.
  */
@@ -1185,6 +1274,7 @@ export type AnyCaseInit =
   | ConfigProviderCaseInit
   | ValidateScopeCaseInit
   | MayActCaseInit
+  | NameIdCaseInit
   | LibraryCaseInit;
 
 export interface Case {
@@ -1262,6 +1352,8 @@ export interface RecordedEffects {
   validateScope?: ValidateScopeEffect | undefined;
   /** The may-act context's result; absent for every other context. */
   mayAct?: MayActEffect | undefined;
+  /** The SAML2 NameID mapper context's result; absent for every other context. */
+  nameId?: NameIdEffect | undefined;
   /** The library context's result; absent for every other context. */
   returns?: LibraryEffect | undefined;
   /** Omitted by exact recorders; present when a lane has qualified evidence. */

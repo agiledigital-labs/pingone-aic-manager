@@ -142,6 +142,15 @@ export const mayActBindingsJsonPath = join(generatedDir, "oauth2-may-act-next.js
 /** The may-act context's binding overlay, appended to the prelude for that context only. */
 export const bindingsMayActPath = join(packageRoot, "src", "bindings", "rhino", "context-oauth2-may-act.cjs");
 
+/** The SAML2 NameID mapper context's captured descriptor. Repo-only; read by `generate`. */
+export const sourceNameIdMapperBindingsJsonPath = join(repoRoot, "docs", "api", "bindings", "saml2-nameid-mapper-next.json");
+
+/** `generate`'s verbatim copy of {@link sourceNameIdMapperBindingsJsonPath}: the context's class allow-list. */
+export const nameIdMapperBindingsJsonPath = join(generatedDir, "saml2-nameid-mapper-next.json");
+
+/** The SAML2 NameID mapper context's binding overlay, appended to the prelude for that context only. */
+export const bindingsNameIdMapperPath = join(packageRoot, "src", "bindings", "rhino", "context-saml2-nameid-mapper.cjs");
+
 /** The library context's binding overlay, appended to the prelude for that context only. */
 export const bindingsLibraryPath = join(packageRoot, "src", "bindings", "rhino", "context-library.cjs");
 
