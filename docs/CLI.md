@@ -3169,9 +3169,10 @@ and symlinks in the selected root path. Generated paths beneath that root refuse
 `..` and symlinks. Output is staged before checking for local changes; a change
 stops the batch and the report names files already written. Forced replacement
 checks the authorized bytes again after backup. New destinations use Linux's
-atomic no-replace rename, so a concurrent creation is refused. If the platform,
-kernel or filesystem lacks that operation, installing a new file fails without
-replacing the destination.
+atomic no-replace rename, or an atomic hard-link install followed by staging-file
+unlink on other Unix platforms. A concurrent creation is refused. If the kernel
+or filesystem lacks the required operation, installation fails without replacing
+the destination.
 
 `aic script delete` removes the script from the tenant, keeps the local file, and forgets its sync record.
 
