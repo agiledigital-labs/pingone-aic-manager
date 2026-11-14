@@ -833,6 +833,13 @@ export interface IdentitySeed {
   attributes?: Record<string, string[]>;
 }
 
+/** Identity fixture for the measured NameID mapper mail read. */
+export interface NameIdIdentitySeed {
+  name?: string;
+  exists?: boolean;
+  attributes?: { mail: [string] };
+}
+
 /**
  * The NameID mapper's scalar bindings, and the string `getNameIDValue()`
  * returns. Every field is optional. Defaults (measured 2026-11-14, the email
@@ -1221,9 +1228,10 @@ export interface NameIdCaseInit {
     | "bindingOverrides"
     | "loggerScriptId"
     | "cookieName"
-    | "identity"
     | "nameId"
-  >;
+  > & {
+    identity?: NameIdIdentitySeed;
+  };
   expect: Pick<Expect, "nameId" | "openidm" | "http" | "logs" | "allowUndeclared">;
 }
 

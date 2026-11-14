@@ -1514,9 +1514,10 @@ defineCase({
 (default `http://localhost/sp`), `hostedEntityId` (default
 `https://idp.example.com`) and `mappedValue`. `identity` seeds `name`
 (default `"subject"`), `exists` (default `true`) and `attributes`. The only
-attribute the measurement read is one `mail` string, so any other attribute
-map, and `identity.universalId`, are rejected at validation. `mappedValue`
-defaults to that mail string. `loggerScriptId` and `cookieName` are accepted
+attribute the measurement read is one `mail` string, so the context-specific
+`NameIdIdentitySeed` type accepts only `attributes: { mail: [string] }` and
+omits `universalId`. Other attributes and mail cardinalities are rejected
+at validation too. `mappedValue` defaults to that mail string. `loggerScriptId` and `cookieName` are accepted
 too. `realm` defaults to `"/alpha"`.
 
 **Assertions.** `expect.nameId.value` is the NameID text. Omitting it on a
@@ -1530,16 +1531,23 @@ failure and cannot be combined with `value`; `refusal` then names the text
 
 - `nameIDScriptHelper.getNameIDValue()` returns `mappedValue` (the mail
   string in the measured email-format case). `getNameIDFromSession()` returns
-  `null`. `shouldPersistNameIDFormat()` returns `false`.
+  `null`. `shouldPersistNameIDFormat()` returns `false`. All three calls fault
+  outside the measured email format.
   `createNameIdentifier` is present and calling it faults. The
   `NAMEID_FORMAT_*` constants were not read in the live probe, so a
-  read faults.
+  read faults. Unmeasured helper member reads fault, including capability
+  checks with `typeof`; the names measured as `undefined` still return it
+  (`class`, `equals`, `getClass`, `hashCode`, `notify`, `notifyAll`, `toString`,
+  `wait`, `nameIDFromSession` and `nameIDValue`).
 - `identity.exists()` and `identity.getName()` answer the fixture.
   `getName()` in the measured SSO was the managed object's `_id`, not the
   userName. `getAttributeValues("mail")` is a list of that one string.
-  `store`, `setAttribute`, `addAttribute` and `getUniversalId` fault.
+  `store`, `setAttribute`, `addAttribute` and `getUniversalId` fault, as do
+  unmeasured member reads such as `typeof identity.getAttributes`.
 - `nameIDFormat`, `remoteEntityId` and `hostedEntityId` are the seeded
-  strings. `session` is an object; no member of it was read.
+  strings. Assigning to `nameIDFormat` faults, including assignment of the
+  current value or an assignment whose exception the script catches.
+  `session` is an object; no member of it was read.
   `logger.getName()` is
   `scripts.SAML2_NAMEID_MAPPER.<script id>.(<script name>)`.
 
@@ -1547,7 +1555,8 @@ An unmeasured member or a completion other than a nonempty string or `undefined`
 raises `saml2-nameid-mapper-unmeasured/<binding>.<member>`.
 
 A NameID mapper case runs locally only. The types are exported from `./case`:
-`NameIdCaseInit`, `NameIdSeed`, `NameIdExpect` and the recorded `NameIdEffect`.
+`NameIdCaseInit`, `NameIdIdentitySeed`, `NameIdSeed`, `NameIdExpect` and the
+recorded `NameIdEffect`.
 
 ### Library scripts
 
