@@ -139,6 +139,26 @@ while its config requested four. `aic ctx scopes` shows both, and
 The agent rebuilds its cached clients when `config.toml` changes, so the next
 token carries the scope without a restart.
 
+### Narrowing `scope` on the JWT-bearer grant (verified 2026-11-14)
+
+The token request's `scope` may be a subset of the list this install already
+asks for. Measured with the service-account JWT-bearer grant. The token
+response's `scope` string and `GET /am/oauth2/realms/root/tokeninfo` `scope`
+were the same list:
+
+| Requested `scope` | Result |
+| --- | --- |
+| `fr:am:*` | 200. Both surfaces were exactly `fr:am:*` |
+| `fr:idc:esv:* fr:am:*` | 200. Both surfaces were exactly those two, in that order |
+| `fr:am:* fr:zzemu:r3n:*` | **400** `invalid_scope`, `Unsupported scope for service account: fr:zzemu:r3n:*`. No token |
+| `fr:zzemu:r3n:*` | the same 400. The unknown scope is not dropped |
+
+`aic whoami --scope` mints that narrowed token for the one call and does not
+cache it in place of the normal token. `--json` `scopes` is the token
+response's list. The flag refuses a scope this install does not already
+request (`aic ctx scopes` shows that list). A scope the service account does
+not hold still fails the whole grant, as the table shows.
+
 ### Other `fr:idc:*` scopes a service account can hold
 
 A service account can be granted considerably more than we ask for. These were

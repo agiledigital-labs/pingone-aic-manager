@@ -166,12 +166,24 @@ pub enum Command {
         min_ttl: Option<u32>,
         #[arg(
             long,
-            conflicts_with_all = ["token", "min_ttl"],
+            conflicts_with_all = ["token", "min_ttl", "scope"],
             help = "Show how IDM sees the service-account token: the component, \
                     its IDM roles, and the scopes the token requested. Prints no \
                     token and no key. A management scope is not the IDM admin role"
         )]
         idm: bool,
+        #[arg(
+            id = "scope",
+            long = "scope",
+            value_name = "SCOPE",
+            conflicts_with_all = ["idm", "min_ttl"],
+            help = "Mint a token that carries only this scope, repeated for each \
+                    one. Each scope has to be one this install already requests. \
+                    The agent mints it for this call and does not cache it in \
+                    place of the normal token. A scope the service account does \
+                    not hold fails the whole request"
+        )]
+        scopes: Vec<String>,
         #[arg(
             long,
             value_name = "URL-OR-HOST",
@@ -467,7 +479,8 @@ pub(crate) async fn dispatch(
             json,
             min_ttl,
             idm,
-        }) => whoami(tenant, token, host, json, min_ttl, idm).await,
+            scopes,
+        }) => whoami(tenant, token, host, json, min_ttl, idm, scopes).await,
         Some(Command::Esv { command }) => crate::esv::cli::run(command).await,
         Some(Command::Managed { command }) => crate::managed::cli::run(command).await,
         Some(Command::Idm { command }) => crate::idmstore::cli::run(command).await,
@@ -1705,25 +1718,34 @@ struct WhoamiView {
     expires_in: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
     access_token: Option<String>,
+    /// Present when this token was minted for an explicit `--scope` list.
+    /// These are the scopes the token response reported, which on 2026-11-14
+    /// matched the list that was requested.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    scopes: Option<Vec<String>>,
 }
 
-fn whoami_view(
-    tenant: &str,
-    host: Option<&str>,
-    sa: &str,
-    operator: &ResolvedOperator,
+struct WhoamiFacts<'a> {
+    tenant: &'a str,
+    host: Option<&'a str>,
+    sa: &'a str,
+    operator: &'a ResolvedOperator,
     expires_at: i64,
     now: i64,
-    access_token: Option<&str>,
-) -> WhoamiView {
+    access_token: Option<&'a str>,
+    scopes: Option<&'a [String]>,
+}
+
+fn whoami_view(facts: WhoamiFacts<'_>) -> WhoamiView {
     WhoamiView {
-        tenant: tenant.to_string(),
-        host: host.map(str::to_string),
-        sa: sa.to_string(),
-        operator: operator_text(operator),
-        expires_at,
-        expires_in: remaining_secs(expires_at, now),
-        access_token: access_token.map(str::to_string),
+        tenant: facts.tenant.to_string(),
+        host: facts.host.map(str::to_string),
+        sa: facts.sa.to_string(),
+        operator: operator_text(facts.operator),
+        expires_at: facts.expires_at,
+        expires_in: remaining_secs(facts.expires_at, facts.now),
+        access_token: facts.access_token.map(str::to_string),
+        scopes: facts.scopes.map(|scopes| scopes.to_vec()),
     }
 }
 
@@ -1832,6 +1854,7 @@ async fn whoami(
     json: bool,
     min_ttl: Option<u32>,
     idm: bool,
+    scopes: Vec<String>,
 ) -> Result<()> {
     if idm && (token_only || min_ttl.is_some()) {
         return Err(Error::Config(
@@ -1839,7 +1862,8 @@ async fn whoami(
         ));
     }
     // Before any mint: a floor the tenant cannot satisfy must not touch the agent.
-    let min_ttl_secs = if idm {
+    // `--scope` mints a one-off token, so it has no cache floor.
+    let min_ttl_secs = if idm || !scopes.is_empty() {
         None
     } else {
         token_floor(token_only, min_ttl)?
@@ -1879,6 +1903,12 @@ async fn whoami(
     if idm {
         return whoami_idm(&tenant, json).await;
     }
+    if !scopes.is_empty() {
+        let configured = tenant_config.ok_or_else(|| {
+            Error::Config(format!("no tenant named {tenant:?} in .aic/config.toml"))
+        })?;
+        crate::aic::auth::downscoped_tenant(configured, &scopes)?;
+    }
     let operator = operator::resolve(&settings, tenant_config, NetworkAccess::Skip).await;
 
     let client = AgentClient::connect_or_spawn().await?;
@@ -1892,12 +1922,14 @@ async fn whoami(
             // cache, and a refresh would make its `expires:` line say the same
             // thing every time.
             min_ttl_secs,
+            scopes: (!scopes.is_empty()).then_some(scopes),
         })
         .await?
     {
         Response::Token {
             access_token,
             expires_at,
+            scopes: issued,
         } => {
             let now = chrono::Utc::now().timestamp();
             // The service account is worth printing even though it's local
@@ -1912,15 +1944,16 @@ async fn whoami(
                 .unwrap_or("(none — log-only tenant)");
             if json {
                 let host = tenant_config.map(|config| identity::host(&config.base_url));
-                let view = whoami_view(
-                    &tenant,
+                let view = whoami_view(WhoamiFacts {
+                    tenant: &tenant,
                     host,
                     sa,
-                    &operator,
+                    operator: &operator,
                     expires_at,
                     now,
-                    token_only.then_some(access_token.as_str()),
-                );
+                    access_token: token_only.then_some(access_token.as_str()),
+                    scopes: issued.as_deref(),
+                });
                 print_json(&view)?;
             } else if token_only {
                 println!("{access_token}");
@@ -1935,6 +1968,9 @@ async fn whoami(
                 );
                 println!("sa:      {sa}");
                 println!("operator: {}", operator_text(&operator));
+                if let Some(issued) = &issued {
+                    println!("scopes:  {}", issued.join(" "));
+                }
                 let ttl = remaining_secs(expires_at, now);
                 println!("expires: in {ttl}s (unix {expires_at})");
                 println!("token:   {}", redact(&access_token));
@@ -2347,15 +2383,16 @@ mod tests {
             host: "workstation".into(),
             source: crate::config::operator::NameSource::Settings,
         };
-        let hidden = super::whoami_view(
-            "sandbox",
-            Some("tenant.example.com"),
-            "sa-1",
-            &operator,
-            1_700_000_100,
-            1_700_000_000,
-            None,
-        );
+        let hidden = super::whoami_view(super::WhoamiFacts {
+            tenant: "sandbox",
+            host: Some("tenant.example.com"),
+            sa: "sa-1",
+            operator: &operator,
+            expires_at: 1_700_000_100,
+            now: 1_700_000_000,
+            access_token: None,
+            scopes: None,
+        });
         let body = serde_json::to_value(&hidden).unwrap();
         assert!(body.get("access_token").is_none());
         assert_eq!(body["expires_at"], 1_700_000_100);
@@ -2363,19 +2400,36 @@ mod tests {
         assert_eq!(body["operator"], "ada on workstation");
         assert_eq!(body["host"], "tenant.example.com");
 
-        let shown = super::whoami_view(
-            "sandbox",
-            None,
-            "sa-1",
-            &operator,
-            1_700_000_000,
-            1_700_000_050,
-            Some("bearer-for-test"),
-        );
+        let shown = super::whoami_view(super::WhoamiFacts {
+            tenant: "sandbox",
+            host: None,
+            sa: "sa-1",
+            operator: &operator,
+            expires_at: 1_700_000_000,
+            now: 1_700_000_050,
+            access_token: Some("bearer-for-test"),
+            scopes: None,
+        });
         let body = serde_json::to_value(&shown).unwrap();
         assert_eq!(body["access_token"], "bearer-for-test");
         assert_eq!(body["expires_in"], -50);
         assert!(body.get("host").is_none());
+        assert!(body.get("scopes").is_none());
+
+        let narrowed_scopes = ["fr:am:*".to_string()];
+        let narrowed = super::whoami_view(super::WhoamiFacts {
+            tenant: "sandbox",
+            host: None,
+            sa: "sa-1",
+            operator: &operator,
+            expires_at: 1_700_000_100,
+            now: 1_700_000_000,
+            access_token: None,
+            scopes: Some(&narrowed_scopes),
+        });
+        let body = serde_json::to_value(&narrowed).unwrap();
+        assert!(body.get("access_token").is_none());
+        assert_eq!(body["scopes"], serde_json::json!(["fr:am:*"]));
     }
 
     #[test]
@@ -2390,9 +2444,11 @@ mod tests {
                 host,
                 tenant,
                 idm,
+                scopes,
             }) => {
                 assert!(json && token);
                 assert!(!idm);
+                assert!(scopes.is_empty());
                 assert_eq!(min_ttl, Some(120));
                 assert!(host.is_none() && tenant.is_none());
             }
@@ -2407,6 +2463,20 @@ mod tests {
         assert!(text.contains("--idm") && text.contains("--token"), "{text}");
         let error = Cli::try_parse_from(["aic", "whoami", "--idm", "--min-ttl", "30"]).unwrap_err();
         assert!(error.to_string().contains("--min-ttl"));
+        let error =
+            Cli::try_parse_from(["aic", "whoami", "--scope", "fr:am:*", "--idm"]).unwrap_err();
+        assert!(error.to_string().contains("--scope"), "{}", error);
+        let scoped = Cli::try_parse_from([
+            "aic", "whoami", "--token", "--scope", "fr:am:*", "--scope", "fr:idm:*",
+        ])
+        .unwrap();
+        match scoped.command {
+            Some(Command::Whoami { token, scopes, .. }) => {
+                assert!(token);
+                assert_eq!(scopes, ["fr:am:*", "fr:idm:*"]);
+            }
+            other => panic!("expected whoami, got {other:?}"),
+        }
         let cli = Cli::try_parse_from(["aic", "whoami", "--idm", "--json"]).unwrap();
         assert!(matches!(
             cli.command,

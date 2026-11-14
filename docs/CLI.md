@@ -209,6 +209,7 @@ binary deliberately does not read passwords from environment variables.
 | `aic whoami --json`            | The same identity as plain `whoami`, as JSON: `tenant`, `host`, `sa`, `operator`, `expires_at`, `expires_in`. `access_token` is present only with `--token`. |
 | `aic whoami --min-ttl <secs>`  | Return the cached token only when it has at least `<secs>` left; otherwise the agent mints a new one (still in memory). Replaces `--token`'s 840s floor, including a smaller one. Refused at or above 898. |
 | `aic whoami --idm [--json]`    | Show the IDM component, its roles, and the scopes the service-account token requested. Prints no token and no id. States that a management scope is not the IDM admin role. Cannot be combined with `--token` or `--min-ttl`. |
+| `aic whoami --scope <scope>`   | Repeat for each scope. Mint a token that carries only those, each one this install already requests. The agent does not cache it in place of the normal token. Refuses a scope outside that list. A scope the service account does not hold fails the whole grant. Cannot be combined with `--idm` or `--min-ttl`. |
 | `aic whoami --token --host <url-or-host>` | As `--token`, for the context whose host the URL names (unless `--tenant` is given); refuses — no token printed, non-zero exit — unless the host is that context's own or one of its custom domains. |
 
 `aic ctx current` (or `aic ctx show`) answers "which tenant would a command
@@ -309,6 +310,18 @@ token that tokeninfo echoes, are not printed. Verified 2026-11-14: component
 `managed/svcacct`, roles `openidm-svcacct` and `openidm-authorized`,
 `admin_role` false, and `fr:idm:*` among the scopes. `--idm --token`
 exits non-zero and prints nothing.
+
+`whoami --scope <scope>` (repeat the flag) asks the agent for a token whose
+`scope` is only that list. Each scope has to be one this install already
+requests; `aic ctx scopes` is the command that shows and edits that list,
+and `--scope` does not write it. The agent mints the token for this call
+and does not store it in the cache the next command would use. `--json`
+includes `scopes` from the token response and still omits `access_token`
+unless `--token` is set. `--token` alone stays one line. Verified
+2026-11-14: requesting `fr:am:*` issued a token whose response `scope`
+and tokeninfo `scope` were exactly that, in that order for a two-scope
+request, and requesting `fr:zzemu:r3n:*` returned 400 `invalid_scope`
+with no token. `--scope` cannot be combined with `--idm` or `--min-ttl`.
 
 Unlike the other `ctx` verbs, `rm` needs an unlocked agent: it reads the vault
 to find out what the tenant owns, and withdraws a signing key from the tenant
