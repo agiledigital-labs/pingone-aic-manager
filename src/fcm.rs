@@ -765,6 +765,40 @@ mod tests {
         assert_eq!(std::str::from_utf8(&files[1].bytes).unwrap(), expected);
     }
 
+    /// The fields a created AM script carries, with the id and principal
+    /// replaced. Captured 2026-11-14 and checked byte-for-byte against
+    /// `fr-config-pull scripts`.
+    #[test]
+    fn script_layout_keeps_null_and_audit_fields() {
+        let mut raw = script_raw("// custom_widget\n");
+        let principal = "id=00000000-0000-4000-8000-000000000002,ou=user,ou=am-config";
+        raw["createdBy"] = json!(principal);
+        raw["creationDate"] = json!(1_700_000_000_000_i64);
+        raw["description"] = Value::Null;
+        raw["lastModifiedBy"] = json!(principal);
+        raw["lastModifiedDate"] = json!(1_700_000_000_000_i64);
+        let files = script_files("alpha", &raw).unwrap();
+        assert_eq!(files[0].bytes, b"// custom_widget\n");
+        let expected = "\
+{
+  \"_id\": \"00000000-0000-4000-8000-000000000001\",
+  \"context\": \"LIBRARY\",
+  \"createdBy\": \"id=00000000-0000-4000-8000-000000000002,ou=user,ou=am-config\",
+  \"creationDate\": 1700000000000,
+  \"default\": false,
+  \"description\": null,
+  \"evaluatorVersion\": \"2.0\",
+  \"language\": \"JAVASCRIPT\",
+  \"lastModifiedBy\": \"id=00000000-0000-4000-8000-000000000002,ou=user,ou=am-config\",
+  \"lastModifiedDate\": 1700000000000,
+  \"name\": \"custom_widget\",
+  \"script\": {
+    \"file\": \"scripts-content/LIBRARY/custom_widget.js\"
+  }
+}";
+        assert_eq!(std::str::from_utf8(&files[1].bytes).unwrap(), expected);
+    }
+
     #[test]
     fn script_source_without_a_trailing_newline_is_not_given_one() {
         let files = script_files("alpha", &script_raw("var x = 1;")).unwrap();
@@ -881,6 +915,51 @@ mod tests {
   }
 }";
         assert_eq!(std::str::from_utf8(&files[3].bytes).unwrap(), expected);
+    }
+
+    /// A managed object created with one lifecycle hook, renamed. Captured
+    /// 2026-11-14. `fr-config-pull managed-objects` stops on an earlier object
+    /// that has no `schema.properties`; the package's writer, given this
+    /// object alone, matches these bytes.
+    #[test]
+    fn managed_layout_matches_a_created_object() {
+        let object = json!({
+            "name": "custom_widget",
+            "onCreate": {
+                "source": "// onCreate for custom_widget\n",
+                "type": "text/javascript"
+            },
+            "schema": {
+                "order": [],
+                "properties": {},
+                "required": [],
+                "title": "custom_widget",
+                "type": "object"
+            }
+        });
+        let files = managed_object_files(&object).unwrap();
+        assert_eq!(files.len(), 2);
+        assert_eq!(
+            files[0].relative,
+            PathBuf::from("managed-objects/custom_widget/custom_widget.onCreate.js")
+        );
+        assert_eq!(files[0].bytes, b"// onCreate for custom_widget\n");
+        let expected = "\
+{
+  \"name\": \"custom_widget\",
+  \"onCreate\": {
+    \"file\": \"custom_widget.onCreate.js\",
+    \"type\": \"text/javascript\"
+  },
+  \"schema\": {
+    \"order\": [],
+    \"properties\": {},
+    \"required\": [],
+    \"title\": \"custom_widget\",
+    \"type\": \"object\"
+  }
+}";
+        assert_eq!(std::str::from_utf8(&files[1].bytes).unwrap(), expected);
     }
 
     #[test]
