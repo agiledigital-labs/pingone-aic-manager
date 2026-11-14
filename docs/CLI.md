@@ -206,6 +206,10 @@ binary deliberately does not read passwords from environment variables.
 | `aic ctx rm <tenant>`          | Remove a tenant entry and the local artifacts belonging to it. See below.                                      |
 | `aic whoami [--tenant <name>]` | Mint and print token info plus the local operator name and host for a context.                                 |
 | `aic whoami --token`           | Print **only** the bearer token (for scripting, e.g. `curl -H "Authorization: Bearer $(aic whoami --token)"`). |
+| `aic whoami --json`            | The same identity as plain `whoami`, as JSON: `tenant`, `host`, `sa`, `operator`, `expires_at`, `expires_in`. `access_token` is present only with `--token`. |
+| `aic whoami --min-ttl <secs>`  | Return the cached token only when it has at least `<secs>` left; otherwise the agent mints a new one (still in memory). Replaces `--token`'s 840s floor, including a smaller one. Refused at or above 898. |
+| `aic whoami --idm [--json]`    | Show the IDM component, its roles, and the scopes the service-account token requested. Prints no token and no id. States that a management scope is not the IDM admin role. Cannot be combined with `--token` or `--min-ttl`. |
+| `aic whoami --scope <scope>`   | Repeat for each scope. Mint a token that carries only those, each one this install already requests. The agent does not cache it in place of the normal token. Refuses a scope outside that list. A scope the service account does not hold fails the whole grant. Cannot be combined with `--idm` or `--min-ttl`. |
 | `aic whoami --token --host <url-or-host>` | As `--token`, for the context whose host the URL names (unless `--tenant` is given); refuses — no token printed, non-zero exit — unless the host is that context's own or one of its custom domains. |
 
 `aic ctx current` (or `aic ctx show`) answers "which tenant would a command
@@ -280,6 +284,45 @@ than fourteen minutes, and the cached token is reused only within the first
 minute of its life. Plain `whoami` deliberately sends no floor: its job is to
 report the cache, and refreshing would make `expires:` say the same thing every
 time.
+
+`--json` prints that same report as one object. `expires_at` is the unix
+second the agent stored, and `expires_in` is `expires_at` minus now — the
+subtraction `aic session status` uses for `Ns remaining` (zero or below is
+`expired` there; `--json` keeps the signed number). There is no
+`access_token` field unless `--token` is also set, in which case stdout is
+the object rather than the bare token and stderr stays empty. `--min-ttl`
+applies with or without `--token`: the agent returns the cached token when
+it still has that many seconds left, and otherwise mints a new one into the
+same in-memory cache. A value of 898 or more is refused before `GetToken`,
+because that is the issued life the program records and a token is already
+under it almost immediately. The unlock/status preflight still runs first.
+Verified 2026-11-14: a cached token reported
+`expires_in` 783; `--min-ttl 803` minted, and the following `--json`
+reported 898 with no `access_token`. `--min-ttl 898` exited non-zero and
+printed nothing. `--token` alone stayed one line.
+
+`whoami --idm` reports how IDM authenticates the service-account token. It reads
+`GET /openidm/info/login` and `GET /am/oauth2/realms/root/tokeninfo` and
+prints `component`, `roles`, and `scopes`. `--json` is the same facts plus
+`admin_role` (true only for `internal/role/openidm-admin`) and `note`.
+The note is always: a management scope is not the IDM admin role, and
+`fr:idm:*` does not grant `openidm-admin`. The login ids, and the access
+token that tokeninfo echoes, are not printed. Verified 2026-11-14: component
+`managed/svcacct`, roles `openidm-svcacct` and `openidm-authorized`,
+`admin_role` false, and `fr:idm:*` among the scopes. `--idm --token`
+exits non-zero and prints nothing.
+
+`whoami --scope <scope>` (repeat the flag) asks the agent for a token whose
+`scope` is only that list. Each scope has to be one this install already
+requests; `aic ctx scopes` is the command that shows and edits that list,
+and `--scope` does not write it. The agent mints the token for this call
+and does not store it in the cache the next command would use. `--json`
+includes `scopes` from the token response and still omits `access_token`
+unless `--token` is set. `--token` alone stays one line. Verified
+2026-11-14: requesting `fr:am:*` issued a token whose response `scope`
+and tokeninfo `scope` were exactly that, in that order for a two-scope
+request, and requesting `fr:zzemu:r3n:*` returned 400 `invalid_scope`
+with no token. `--scope` cannot be combined with `--idm` or `--min-ttl`.
 
 Unlike the other `ctx` verbs, `rm` needs an unlocked agent: it reads the vault
 to find out what the tenant owns, and withdraws a signing key from the tenant
@@ -1536,6 +1579,7 @@ command makes the caller-chosen id the default name as well.
 aic role list [--json]
 aic role show <id> [--json]
 aic role create <id> [--name <name>] [--description <text>] [--yes]
+aic role edit <id> [--name <name>] [--description <text>] [--dry-run] [--json] [--yes]
 aic role delete <id> [--force] [--yes]
 aic role privilege list <role-id> [--json]
 aic role privilege add <role-id> --path managed/alpha_user --permissions VIEW,UPDATE --attr mail:rw --attr userName:ro [--privilege-name <name>] [--actions action1,action2] [--yes]
@@ -1543,10 +1587,23 @@ aic role privilege rm <role-id> --path managed/alpha_user [--yes]
 ```
 
 `create` refuses an existing id because IDM's `PUT` is a destructive full
-replace; use `role privilege add` to amend privileges. `privilege add` validates
+replace; use `role privilege add` to amend privileges. `role edit` changes
+`name` and `description` only: it sends an IDM patch of those fields with
+`If-Match` set to the revision it just read, then prints the name and
+description from a following read. A value that already matches is left
+unsent. `--dry-run` prints the change and writes nothing. `--json` prints
+`id`, `dry_run`, `changed`, and `changes` (`field`, `before`, `after`); after
+a write it also includes the read-back `name` and `description`. `--yes`
+confirms a production tenant, and a dry run does not ask for it. `privilege add` validates
 the path and attribute names against the tenant's managed-object schema, then
 replaces an existing privilege with the same path or appends a new one. Each
-`--attr` uses `name:ro` or `name:rw`. Known permissions are `VIEW`, `CREATE`,
+`--attr` uses `name:ro` or `name:rw`. `_id` and `_rev` are refused: IDM returns
+both on managed-object reads with no accessFlags entry, so the flag is not how
+they are exposed. `_rev`, `_ref`, `_refProperties`, `_relationship`,
+`_notification`, `_parent` and `_schema` are also refused because IDM rejects
+an accessFlags entry for them. `_meta` is refused too: IDM stored a flag for it
+on `managed/alpha_user` and rejected it on `managed/alpha_organization`. A name
+that is simply not in the object's schema still fails as "not a property". Known permissions are `VIEW`, `CREATE`,
 `UPDATE`, `DELETE`, and `ACTION`; other values warn and proceed because AIC does
 not publish an authoritative enum. Privilege edits use the revision read with
 the role; a concurrent modification is reported and left untouched instead of

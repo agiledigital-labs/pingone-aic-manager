@@ -56,7 +56,42 @@ a JWK at account creation).
 ```
 
 - TTL is **898 seconds** (~15 min). Refresh proactively at ~60s before expiry.
+  The program treats 898 as the issued life. On 2026-11-14 a fresh token's
+  `aic whoami --json` `expires_in` was 898, and an earlier mint the same day
+  reported 899. The difference is observed and unexplained. `whoami --json` is
+  how a script reads that remainder (`expires_at`, `expires_in`) without
+  decoding the token.
+  `access_token` is in the object only with `--token`.
+  `whoami --min-ttl <secs>` returns the in-memory token when it still has
+  that long left and otherwise the agent mints a new one; nothing is written
+  to disk. A floor at or above 898 is refused. The same day, a cached
+  remainder of 783s was below a floor of 803s, the agent minted, and the
+  next `--json` reported 898. A floor of 898 exited non-zero and printed
+  no token.
 - `scope` may be a re-ordered subset of requested scopes — compare as a set.
+
+## Who the service-account token is inside IDM (verified 2026-11-14)
+
+`GET /openidm/info/login` with the service-account bearer returns 200. The
+object has `_id`, `authenticationId`, and `authorization`. `authorization`
+has `component`, `id`, and `roles`. On this call `component` was
+`managed/svcacct` and `roles` were `internal/role/openidm-svcacct` and
+`internal/role/openidm-authorized`. `openidm-admin` was not among them. The
+same component and roles were recorded on 2026-08-10 in
+[19-config-access.md](19-config-access.md); this call reconfirms them.
+
+`GET /am/oauth2/realms/root/tokeninfo` with the same bearer returns 200,
+with or without `Accept-API-Version: resource=1.0`. `scope` is a JSON array.
+This call's array was `fr:am:*`, `fr:idc:esv:*`, `fr:idm:*`,
+`fr:idc:cookie-domain:*`, `fr:idc:promotion:*`. The same names also appear
+as top-level keys. A whitespace-separated `scope` string is the other shape
+worth accepting. The body includes `access_token`; do not log it, and do not
+log `authenticationId`, `authorization.id`, `sub`, or `_id`.
+
+`aic whoami --idm` prints the component, the roles, and that `scope` list,
+and states that a management scope is not the IDM admin role. `--json` adds
+`admin_role`, which is true only when the roles include
+`internal/role/openidm-admin`.
 
 ## Scopes (observed working in sandbox)
 
@@ -102,6 +137,26 @@ while its config requested four. `aic ctx scopes` shows both, and
 `--add` edits only the local list, refusing a scope the tenant has not granted.
 The agent rebuilds its cached clients when `config.toml` changes, so the next
 token carries the scope without a restart.
+
+### Narrowing `scope` on the JWT-bearer grant (verified 2026-11-14)
+
+The token request's `scope` may be a subset of the list this install already
+asks for. Measured with the service-account JWT-bearer grant. The token
+response's `scope` string and `GET /am/oauth2/realms/root/tokeninfo` `scope`
+were the same list:
+
+| Requested `scope` | Result |
+| --- | --- |
+| `fr:am:*` | 200. Both surfaces were exactly `fr:am:*` |
+| `fr:idc:esv:* fr:am:*` | 200. Both surfaces were exactly those two, in that order |
+| `fr:am:* fr:zzemu:r3n:*` | **400** `invalid_scope`, `Unsupported scope for service account: fr:zzemu:r3n:*`. No token |
+| `fr:zzemu:r3n:*` | the same 400. The unknown scope is not dropped |
+
+`aic whoami --scope` mints that narrowed token for the one call and does not
+cache it in place of the normal token. `--json` `scopes` is the token
+response's list. The flag refuses a scope this install does not already
+request (`aic ctx scopes` shows that list). A scope the service account does
+not hold still fails the whole grant, as the table shows.
 
 ### Other `fr:idc:*` scopes a service account can hold
 
