@@ -867,15 +867,29 @@ async fn probe_run(
     {
         facts.create = CreateAttempt::Created;
     }
-    facts.delete_attempted = true;
-    let _ = request_until(&*io, "DELETE", &record_path, cleanup_deadline, limits).await;
+    let mut retry_delete = true;
+    let mut permanent_delete_failure = false;
     while Instant::now() < cleanup_deadline {
+        if retry_delete {
+            facts.delete_attempted = true;
+            match request_until(&*io, "DELETE", &record_path, cleanup_deadline, limits).await {
+                Ok(_) => retry_delete = false,
+                Err(error) => {
+                    let status = api_status(&error);
+                    retry_delete = status.is_none_or(|s| s == 408 || s == 429 || s >= 500);
+                    permanent_delete_failure = !retry_delete && status != Some(404);
+                }
+            }
+        }
+        // Always confirm, even after a lost DELETE response. Only repeat the
+        // idempotent delete if it failed transiently and the record is not gone.
         match request_until(&*io, "GET", &read_path, cleanup_deadline, limits).await {
             Err(error) if classify_confirm(api_status(&error)) == ConfirmClass::Gone => {
                 facts.delete_confirmed = !create_pending && facts.create == CreateAttempt::Created;
                 break;
             }
             Err(error) if classify_confirm(api_status(&error)) == ConfirmClass::Stop => break,
+            _ if permanent_delete_failure => break,
             _ => pause_with(cleanup_deadline, limits.poll).await,
         }
     }
@@ -1214,6 +1228,9 @@ mod lifecycle_tests {
         hang_create: bool,
         hang_reads: bool,
         hang_delete: bool,
+        fail_first_delete: bool,
+        delete_failure: Option<u16>,
+        lost_delete_reply: bool,
         interrupt_on_create: Option<Arc<Interrupt>>,
         interrupt_on_read: Option<Arc<Interrupt>>,
         signal_on_read: bool,
@@ -1279,6 +1296,19 @@ mod lifecycle_tests {
                     }
                 }
                 "DELETE" => {
+                    if let Some(status) = self.delete_failure {
+                        return Err(api_error(status));
+                    }
+                    let deletes = self
+                        .calls
+                        .lock()
+                        .unwrap()
+                        .iter()
+                        .filter(|c| c.0 == "DELETE")
+                        .count();
+                    if self.fail_first_delete && deletes == 1 {
+                        return Err(api_error(503));
+                    }
                     if self.signal_on_read {
                         // A second Ctrl-C during cleanup must remain latched.
                         unsafe {
@@ -1289,6 +1319,9 @@ mod lifecycle_tests {
                         std::future::pending::<()>().await;
                     }
                     *self.record.lock().unwrap() = None;
+                    if self.lost_delete_reply {
+                        return Err(Error::Transport("delete reply lost".into()));
+                    }
                     Ok(json!({}))
                 }
                 _ => panic!("unexpected method"),
@@ -1301,6 +1334,84 @@ mod lifecycle_tests {
         request: Duration::from_millis(15),
         poll: Duration::from_millis(2),
     };
+
+    #[tokio::test]
+    async fn transient_delete_is_retried_and_absence_confirmed() {
+        let io = Arc::new(Fake {
+            fail_first_delete: true,
+            ..Fake::default()
+        });
+        let result = probe_with_limits(
+            io.clone(),
+            "thing",
+            Instant::now() + Duration::from_secs(1),
+            FAST,
+        )
+        .await;
+        assert_eq!(result.outcome, "readable");
+        assert!(io.record.lock().unwrap().is_none());
+        let calls = io.calls.lock().unwrap();
+        assert_eq!(calls.iter().filter(|c| c.0 == "DELETE").count(), 2);
+        assert_eq!(calls.last().unwrap().0, "GET");
+    }
+
+    #[tokio::test]
+    async fn lost_delete_reply_is_confirmed_without_an_extra_delete() {
+        let io = Arc::new(Fake {
+            lost_delete_reply: true,
+            ..Fake::default()
+        });
+        let result = probe_with_limits(
+            io.clone(),
+            "thing",
+            Instant::now() + Duration::from_secs(1),
+            FAST,
+        )
+        .await;
+        assert_eq!(result.outcome, "readable");
+        assert_eq!(
+            io.calls
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|c| c.0 == "DELETE")
+                .count(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn permanent_or_exhausted_delete_failure_reports_id_and_unresolved_cleanup() {
+        for status in [403, 503] {
+            let io = Arc::new(Fake {
+                delete_failure: Some(status),
+                ..Fake::default()
+            });
+            let result = probe_with_limits(
+                io.clone(),
+                "thing",
+                Instant::now() + Duration::from_secs(1),
+                FAST,
+            )
+            .await;
+            assert_eq!(result.outcome, "not_confirmed");
+            let id = result.id.unwrap();
+            assert!(result.detail.unwrap().contains(&id));
+            assert_eq!(io.record.lock().unwrap().as_deref(), Some(id.as_str()));
+            let deletes = io
+                .calls
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|c| c.0 == "DELETE")
+                .count();
+            if status == 403 {
+                assert_eq!(deletes, 1);
+            } else {
+                assert!(deletes > 1);
+            }
+        }
+    }
 
     #[tokio::test]
     async fn interrupt_during_create_or_read_still_deletes_and_confirms() {
