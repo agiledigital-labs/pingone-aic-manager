@@ -411,6 +411,61 @@ fn later_probe_refuses_drift_on_its_mapping_target_and_preserves_earlier_id() {
 }
 
 #[test]
+fn later_probe_inventory_timeout_refuses_and_reports_confirmed_writes() {
+    for set in [false, true] {
+        let project = Project::new();
+        let capture = project.0.join("capture.json");
+        let mut args = if set {
+            set_args().to_vec()
+        } else {
+            map_args(&capture).to_vec()
+        };
+        args.push("--force");
+
+        let mut held = false;
+        let (output, tenant) = run(&project, &args, Tenant::new(!set), |tenant, request, _| {
+            if request["path"] == SYNC
+                && tenant
+                    .writes()
+                    .contains(&("POST", "/openidm/managed/holder?_action=create"))
+            {
+                assert!(!held);
+                held = true;
+                // Keep this request open until the child exits. Reaching it
+                // proves the second survey started before the probe deadline.
+                return Some(json!({"fixture_hold":true}));
+            }
+            None
+        });
+        assert!(held, "the later survey never started: {output:?}");
+        let body = stopped_report(&output, set, &capture);
+        let activation = &body["storage_activation"];
+        assert_eq!(activation["outcome"], "refused", "{body}");
+        assert_eq!(activation["interrupted"], false, "{body}");
+        assert_eq!(
+            activation["objects"][0]["outcome"], "not_confirmed",
+            "{body}"
+        );
+        assert_eq!(activation["objects"][1]["outcome"], "refused", "{body}");
+        assert!(
+            activation["objects"][1]["detail"]
+                .as_str()
+                .unwrap()
+                .contains("inventory could not be re-read"),
+            "{body}"
+        );
+        assert_eq!(
+            tenant
+                .writes()
+                .into_iter()
+                .filter(|(method, _)| *method == "POST")
+                .collect::<Vec<_>>(),
+            [("POST", "/openidm/managed/holder?_action=create")]
+        );
+    }
+}
+
+#[test]
 fn sigint_cancels_the_first_postwrite_survey_and_reports_confirmed_writes() {
     for set in [true, false] {
         let project = Project::new();

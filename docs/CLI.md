@@ -889,7 +889,10 @@ write. Pause other managed-schema writers through the write.
 Changes or unreadable inventory after writing produce
 `storage_activation.outcome: "refused"`, a nonzero exit and a report with
 `confirmed_writes` and per-type results, including any earlier recovery id.
-Map retains its capture and stops before restoring links. Verify the
+A recheck that starts but exceeds the shared deadline counts as unreadable
+inventory. If the deadline has already expired when the next recheck would
+start, the probe outcome is `not_confirmed`. Map retains its capture and stops
+before restoring links on refusal. Verify the
 configuration before resuming. Re-running map on installed mappings does not
 repeat the probe. Ctrl-C during the post-write inventory refresh also renders
 the confirmed writes before exiting. `--dry-run` writes no probe.

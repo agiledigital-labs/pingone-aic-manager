@@ -56,8 +56,9 @@ rechecks inventories after consent and before each probe, including hooks on man
 targets. Set checks config/managed for drift immediately before writing. This narrows the \
 window for overwriting a concurrent edit but cannot close it: the document has no conditional \
 write. Pause other managed-schema writers through the write. Changes or unreadable inventory \
-after writing report confirmed_writes and per-type \
-results, then exit non-zero. Map retains its capture and stops before restoring links. \
+after writing report confirmed_writes and per-type results, then exit non-zero. A recheck \
+that starts but exceeds the shared deadline counts as unreadable inventory. Map retains its \
+capture and stops before restoring links. \
 Ctrl-C during a post-write survey also reports confirmed writes. A probe only runs when \
 adding a per-type entry.
 
@@ -1055,9 +1056,18 @@ async fn probe_types_with(
             && !interrupt.is_set()
             && let Some((added, effects)) = inventory
         {
+            let survey = tokio::time::timeout_at(
+                deadline.into(),
+                check_inventory(io.as_ref(), added, effects),
+            );
             let checked = tokio::select! {
+                biased;
                 _ = interrupt.cancelled() => None,
-                result = tokio::time::timeout_at(deadline.into(), check_inventory(io.as_ref(), added, effects)) => result.ok(),
+                result = survey => Some(result.unwrap_or_else(|_| {
+                    Err(Error::Config(
+                        "probe refused: inventory could not be re-read before the shared probe deadline".into(),
+                    ))
+                })),
             };
             if let Some(Err(reason)) = checked {
                 objects.extend(skipped_records(
