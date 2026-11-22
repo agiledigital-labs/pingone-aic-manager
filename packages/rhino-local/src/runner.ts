@@ -767,8 +767,11 @@ export class RhinoRunner {
     const cache = options.cache ?? cacheDir();
     const slot = process.env.VITEST_POOL_ID ?? `pid-${process.pid}`;
     const kinds = lane === "both" ? (["host", "container"] as const) : ([lane] as const);
+    const spawnTimeoutMs = options.spawnTimeoutMs ?? DEFAULT_SPAWN_TIMEOUT_MS;
     const held = kinds.map((kind) => {
-      const key = JSON.stringify([address.path, address.token, slot, kind, cache,
+      // A shared launch has a single startup policy. A different limit
+      // must not let one borrower abort the other's JVM.
+      const key = JSON.stringify([address.path, address.token, slot, kind, cache, spawnTimeoutMs,
         ...LAUNCH_ENV.map((name) => process.env[name])]);
       const active = options.shared ? sharedBorrows.get(key) : undefined;
       const reused = active?.process.available === true;
@@ -792,9 +795,7 @@ export class RhinoRunner {
       }));
     };
     try {
-      await Promise.all(held.map(({ borrow, reused }) => borrow.process.waitUntilReady(
-        options.spawnTimeoutMs ?? DEFAULT_SPAWN_TIMEOUT_MS, !reused
-      )));
+      await Promise.all(held.map(({ borrow, reused }) => borrow.process.waitUntilReady(spawnTimeoutMs, !reused)));
     } catch (error) {
       await release();
       throw error;

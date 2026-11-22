@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, it, vi } from "vitest";
@@ -52,29 +52,41 @@ it("compiles one cold build for four slots and reuses all four JVMs", async () =
   }
 }, 90_000);
 
-it.skipIf(process.platform === "win32")("a readiness timeout discards that launch and records the limit", async () => {
-  // Prepare the build first. This test bounds only the stalled process.
+/** Run a different command on the first launch, then exec the real JVM. */
+async function withHostLauncher(
+  firstLaunch: string,
+  run: (pool: JvmPool, marker: string, timing: string) => Promise<void>
+): Promise<void> {
   const classes = await ensureRunnerClasses(await ensureRhinoJar());
-  const directory = mkdtempSync(join(tmpdir(), "rhino-pool-readiness-"));
+  const directory = mkdtempSync(join(tmpdir(), "rhino-pool-launch-"));
   const pool = await JvmPool.start({ classes: () => Promise.resolve(classes) });
-  const timing = join(directory, "timing.jsonl");
   try {
     const bin = join(directory, "bin");
+    const marker = join(directory, "launched");
+    const timing = join(directory, "timing.jsonl");
     mkdirSync(bin);
     const java = javaTool("java");
-    // On the first launch, stop in the process that would exec Java. Every
-    // later launch execs the real runner. No assumption about JVM startup time.
     writeFileSync(join(bin, "java"), `#!/bin/sh
 if [ ! -f "$POOL_TEST_LAUNCHED" ]; then
   touch "$POOL_TEST_LAUNCHED"
-  kill -STOP $$
+  ${firstLaunch}
 fi
 exec "$POOL_TEST_JAVA" "$@"
 `, { mode: 0o700 });
     vi.stubEnv(JAVA_HOME_ENV, directory);
     vi.stubEnv("POOL_TEST_JAVA", java);
-    vi.stubEnv("POOL_TEST_LAUNCHED", join(directory, "launched"));
+    vi.stubEnv("POOL_TEST_LAUNCHED", marker);
     vi.stubEnv(TIMING_ENV, timing);
+    await run(pool, marker, timing);
+  } finally {
+    await pool.stop();
+    vi.unstubAllEnvs();
+    rmSync(directory, { recursive: true, force: true });
+  }
+}
+
+it.skipIf(process.platform === "win32")("a readiness timeout discards that launch and records the limit", async () => {
+  await withHostLauncher("kill -STOP $$", async (pool, _marker, timing) => {
     const limit = 2_000;
     const reason = `host runner did not become ready within ${limit}ms`;
     await expect(RhinoRunner.borrow(pool.address, { lane: "host", spawnTimeoutMs: limit })).rejects.toThrow(reason);
@@ -88,11 +100,28 @@ exec "$POOL_TEST_JAVA" "$@"
     expect(readFileSync(timing, "utf8").trim().split("\n").map((line) => JSON.parse(line))).toContainEqual(
       expect.objectContaining({ type: "pool-discard", reason })
     );
-  } finally {
-    await pool.stop();
-    vi.unstubAllEnvs();
-    rmSync(directory, { recursive: true, force: true });
-  }
+  });
+}, 60_000);
+
+it.skipIf(process.platform === "win32")("a short readiness limit cannot abort a borrower with a longer limit", async () => {
+  await withHostLauncher("kill -STOP $$", async (pool, marker) => {
+    const borrow = (spawnTimeoutMs: number) => RhinoRunner.borrow(pool.address, {
+      lane: "host", shared: true, spawnTimeoutMs,
+    });
+    const shortLimit = 2_000;
+    const short = borrow(shortLimit).catch((error: unknown) => error);
+    await expect.poll(() => existsSync(marker), { timeout: 10_000 }).toBe(true);
+    const long = await borrow(20_000);
+    try {
+      expect(await short).toMatchObject({
+        message: expect.stringContaining(`did not become ready within ${shortLimit}ms`),
+      });
+      expect(await long.eval({ source: "6 * 7", classAllowList: [] })).toMatchObject({ outcome: "ok", value: 42 });
+      expect(pool.started).toBe(2);
+    } finally {
+      await long.close();
+    }
+  });
 }, 60_000);
 
 it.skipIf(process.platform === "win32")("the backstop identifies the JVM lost with two active jobs", async () => {
