@@ -3837,7 +3837,7 @@ fn record_config_undo(
     previous: &Value,
     updated: &Value,
     description: String,
-) -> Result<()> {
+) -> Result<crate::undo::UndoId> {
     use crate::undo::{Capability, ConflictCheck, Sensitivity, UndoEntry, UndoOp};
     let mut undo = DiskLog::load_default()?;
     undo.record(UndoEntry::pending(
@@ -3853,8 +3853,7 @@ fn record_config_undo(
         ConflictCheck::ContentEqualsAfter {
             body: updated.clone(),
         },
-    ))?;
-    Ok(())
+    ))
 }
 
 pub(super) fn parse_object_key(value: &str) -> Result<(String, String)> {

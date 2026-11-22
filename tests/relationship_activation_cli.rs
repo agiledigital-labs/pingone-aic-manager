@@ -1,6 +1,7 @@
 //! Run the real relationship commands against an in-process agent fixture.
 //! The socket belongs to a temporary project and never connects to a tenant.
 
+use pingone_aic_manager::undo::{DiskLog, EntryStatus, UndoLog};
 use serde_json::{Value, json};
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixListener;
@@ -552,6 +553,97 @@ fn production_set_observes_probe_consent_undo_and_put_order() {
             assert!(tenant.writes().is_empty(), "{:?}", tenant.writes());
             assert!(!undo.exists());
         }
+    }
+}
+
+#[test]
+fn first_managed_put_rejection_retires_undo() {
+    let project = Project::new();
+    let mut args = set_args().to_vec();
+    args.push("--force");
+    let (output, tenant) = run(&project, &args, Tenant::new(false), |tenant, request, _| {
+        if request["method"] == "PUT" && request["path"] == MANAGED {
+            tenant.calls.push(("PUT".into(), MANAGED.into()));
+            return Some(
+                json!({"type":"api_error","status":403,"body":"fixture: config write denied"}),
+            );
+        }
+        None
+    });
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(1), "{stderr}");
+    assert!(
+        stderr.contains("403 fixture: config write denied"),
+        "{stderr}"
+    );
+    assert_eq!(tenant.managed, managed(false));
+    assert_eq!(tenant.writes(), [("PUT", MANAGED)]);
+    let history = DiskLog::load(project.0.join(".aic/undo.log"))
+        .unwrap()
+        .list(10);
+    assert_eq!(history.len(), 1, "{history:?}");
+    assert_eq!(history[0].status, EntryStatus::Expired, "{history:?}");
+}
+
+#[test]
+fn uncertain_managed_put_outcomes_keep_undo() {
+    for scenario in [
+        "applied 500",
+        "lost response",
+        "request timeout",
+        "rejected retry",
+    ] {
+        let project = Project::new();
+        let mut args = set_args().to_vec();
+        args.push("--force");
+        let mut attempts = 0;
+        let (output, tenant) = run(&project, &args, Tenant::new(false), |tenant, request, _| {
+            if request["method"] != "PUT" || request["path"] != MANAGED {
+                return None;
+            }
+            attempts += 1;
+            tenant.calls.push(("PUT".into(), MANAGED.into()));
+            Some(match scenario {
+                "applied 500" => {
+                    tenant.managed = request["body"].clone();
+                    json!({"type":"api_error","status":500,"body":"fixture: write applied but response failed"})
+                }
+                "lost response" => json!({"type":"transport","message":"fixture: lost response"}),
+                "request timeout" => {
+                    json!({"type":"api_error","status":408,"body":"fixture: request timed out"})
+                }
+                "rejected retry" if attempts == 1 => {
+                    // The PUT was accepted but Q14 reads may still return the old document.
+                    json_reply(request["body"].clone())
+                }
+                "rejected retry" => {
+                    json!({"type":"api_error","status":403,"body":"fixture: retry denied"})
+                }
+                _ => unreachable!(),
+            })
+        });
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if scenario == "applied 500" {
+            assert_eq!(output.status.code(), Some(0), "{stderr}");
+            assert!(stderr.contains("a re-read shows every change"), "{stderr}");
+            assert_ne!(tenant.managed, managed(false));
+        } else {
+            assert_eq!(output.status.code(), Some(1), "{scenario}: {stderr}");
+        }
+        assert_eq!(
+            attempts,
+            if scenario == "rejected retry" { 2 } else { 1 },
+            "{scenario}"
+        );
+        let history = DiskLog::load(project.0.join(".aic/undo.log"))
+            .unwrap()
+            .list(10);
+        assert_eq!(history.len(), 1, "{scenario}: {history:?}");
+        assert_eq!(
+            history[0].status,
+            EntryStatus::Pending,
+            "{scenario}: {history:?}"
+        );
     }
 }
 

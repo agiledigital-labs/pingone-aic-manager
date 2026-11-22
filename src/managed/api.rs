@@ -3,6 +3,7 @@
 //! transaction id through ApiCall; relink_call assembles the tested wire shape.
 //! All HTTP goes through `aic::api` → agent. See `docs/api/10-managed-objects.md`.
 
+use crate::undo::{DiskLog, EntryStatus, UndoId, UndoLog};
 use crate::{Error, Result};
 use serde_json::Value;
 
@@ -590,14 +591,15 @@ pub async fn replace_managed_confirmed(
 
 /// A consented probe checks the observed base immediately before writing.
 /// Run the caller's undo persistence only after preflight succeeds and before
-/// the first PUT. The revisionless endpoint cannot make this check atomic.
+/// the first PUT, returning its entry id so a definitive rejection can
+/// retire it. The revisionless endpoint cannot make this check atomic.
 pub(super) async fn replace_managed_confirmed_against_base(
     tenant: &str,
     base: &Value,
     doc: Value,
     expect: &[ConfigConfirm],
     confirmed_prod: bool,
-    before_first_put: impl FnOnce() -> Result<()>,
+    before_first_put: impl FnOnce() -> Result<UndoId>,
 ) -> Result<()> {
     replace_managed_confirmed_mode(
         tenant,
@@ -616,7 +618,7 @@ async fn replace_managed_confirmed_mode(
     doc: Value,
     expect: &[ConfigConfirm],
     confirmed_prod: bool,
-    before_first_put: Option<impl FnOnce() -> Result<()>>,
+    before_first_put: Option<impl FnOnce() -> Result<UndoId>>,
 ) -> Result<()> {
     replace_managed_confirmed_with(
         (base, before_first_put),
@@ -635,7 +637,7 @@ async fn replace_managed_confirmed_mode(
 /// closures returning futures rather than `AsyncFn`: the TUI spawns these
 /// writes, and an async closure's future cannot be proven `Send` there.
 async fn replace_managed_confirmed_with<G, R, P>(
-    (base, before_first_put): (&Value, Option<impl FnOnce() -> Result<()>>),
+    (base, before_first_put): (&Value, Option<impl FnOnce() -> Result<UndoId>>),
     doc: Value,
     expect: &[ConfigConfirm],
     mut get: impl FnMut() -> G,
@@ -673,14 +675,28 @@ where
         }
     }
 
-    if let Some(persist_undo) = before_first_put {
-        persist_undo()?;
-    }
+    let undo_id = before_first_put.map(|persist| persist()).transpose()?;
 
     const ATTEMPTS: u32 = 6;
     let mut failed = None;
     for attempt in 0..ATTEMPTS {
         if let Err(error) = put(doc.clone()).await {
+            // Only a terminal client error on the first PUT rules out every
+            // attempt landing. Keep undo on timeouts (including HTTP 408),
+            // lost replies, server errors, and any rejection after a retry.
+            if attempt == 0
+                && matches!(&error, Error::Api { status, .. } if (400..500).contains(status) && *status != 408)
+                && let Some(id) = undo_id
+            {
+                if let Err(retire) = DiskLog::load_default()
+                    .and_then(|mut log| log.mark_applied(id, EntryStatus::Expired))
+                {
+                    eprintln!(
+                        "warning: could not retire undo entry {id} for the rejected managed write: {retire}"
+                    );
+                }
+                return Err(error);
+            }
             return settle_failed_put(error, expect, (&baselines, &doc), get().await, tenant);
         }
         let fetched = get().await?;
