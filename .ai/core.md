@@ -276,7 +276,7 @@ their write bodies and ignore it in content comparisons.
 
 ## 6. Tokens
 
-- TTL: 898 seconds. Refresh ≥60s before expiry, proactively.
+- Nominal TTL: 898 seconds (observed 2026-11-15: fresh-token `expires_in` values 898, 895, 892, 899, 896). Refresh ≥60s before expiry, proactively; use the token endpoint's returned lifetime when checking a requested TTL floor.
 - Single endpoint: `POST /am/oauth2/access_token` (root, no realm segment).
 - `client_id=service-account` (fixed string).
 - See `docs/api/00-auth.md` for the full JWT shape.

@@ -96,9 +96,8 @@ impl AicClient {
     }
 
     /// A bearer with at least `min_ttl` seconds left, minting a fresh one if
-    /// the cached token is shorter-lived than that. A floor above the token's
-    /// full lifetime mints on every call, which is a waste rather than an
-    /// error — the tenant's TTL is the real ceiling and no caller can raise it.
+    /// the cached token is shorter-lived than that. If a fresh token cannot
+    /// meet the floor, report the lifetime issued by the tenant.
     pub async fn bearer_with_min_ttl(&self, min_ttl: i64) -> Result<String> {
         // Check cache first
         {
@@ -109,6 +108,7 @@ impl AicClient {
         }
         // Mint a fresh token
         let minted = auth::mint_token(&self.http, &self.tenant, &self.jwk).await?;
+        auth::check_minted_min_ttl(minted.expires_in, min_ttl)?;
         {
             let mut cache = self.token_cache.lock().unwrap();
             cache.store(minted.access_token.clone(), minted.expires_at);

@@ -160,8 +160,8 @@ pub enum Command {
             help = "Return the cached token only when it has at least this many \
                     seconds left; otherwise the agent mints a new one, still kept \
                     in memory. Replaces the 840s floor --token uses on its own, \
-                    including a smaller floor. Refused at or above the issued \
-                    life (898s), which a token is already below the instant it exists"
+                    including a smaller floor. If a fresh token cannot meet \
+                    the floor, the command reports the lifetime the tenant issued"
         )]
         min_ttl: Option<u32>,
         #[arg(
@@ -1679,14 +1679,6 @@ fn token_floor(token_only: bool, min_ttl: Option<u32>) -> Result<Option<u32>> {
     let Some(secs) = min_ttl else {
         return Ok(token_only.then_some(SCRIPTED_TOKEN_MIN_TTL));
     };
-    if i64::from(secs) >= crate::aic::auth::ISSUED_TOKEN_TTL {
-        return Err(Error::Config(format!(
-            "--min-ttl {secs} is at or above the issued token life ({}s); a token \
-             is already below that the instant it exists, so the agent would mint \
-             on every call and still return less life",
-            crate::aic::auth::ISSUED_TOKEN_TTL
-        )));
-    }
     Ok(Some(secs))
 }
 
@@ -2390,7 +2382,7 @@ mod tests {
     }
 
     #[test]
-    fn min_ttl_replaces_the_scripted_floor_and_refuses_the_issue_ttl() {
+    fn min_ttl_replaces_the_scripted_floor_and_is_checked_after_mint() {
         assert_eq!(super::token_floor(false, None).unwrap(), None);
         assert_eq!(
             super::token_floor(true, None).unwrap(),
@@ -2399,10 +2391,7 @@ mod tests {
         // A caller may ask for less than 840s; the flag replaces the floor.
         assert_eq!(super::token_floor(true, Some(30)).unwrap(), Some(30));
         assert_eq!(super::token_floor(false, Some(30)).unwrap(), Some(30));
-        let issued = u32::try_from(crate::aic::auth::ISSUED_TOKEN_TTL).unwrap();
-        let err = super::token_floor(true, Some(issued)).unwrap_err();
-        assert!(err.to_string().contains(&issued.to_string()));
-        assert!(super::token_floor(true, Some(issued - 1)).is_ok());
+        assert_eq!(super::token_floor(true, Some(899)).unwrap(), Some(899));
     }
 
     #[test]
