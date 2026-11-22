@@ -1746,8 +1746,9 @@ Lower-level runner borrows stay exclusive by default because they can run
 unshuttered jobs.
 
 Runner readiness has a 60-second deadline. `useLease(suite, { spawnTimeoutMs })`
-can raise it. Leases with different readiness limits use separate transports
-while they overlap.
+can raise it. Different limits affect sharing only while a JVM is starting.
+Once validated, a JVM can be shared by otherwise compatible leases with any
+readiness limit.
 
 Vitest's `test.testTimeout` separately limits the whole test, including every
 eval in a multi-pass journey. Slow machines can hit Vitest's default 5-second

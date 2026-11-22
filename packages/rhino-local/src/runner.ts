@@ -694,10 +694,11 @@ function sourceHash(text: string): string {
 interface SharedBorrow {
   process: JvmProcess;
   users: number;
+  spawnTimeoutMs: number;
 }
-const sharedKey = Symbol.for("@agiledigital/pingone-aic-script-tester/shared-jvms-v1");
-const sharedGlobal = process as typeof process & { [sharedKey]?: Map<string, SharedBorrow> };
-const sharedBorrows = sharedGlobal[sharedKey] ??= new Map<string, SharedBorrow>();
+const sharedKey = Symbol.for("@agiledigital/pingone-aic-script-tester/shared-jvms-v2");
+const sharedGlobal = process as typeof process & { [sharedKey]?: Map<string, Set<SharedBorrow>> };
+const sharedBorrows = sharedGlobal[sharedKey] ??= new Map<string, Set<SharedBorrow>>();
 
 export interface BorrowRunnerOptions extends Pick<SpawnRunnerOptions, "lane" | "cache" | "spawnTimeoutMs" | "shutdownWaitMs"> {
   /**
@@ -777,28 +778,43 @@ export class RhinoRunner {
     const kinds = lane === "both" ? (["host", "container"] as const) : ([lane] as const);
     const spawnTimeoutMs = options.spawnTimeoutMs ?? DEFAULT_SPAWN_TIMEOUT_MS;
     const held = kinds.map((kind) => {
-      // A shared launch has a single startup policy. A different limit
-      // must not let one borrower abort the other's JVM.
-      const key = JSON.stringify([address.path, address.token, slot, kind, cache, spawnTimeoutMs,
+      const key = JSON.stringify([address.path, address.token, slot, kind, cache,
         ...LAUNCH_ENV.map((name) => process.env[name])]);
-      const active = options.shared ? sharedBorrows.get(key) : undefined;
-      const reused = active?.process.available === true;
-      const borrow = reused ? active : {
+      const shared = options.shared ? sharedBorrows.get(key) ?? new Set<SharedBorrow>() : undefined;
+      let active: SharedBorrow | undefined;
+      for (const candidate of shared ?? []) {
+        if (!candidate.process.available) continue;
+        // The startup budget only matters before validation. Prefer a ready
+        // transport even if a matching launch is still in progress.
+        if (candidate.process.environment !== undefined) {
+          active = candidate;
+          break;
+        }
+        if (candidate.spawnTimeoutMs === spawnTimeoutMs) active = candidate;
+      }
+      const borrow = active ?? {
         process: new JvmProcess(kind, new PooledChild(address, kind, slot, cache)),
         users: 0,
+        spawnTimeoutMs,
       };
-      if (options.shared) sharedBorrows.set(key, borrow);
+      if (shared !== undefined) {
+        shared.add(borrow);
+        sharedBorrows.set(key, shared);
+      }
       borrow.users += 1;
-      return { key, borrow, reused };
+      return { key, shared, borrow, reused: active !== undefined };
     });
     const release = async (owner?: AbortSignal): Promise<void> => {
-      await Promise.all(held.map(async ({ key, borrow }) => {
+      await Promise.all(held.map(async ({ key, shared, borrow }) => {
         borrow.users -= 1;
         if (borrow.users > 0) {
           if (owner?.aborted) borrow.process.cancelOwned(owner);
           return;
         }
-        if (sharedBorrows.get(key) === borrow) sharedBorrows.delete(key);
+        if (shared !== undefined) {
+          shared.delete(borrow);
+          if (shared.size === 0) sharedBorrows.delete(key);
+        }
         await borrow.process.close();
       }));
     };

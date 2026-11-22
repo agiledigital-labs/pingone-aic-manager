@@ -1,7 +1,7 @@
 import { afterAll, describe, expect, it } from "vitest";
 import { defineSuite, managed, useLease } from "../../../src/harness/index.ts";
 
-function checkLease(holder: string): () => Promise<void> {
+function checkLease(holder: string, spawnTimeoutMs?: number): () => Promise<void> {
   const lease = useLease(defineSuite({
     name: `pool lease ${holder}`,
     script: `
@@ -16,7 +16,7 @@ function checkLease(holder: string): () => Promise<void> {
     // Each live lease owns a different record at the same key.
     fixtures: { widget: managed("managed/alpha_widget", { _id: "pool-record", label: `${holder} fixture` }) },
     libraries: { helper: "exports.value = 42;" },
-  }));
+  }), spawnTimeoutMs === undefined ? {} : { spawnTimeoutMs });
   return async () => {
     const { verdict } = await lease.run().expect({
       outcome: "done",
@@ -34,7 +34,9 @@ export function growthFile(): void {
   it("uses the outer lease", checkOuter);
   for (const name of ["first", "second"]) {
     describe(name, () => {
-      const checkInner = checkLease(name);
+      // The outer lease is already validated. Its default 60 s startup
+      // budget must not prevent a nested lease with a 30 s budget sharing it.
+      const checkInner = checkLease(name, 30_000);
       for (const round of [1, 2]) {
         it.concurrent(`runs inner ${round}`, checkInner);
       }
