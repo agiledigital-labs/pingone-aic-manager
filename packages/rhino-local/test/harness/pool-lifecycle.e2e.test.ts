@@ -221,3 +221,49 @@ it("pending work retains the reason for a borrower-triggered JVM discard", async
     await pool.stop();
   }
 }, 60_000);
+
+it.skipIf(process.platform === "win32").each([
+  {
+    name: "wrong environment",
+    command: `for arg do
+    shift
+    if [ "$arg" = "-Duser.timezone=Etc/UTC" ]; then arg="-Duser.timezone=GMT+03:00"; fi
+    set -- "$@" "$arg"
+  done`,
+    diagnostic: 'timezone is "GMT+03:00", expected "Etc/UTC"',
+  },
+  {
+    name: "malformed ready line",
+    command: "printf '%s\\n' 'rhino-local-runner ready {invalid' >&2",
+    diagnostic: "ready line carries no environment",
+  },
+])("a $name invalidates only the rejected transport", async ({ command, diagnostic }) => {
+  await withHostLauncher(command, async (pool, _marker, timing) => {
+    const both = process.env.AIC_SCRIPT_TESTER_JVM === "both";
+    // Hold the second lane through the failed shared borrow and the next launch.
+    const healthy = both ? await RhinoRunner.borrow(pool.address, { lane: "container", shared: true }) : undefined;
+    try {
+      await expect(RhinoRunner.borrow(pool.address, { lane: both ? "both" : "host", shared: true }))
+        .rejects.toThrow(diagnostic);
+      const replacement = await RhinoRunner.borrow(pool.address, { lane: "host", shared: true });
+      try {
+        const job = { source: "42", classAllowList: [] };
+        expect(await replacement.eval(job)).toMatchObject({ outcome: "ok", value: 42 });
+        if (healthy !== undefined) expect(await healthy.eval(job)).toMatchObject({ outcome: "ok", value: 42 });
+      } finally {
+        await replacement.close();
+      }
+      expect(pool.started).toBe(both ? 3 : 2);
+      const rows = readFileSync(timing, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+      const firstHost = rows.find((row) => row.type === "spawn" && row.lane === "host");
+      expect(firstHost?.jvmId).toEqual(expect.any(String));
+      expect(rows).toContainEqual(expect.objectContaining({
+        type: "pool-discard",
+        jvmId: firstHost?.jvmId,
+        reason: expect.stringContaining(diagnostic),
+      }));
+    } finally {
+      await healthy?.close();
+    }
+  });
+}, 60_000);

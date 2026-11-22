@@ -286,9 +286,14 @@ class JvmProcess {
       const at = this.#stderrBuf.indexOf(READY);
       const end = at === -1 ? -1 : this.#stderrBuf.indexOf("\n", at);
       if (end !== -1) {
-        const env = parseEnvironment(this.#stderrBuf.slice(at, end));
-        checkEnvironment(env, this.lane);
-        this.environment = env;
+        try {
+          const env = parseEnvironment(this.#stderrBuf.slice(at, end));
+          checkEnvironment(env, this.lane);
+          this.environment = env;
+        } catch (error) {
+          const failure = error instanceof Error ? error : new Error(String(error));
+          return this.#failReadiness(failure, `invalid ${this.lane} runner readiness: ${failure.message}`);
+        }
         if (this.#pooled !== undefined) this.#sources = new ShippedSources(this.#pooled.knownSources);
         recordTiming(this.#pooled === undefined
           ? { type: "spawn", lane: this.lane, pooled: false, spawnToReadyMs: since(this.#startedAt) }
@@ -310,11 +315,7 @@ class JvmProcess {
         const reason = `${this.lane} runner did not become ready within ${timeoutMs}ms`;
         const error = new Error(`rhino-local: ${reason}` +
           (this.#stderrBuf.trim() ? `: ${this.#stderrBuf.trim()}` : ""));
-        if (owner) {
-          this.#readinessError = error;
-          this.#wake();
-          await this.kill(reason);
-        }
+        if (owner) return this.#failReadiness(error, reason);
         throw error;
       }
       // Event-driven: a warm pooled JVM's ready line arrives within a
@@ -329,6 +330,13 @@ class JvmProcess {
         this.#wakers.add(done);
       });
     }
+  }
+
+  async #failReadiness(error: Error, reason: string): Promise<never> {
+    this.#readinessError = error;
+    this.#wake();
+    await this.kill(reason);
+    throw error;
   }
 
   #exitError(code: number | null, signal: NodeJS.Signals | null): RhinoRunnerExitError {
