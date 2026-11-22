@@ -872,20 +872,22 @@ map retains the capture and reports each confirmed restored link plus any
 pending request whose outcome is unresolved, in stderr and JSON (`restored`
 and `pending`). Keep link writers paused before inspecting or resuming it.
 
-Before writing, the plan names all script-shaped hooks (inline and file-backed,
-any event) and every sync mapping whose source or target is `managed/<object>`.
-Hook firing behavior is labeled unknown where unmeasured for this probe;
-hooks and mappings may have side effects on create/delete. If either inventory
-cannot be read, the command refuses even with `--force`, and never calls that
-inventory empty. Otherwise `--force` skips the probe prompt; `--yes` authorizes
-only the production environment. On map, one `--force` approves both conversion
-and the requested probe, as operation consent. Without a terminal or `--force`,
-refusal happens before any tenant write on both commands. The command re-reads
-hook and sync mapping contents before each probe. Changes since consent
-refuse the probe even with `--force`; at that point configuration writes have
-landed, and the error names them. Verify the relationship and re-read inventories
-before creating records. Re-running map on the installed mappings does not repeat
-the probe. `--dry-run` writes no probe.
+Before writing, the plan names script-shaped hooks and sync mappings for the
+affected types, including hooks on managed sync targets. Hook firing behavior
+is labeled unknown where unmeasured for this probe. If either inventory cannot
+be read, the command refuses even with `--force`. Otherwise `--force` skips
+the probe prompt. `--yes` authorizes production writes. On map, one
+`--force` approves both conversion and the requested probe.
+
+Declining consent or running without a terminal or `--force` refuses before
+any tenant write. The command rechecks the inventory before writing and before
+each probe. Changes or unreadable inventory after writing produce
+`storage_activation.outcome: "refused"`, a nonzero exit and a report with
+`confirmed_writes` and per-type results, including any earlier recovery id.
+Map retains its capture and stops before restoring links. Verify the
+configuration before resuming. Re-running map on installed mappings does not
+repeat the probe. Ctrl-C during the post-write inventory refresh also renders
+the confirmed writes before exiting. `--dry-run` writes no probe.
 
 `--probe-prefix PREFIX` requires `--wait-activation`. It forms the id as
 `<PREFIX><uuid>`. The default remains a bare random UUID. A prefix is 1–64 ASCII

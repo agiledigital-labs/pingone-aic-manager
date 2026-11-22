@@ -51,10 +51,12 @@ The command names every script-shaped hook, including file-backed hooks and any 
 firing behavior is unknown where unmeasured for this probe. It refuses even with --force if \
 either config/managed or config/sync cannot be inventoried. Otherwise it lists hooks and \
 mappings and asks before writing. --force skips the probe prompt; --yes is only the production gate. On map, --force approves both conversion and probe. \
-A refusal without --force happens before any tenant write on set and map. Inventories are \
-re-read before each probe; changed hooks or mapping contents refuse the probe even \
-with --force. Configuration writes already landed at that point; verify the relationship \
-before creating records. A probe only runs when adding a per-type entry.
+A refusal without --force happens before any tenant write on set and map. The command \
+rechecks inventories after consent and before each probe, including hooks on managed sync \
+targets. Changes or unreadable inventory after writing report confirmed_writes and per-type \
+results, then exit non-zero. Map retains its capture and stops before restoring links. \
+Ctrl-C during a post-write survey also reports confirmed writes. A probe only runs when \
+adding a per-type entry.
 
 --json adds storage_activation with outcome readable, not_confirmed, refused, or not_needed, \
 and interrupted. Recovery ids are retained unless readable. The JSON report is rendered before \

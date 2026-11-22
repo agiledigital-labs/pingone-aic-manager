@@ -960,50 +960,57 @@ and restored to that backup.
   per-type store activation.
 
 `relationship set` and `relationship map` offer a consented fallback,
-`--wait-activation[=SECONDS]` (default 60, from 1 to 3600). After a write that
-adds a per-type entry, the command creates one probe in each such type with
-`POST /openidm/managed/<object>?_action=create` and a caller-chosen UUID in
-`_id`. This is the documented create-only path above. The UUID is printed
-before dispatch. Create is never retried, including after a lost response.
-The probe reads that UUID, deletes it, and confirms absence with GET 404.
+`--wait-activation[=SECONDS]` (default 60, from 1 to 3600). The plan lists
+script-shaped hooks and sync mappings for the affected types, including hooks
+on managed targets of those mappings. The command requires terminal consent
+or `--force`. On map, one `--force` approves the conversion and the requested
+probe. `--yes` authorizes production writes. If either inventory is unreadable,
+the command refuses even with `--force`.
 
-One shared deadline bounds create/read waits across all newly mapped types;
-no create starts after it. Each started type gets a separate **15-second
+A refusal of consent, including a non-interactive invocation without
+`--force`, leaves tenant configuration untouched. The command re-reads the
+inventory after consent, before recording undo or saving the capture and
+sending the configuration writes. It checks the inventory again before each
+probe. If the inventory changed or cannot be re-read after configuration
+landed, the command reports the confirmed writes and per-type outcomes, exits
+non-zero, and preserves any recovery ids from earlier probes. Map retains its
+capture without starting link restoration after that refusal. Verify the
+configuration before resuming with the retained capture. Once an entry is
+installed, mapping it again does not repeat the probe.
+
+After a write adds a per-type entry, the command creates one probe in each
+such type with `POST /openidm/managed/<object>?_action=create` and the planned
+`_id`. This is the create-only path described above. The default id is a
+random UUID. With `--wait-activation`, `--probe-prefix PREFIX` prepends a
+literal prefix to that UUID. The prefix must have 1–64 ASCII characters,
+start with a letter or digit, and contain only letters, digits, hyphens or
+underscores. The plan shows each
+full id before consent. The probe reads the id, deletes the record, and
+confirms absence with GET 404. Create is never retried. `--dry-run` writes
+no probe.
+
+One shared deadline bounds create/read waits across all newly mapped types.
+No create starts after it. Each started type gets a separate **15-second
 cleanup allowance**. An outstanding create is awaited for up to the first ten
-seconds of cleanup, with deletion and confirmation time reserved afterwards.
-Cleanup requests each wait at most two seconds; transient DELETE failures
-retry within the allowance, with a confirm read between attempts. A missing
-read cannot settle an outstanding create. An unsettled write or unresolved
-cleanup retains its UUID and explicitly requests manual removal, even if a
-read returned 404. Ctrl-C is latched: cleanup finishes within its allowance
-before the command exits non-zero. Further Ctrl-C presses do not skip cleanup.
+seconds of cleanup, reserving time for deletion and confirmation. Each
+cleanup request waits at most two seconds. Transient DELETE failures retry
+within the allowance with confirm reads. A missing read cannot settle an
+outstanding create. An unsettled write or unresolved cleanup retains the full
+id and requests manual removal. Ctrl-C can cancel the inventory refresh and
+preserve the confirmed-write report. Once a probe starts, Ctrl-C is latched
+until bounded cleanup finishes. Further Ctrl-C presses do not skip cleanup.
 
-`--json` adds `storage_activation` (`outcome` `readable`, `not_confirmed`,
-`declined`, or `not_needed`; `interrupted`; `seconds` and `timeout_seconds`
-on a probe; per object `outcome`, `seconds`, `detail`, and `id` unless
-`readable`). This is separate from `activation`, the relationship-end liveness
-wait. `readable` means the probe was read within the probe deadline and its
-delete was confirmed. It does not prove a later record cannot land in the old
-store. `not_confirmed` covers timeout, a rejected create (required fields),
-interruption, or unresolved cleanup. Ordinary unconfirmed probes keep the
-command successful because the mapping has landed; interruption exits non-zero
-after rendering the report. `declined` writes no probe. `not_needed` means no
-per-type entry was added. Without the flag the command only warns and omits
-`storage_activation`.
-
-The probe is a real record: hooks and sync mappings may have side effects.
-The consent plan names **every script-shaped hook** on the object, inline or
-file-backed, for any event name, and labels firing behavior unknown for this
-probe where unmeasured. It names every mapping whose `source` or `target` is
-`managed/<object>`. If either `config/managed` or `config/sync` cannot be
-inventoried, the plan says so and the command **refuses even with `--force`**;
-unread inventory is never reported as empty. Otherwise the plan requires
-`--force` or terminal consent. On map, one `--force` approves both conversion
-and the requested probe. `--yes` authorizes only the production environment. A
-non-interactive run without `--force` refuses before creating a probe. On
-`relationship set` the schema write has landed but the per-type entry is not
-added; finish with `relationship map --wait-activation --force`. On
-`relationship map` the switch has not been sent. `--dry-run` writes no probe.
+`--json` adds `storage_activation` with `outcome` `readable`,
+`not_confirmed`, `refused`, or `not_needed`, plus `interrupted`, timing
+where applicable, and per-type details with any recovery id. The partial
+progress report lists `confirmed_writes`. `readable` means the command read the probe within the
+deadline and confirmed its deletion. It does not establish storage cutover.
+`not_confirmed` covers timeout, a rejected create, interruption, or
+unresolved cleanup. Ordinary unconfirmed probes keep the command successful.
+A post-write refusal or interruption exits non-zero after rendering progress.
+`not_needed` means no per-type entry was added. Without the flag the command
+only warns and omits `storage_activation`. The separate `activation` field
+reports relationship-end liveness.
 
 **Promotion (measured 2026-11-02, three real dev → UAT promotions of
 throwaway types).** `repo.ds` is promoted as a **whole document**: after each
