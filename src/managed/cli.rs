@@ -1138,14 +1138,31 @@ async fn relationship(command: RelationshipCommand) -> Result<()> {
                     .await?;
                     Ok(Some((added, pending)))
                 },
-                async || {
+                async |prepared: &Option<(Vec<String>, activation::Pending)>| {
+                    if let Some((added, pending)) = prepared {
+                        pending.recheck_before_write(&tenant, added).await?;
+                    }
                     record_config_undo(
                         &tenant,
                         &doc,
                         &updated,
                         format!("Revert relationship {source_object}.{key}"),
                     )?;
-                    put_managed(&ok, &doc, updated.clone(), &expect).await
+                    if prepared
+                        .as_ref()
+                        .is_some_and(|(_, pending)| pending.will_probe())
+                    {
+                        api::replace_managed_confirmed_against_base(
+                            &tenant,
+                            &doc,
+                            updated.clone(),
+                            &expect,
+                            ok.confirmed_prod,
+                        )
+                        .await
+                    } else {
+                        put_managed(&ok, &doc, updated.clone(), &expect).await
+                    }
                 },
                 async |pending| {
                     map_created_pair(

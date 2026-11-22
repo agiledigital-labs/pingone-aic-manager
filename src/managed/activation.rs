@@ -596,6 +596,39 @@ pub(crate) enum Pending {
     Probe(ProbePlan),
 }
 
+impl Pending {
+    pub(crate) fn will_probe(&self) -> bool {
+        matches!(self, Self::Probe(_))
+    }
+
+    /// Check again after the operator has had time to consider the prompt.
+    pub(crate) async fn recheck_before_write(&self, tenant: &str, added: &[String]) -> Result<()> {
+        if let Self::Probe(plan) = self {
+            let io = TenantIo {
+                tenant: tenant.into(),
+                confirmed_prod: false,
+            };
+            check_inventory(&io, added, &plan.effects).await?;
+        }
+        Ok(())
+    }
+}
+
+async fn check_inventory(
+    io: &impl ProbeIo,
+    added: &[String],
+    expected: &[SideEffects],
+) -> Result<()> {
+    let current = load_effects_with(io, added).await;
+    require_inventory(&current)?;
+    if current != expected {
+        return Err(Error::Config(
+            "probe refused: hooks or sync mappings changed since consent".into(),
+        ));
+    }
+    Ok(())
+}
+
 pub(crate) struct ProbePlan {
     timeout: Duration,
     effects: Vec<SideEffects>,
@@ -1608,7 +1641,7 @@ pub(super) mod lifecycle_tests {
             let result = storage::set_with(
                 true,
                 async || prepare_with(&io, &["thing".into()], Some(3), None, || answer).await,
-                async || {
+                async |_: &Pending| {
                     io.request("PUT", "/openidm/config/managed".into(), Some(json!({})))
                         .await
                         .map(|_| ())

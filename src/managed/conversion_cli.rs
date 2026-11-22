@@ -742,6 +742,7 @@ pub async fn map(
     } else {
         (None, Vec::new(), activation::Pending::Quiet)
     };
+    pending.recheck_before_write(ok.tenant, &added).await?;
     let mut file = FileSession::open(path.clone(), previous).await?;
     file.save(&capture).await?;
     let mut storage_activation = None;
@@ -756,7 +757,7 @@ pub async fn map(
                     async || {
                         conversion::exact(&pair, &generic_snapshot(ok.tenant, &pair).await?)?;
                         guard(ok.tenant, &pair, storage::Mode::Generic).await?;
-                        Ok(())
+                        pending.recheck_before_write(ok.tenant, &added).await
                     },
                     async || write_plan(&ok, &pair, &plan, storage::Mode::Generic).await,
                 )

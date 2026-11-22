@@ -344,11 +344,11 @@ pub(crate) fn activation_warning_for(objects: &[String]) -> Option<String> {
 pub async fn set_with<T, P>(
     creating: bool,
     prepare: impl AsyncFnOnce() -> crate::Result<P>,
-    managed: impl AsyncFnOnce() -> crate::Result<()>,
+    managed: impl AsyncFnOnce(&P) -> crate::Result<()>,
     mapping: impl AsyncFnOnce(P) -> crate::Result<T>,
 ) -> crate::Result<Option<T>> {
     let pending = prepare().await?;
-    managed().await?;
+    managed(&pending).await?;
     if creating {
         return mapping(pending).await.map(Some);
     }
@@ -612,7 +612,7 @@ mod tests {
             set_with(
                 creating,
                 async || Ok(()),
-                async || {
+                async |_: &()| {
                     calls.borrow_mut().push("managed");
                     Ok(())
                 },
@@ -637,7 +637,7 @@ mod tests {
             set_with(
                 true,
                 async || Ok(()),
-                async || Err(crate::Error::Config("failed".into())),
+                async |_: &()| Err(crate::Error::Config("failed".into())),
                 async |()| {
                     *called.borrow_mut() = true;
                     Ok(())
