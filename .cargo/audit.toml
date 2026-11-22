@@ -19,4 +19,10 @@ ignore = [
   # signs or verifies with an elliptic-curve key, so no EC operation runs.
   # Remove when jsonwebtoken depends on p256/p384 0.14 or later.
   "RUSTSEC-2026-0387",
+  # chrono — unmaintained, informational; every version is affected and no
+  # successor release exists. No vulnerability is reported. `aic` uses it for
+  # timestamps across ~29 modules and through duckdb's `chrono` feature, so
+  # replacing it (jiff or time) is a refactor of its own. Remove when `aic`
+  # and the logs-store no longer depend on chrono.
+  "RUSTSEC-2026-0543",
 ]
