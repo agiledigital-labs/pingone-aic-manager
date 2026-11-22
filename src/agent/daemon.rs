@@ -577,8 +577,9 @@ async fn issue_token(
             Some(minted.scopes),
         )));
     }
-    let token = client.bearer_with_min_ttl(min_ttl).await?;
-    let expires_at = client.token_cache.lock().unwrap().expires_at();
+    let (token, expires_at) = client.bearer_with_min_ttl(min_ttl).await?;
+    #[cfg(test)]
+    tests::pause_after_bearer_selection().await;
     Ok(Some((token, expires_at, None)))
 }
 
@@ -1041,6 +1042,113 @@ mod tests {
             project.paths.clone(),
             Duration::from_secs(60),
         )))
+    }
+
+    use tokio::sync::oneshot;
+
+    type BearerPause = (oneshot::Sender<()>, oneshot::Receiver<()>);
+
+    thread_local! {
+        static BEARER_PAUSE: std::cell::Cell<Option<BearerPause>> = const { std::cell::Cell::new(None) };
+    }
+
+    pub(super) async fn pause_after_bearer_selection() {
+        if let Some((selected, resume)) = BEARER_PAUSE.take() {
+            selected.send(()).unwrap();
+            resume.await.unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn overlapping_token_replies_keep_their_own_expiry() {
+        use crate::aic::tests::{synthetic_signing_key, token_endpoint_body};
+
+        let project = test_project();
+        let base_url = token_endpoint_body(
+            r#"{"access_token":"fresh-token","expires_in":899,"scope":"fr:am:*"}"#.into(),
+        )
+        .await;
+        let configured = Tenant {
+            base_url,
+            scopes: vec!["fr:am:*".into()],
+            ..tenant("sandbox")
+        };
+        project
+            .paths
+            .save_config(&crate::config::ProjectConfig {
+                project: "test".into(),
+                default_tenant: "sandbox".into(),
+                tenants: vec![configured],
+            })
+            .unwrap();
+        project
+            .paths
+            .save_keys_plain(
+                &serde_json::to_vec(&serde_json::json!({"sandbox": synthetic_signing_key()}))
+                    .unwrap(),
+            )
+            .unwrap();
+        let state = state(&project);
+        set_vault(state.clone(), Vault::Plain { cache: None }).await;
+        let client = build_client("sandbox", state.clone()).await.unwrap();
+        let shutdown = Arc::new(tokio::sync::Notify::new());
+        let request = |floor| {
+            handle(
+                Request::GetToken {
+                    tenant: "sandbox".into(),
+                    min_ttl_secs: Some(floor),
+                    scopes: None,
+                },
+                state.clone(),
+                shutdown.clone(),
+            )
+        };
+
+        // Suspend the first reply once it has selected the cached bearer.
+        // The higher-floor request must publish its refresh before it resumes.
+        let (selected_tx, selected_rx) = oneshot::channel();
+        let (resume_tx, resume_rx) = oneshot::channel();
+        BEARER_PAUSE.set(Some((selected_tx, resume_rx)));
+        let now = || chrono::Utc::now().timestamp();
+        let cached_expiry = now() + 120;
+        client
+            .token_cache
+            .lock()
+            .unwrap()
+            .store("cached-token".into(), cached_expiry);
+        let floor = (cached_expiry - now()).try_into().unwrap();
+        let refresh = async {
+            selected_rx.await.unwrap();
+            let before = now();
+            let reply = request(800).await;
+            let after = now();
+            resume_tx.send(()).unwrap();
+            (reply, (before + 899)..=(after + 899))
+        };
+        let (cached, (fresh, mint_expiry)) = tokio::time::timeout(Duration::from_secs(10), async {
+            tokio::join!(request(floor), refresh)
+        })
+        .await
+        .unwrap();
+
+        assert!(matches!(
+            fresh,
+            Response::Token { access_token, expires_at, scopes: None }
+                if access_token == "fresh-token" && mint_expiry.contains(&expires_at)
+        ));
+        let Response::Token {
+            access_token,
+            expires_at,
+            scopes: None,
+        } = cached
+        else {
+            panic!("expected a full-scope token reply");
+        };
+        assert_eq!(access_token, "cached-token");
+        assert_eq!(
+            expires_at, cached_expiry,
+            "cached bearer got the refresh expiry"
+        );
     }
 
     /// A daemon left in a mode the vault has since left reports — and
