@@ -848,14 +848,14 @@ export class RhinoRunner {
         if (owner?.aborted) borrow.process.cancelOwned(owner);
         borrow.users -= 1;
         if (borrow.users > 0) return;
-        const acks = borrow.process.waitForCancellationAcks();
-        const cancellationTimedOut = acks !== undefined && !(await acks);
-        // A new borrower can take this validated transport while it drains.
-        if (borrow.users > 0) return;
+        // The last holder is returning this transport. A new lease can only
+        // get this JVM through the pool after it has acknowledged cancellation.
         if (shared !== undefined) {
-          if (!shared.delete(borrow)) return;
+          shared.delete(borrow);
           if (shared.size === 0) sharedBorrows.delete(key);
         }
+        const acks = borrow.process.waitForCancellationAcks();
+        const cancellationTimedOut = acks !== undefined && !(await acks);
         await borrow.process.close(cancellationTimedOut);
       }));
     };
