@@ -373,15 +373,74 @@ describe("access-token modification matches the live capture", () => {
     expect(effects.accessToken!.final.fields.aud).toBe(CLIENT);
   }, 60_000);
 
+  // zzemur4emu: sandbox client_credentials probe, 2026-11-15.
+  const agent = {
+    engine,
+    accessToken: { clientId: "zzemur4emu-client", grantType: "client_credentials" },
+    identity: { name: "zzemur4emu-client", attributes: {} },
+  };
+  const updateMessage = "org.forgerock.openam.scripting.api.identity.ScriptedIdentityScriptWrapper$IdentityUpdateException: " +
+    "Exception persisting attribute: Plug-in com.sun.identity.idm.plugins.internal.AgentsRepo: " +
+    "Error while setting attributes for agentonly=zzemur4emu-client";
+
+  it("zzemur4emu client exact script fails instead of persisting", async () => {
+    await expect(runCase(runner, defineCase({
+      name: "zzemur4emu client uncaught",
+      context: "OAUTH2_ACCESS_TOKEN_MODIFICATION",
+      script: 'identity.setAttribute("description", ["example"]);\nidentity.store();',
+      given: agent,
+      expect: { allowUndeclared: { identityWrites: true } },
+    }))).rejects.toThrow("JavaException: " + updateMessage);
+  }, 60_000);
+
+  it("zzemur4emu client caught store issues token with unchanged reads and no writes", async () => {
+    const { effects, verdict } = await runCase(runner, defineCase({
+      name: "zzemur4emu client caught",
+      context: "OAUTH2_ACCESS_TOKEN_MODIFICATION",
+      script: [
+        'var p = {};',
+        'p.before = identity.getAttributeValues("description").length;',
+        'p.setReturn = typeof identity.setAttribute("description", ["example"]);',
+        'p.pending = identity.getAttributeValues("description").length;',
+        'try { identity.store(); } catch(e) { p.name = e.name; p.message = e.message; p.text = String(e); }',
+        'p.after = identity.getAttributeValues("description").length;',
+        'accessToken.setField("probe", p);',
+      ].join("\n"),
+      // Omit grantType to exercise the default client_credentials identity.
+      given: { ...agent, accessToken: { clientId: agent.accessToken.clientId } },
+      expect: {
+        identityWrites: [],
+        accessToken: { issued: true, fields: { added: { probe: {
+          setReturn: "undefined", name: "JavaException", message: updateMessage,
+          text: "JavaException: " + updateMessage, before: 0, pending: 0, after: 0,
+        } } } },
+      },
+    }));
+    expect(verdict.pass, verdict.summary).toBe(true);
+    expect(effects.identityWrites).toEqual([]);
+    expect(effects.accessToken!.refusal).toBeNull();
+  }, 60_000);
+
+  it("zzemur4emu unknown grant identity persistence faults even when caught", async () => {
+    expectHarnessFault("oauth2-token-unmeasured/identity.store()");
+    await expect(runCase(runner, defineCase({
+      name: "zzemur4emu unmeasured grant",
+      context: "OAUTH2_ACCESS_TOKEN_MODIFICATION",
+      script: 'identity.setAttribute("description", ["example"]); try { identity.store(); } catch(e) {}',
+      given: { engine, accessToken: { grantType: "refresh_token" } },
+      expect: {},
+    }))).rejects.toThrow(/identity.store.*unmeasured/);
+  }, 60_000);
+
   // identity.setAttribute / store measured 2026-11-14. A read between the two
   // still sees the seeded value. store records expect.identityWrites.
   const owner = {
     engine,
-    accessToken: { clientId: CLIENT },
+    accessToken: { clientId: CLIENT, grantType: "password", resourceOwnerId: "user-1" },
     identity: { name: "user-1", attributes: { description: ["baseline"] } },
   };
 
-  it("setAttribute is invisible until store, which records the write", async () => {
+  it("zzemur4emu user setAttribute is invisible until store, which records the write", async () => {
     const { effects, verdict } = await runCase(runner, defineCase({
       name: "identity store",
       context: "OAUTH2_ACCESS_TOKEN_MODIFICATION",

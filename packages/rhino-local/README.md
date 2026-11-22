@@ -151,6 +151,22 @@ and `toArray` answer as Java does, and an empty result is an empty list.
 does (`3`, not `3.0`); AIC's rendering of that one was not measured. A has-many
 array read with `*` alone, or with no field list, is still a JS array.
 
+## Breaking change: access-token identity persistence follows the grant
+
+Older access-token modification cases could persist a seeded user identity
+without setting `given.accessToken.grantType`. Omitting it still defaults to
+`client_credentials`, but `identity.store()` now throws the measured client
+identity exception and records no `identityWrites`.
+
+For tests of user persistence, set `given.accessToken.grantType` to `"password"`
+and set `given.accessToken.resourceOwnerId` and `given.identity.name` to the
+same user ID. Seed that user's starting attributes in `given.identity.attributes`.
+If a test needs to exercise any other grant, keep its actual grant. Outside
+`password` and `client_credentials`, calling `store()` raises
+`oauth2-token-unmeasured/identity.store()` even if the script catches it.
+Setting `given.request.params.grant_type` only changes what the script reads
+from the request. `given.accessToken.grantType` selects persistence behavior.
+
 ## Using the installed package
 
 ```sh
@@ -433,12 +449,14 @@ wrapper and a fresh `getIdentity` see the new values at once; without
 
 On `OAUTH2_ACCESS_TOKEN_MODIFICATION` the bound `identity` records the same
 effect. `setAttribute(name, values)` does not change `getAttributeValues`
-until `store()`. `store()` writes one entry per attribute,
+until `store()`. For a user (`given.accessToken.grantType: "password"`),
+`store()` writes one entry per attribute,
 `{ identity, attribute, values }`, where `identity` is `identity.getName()`
 (the fixture's `given.identity.name`) and `values` are the strings the script
 passed. Starting values are `given.identity.attributes`. `addAttribute` on
 that binding is unmeasured and faults. This path does not use the IDM layouts
-below.
+below. Client/agent persistence and the grant selection rules are described
+in the access-token context below.
 
 `store()` lays each attribute out in IDM as measured on AIC
 (`docs/api/14-am-identity-attributes.md`, "What `store()` writes"):
@@ -1105,10 +1123,17 @@ state (client, owner, grant type, realm, scope, audience, auth time, expiry,
 custom `fields`, nonce, auth level, claims); by default it is a
 `client_credentials` token for `test-client` in `/alpha`, valid for an hour,
 whose custom fields are AM's `subname` and `expires_in`. `identity` is the
-client's agent identity (name, universal id, `exists`, attributes). `client` is
-what `clientProperties` reports. `scopes` overrides the `scopes` binding, which
-otherwise holds the token's scope. `request` is `requestProperties`: params,
-headers and the request URI.
+identity fixture (name, universal id, `exists`, attributes). Its persistence
+kind comes from `accessToken.grantType`: `client_credentials` (the default)
+is the client/agent; `password` is the resource-owner user. A fixture name or
+universal id does not override the grant's kind. Other grants have unmeasured
+persistence and `store()` raises `oauth2-token-unmeasured/identity.store()`
+even if the script catches it. For a user write, seed e.g.
+`accessToken: { grantType: "password", resourceOwnerId: "user-1" }` and
+`identity: { name: "user-1", attributes: { description: ["baseline"] } }`.
+`client` supplies `clientProperties`. `scopes` overrides the `scopes` binding,
+which otherwise holds the token's scope. `request` supplies `requestProperties`
+with params, headers and the request URI.
 
 **Assertions.** `expect.accessToken` judges the token after the script:
 `fields` and `responseFields` (added/changed/removed, as for state buckets),
@@ -1130,6 +1155,18 @@ endpoint answer 500 with `Cannot invoke "java.util.Collection.size()" because
 expect it. An uncaught throw fails the run with `CaseRunError`, as AM fails the
 token request. `expect.outcome` and `outcomes` are refused: this script decides
 nothing. `logs`, `http` and `openidm` are judged as usual.
+
+`expect.identityWrites` judges successful user `store()` calls (one entry per
+attribute). Client/agent `setAttribute("description", ["example"])` returns
+`undefined`, but `store()` throws a catchable `JavaException` naming
+`ScriptedIdentityScriptWrapper$IdentityUpdateException` and the Agents plugin
+failure. It records no writes and leaves reads unchanged. A caught error allows
+issuance (`expect.accessToken.issued: true`); an uncaught error fails the run
+with `CaseRunError`, matching AM's HTTP 500 with no token. `issued: false`
+asserts a script that completed but left a token refusal; use a rejected-run
+assertion for an uncaught exception. A test expecting the agent write to succeed
+now fails. User persistence was measured on 2026-11-14 and rechecked alongside
+the agent failure on 2026-11-15; see `docs/api/12-script-bindings-matrix.md`.
 
 **Bindings.** Only measured members are emulated (2026-08-27 and 2026-11-10,
 `docs/api/12-script-bindings-matrix.md`). There is no `session` (reading it is a `ReferenceError`).

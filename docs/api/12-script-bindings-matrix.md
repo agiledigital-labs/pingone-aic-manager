@@ -1783,7 +1783,7 @@ afterwards. `identity.getAttributes()` was never called.
 | Binding | Present | Notes |
 | --- | --- | --- |
 | `accessToken` | yes | `AccessTokenScriptWrapper`. Getters return JS strings and numbers: `getClientId() === "<id>"` is `true`. |
-| `identity` | yes | `ScriptedIdentityScriptWrapper`: `getName`, `getUniversalId`, `exists()`, `getAttributeValues` (a list; `[]` for an attribute it lacks). `getAttribute` and `isExists` are `Cannot find function`. `setAttribute` and `store` on a password grant: verified 2026-11-14, below. |
+| `identity` | yes | `ScriptedIdentityScriptWrapper`: `getName`, `getUniversalId`, `exists()`, `getAttributeValues` (a list; `[]` for an attribute it lacks). `getAttribute` and `isExists` are `Cannot find function`. `setAttribute` stages values. On `password`, `store()` persists the user write (verified 2026-11-14 and rechecked 2026-11-15). On `client_credentials`, `store()` throws a catchable `IdentityUpdateException` and no write persists (verified 2026-11-15). See the [identity persistence probes below](#clientagent-identity-persistence-verified-2026-11-15). For other grants the emulator raises `oauth2-token-unmeasured/identity.store()`. |
 | `session` | **no** | Not bound at all: reading it is `ReferenceError: "session" is not defined.`, where legacy binds `null`. |
 | `scopes` | yes | A Java list: `size()`, `contains()`, `scopes[0]` and `length` work, and `add()` mutates it. |
 | `requestProperties` | yes | Four entries (`size()` is 4): `realm`, `requestHeaders`, `requestParams`, `requestUri`. Param and header values are lists; headers answer to lower and Title case. `requestParams` renders as JSON (`{ "grant_type": [ … ] }`). |
@@ -1857,6 +1857,40 @@ were not part of that run.
 The throwaway client `zzemuR3M-atm` and script `zzemuR3M-atm` were deleted
 later the same day. The client re-read was HTTP 404 and the script was not
 on the tenant.
+
+#### Client/agent identity persistence (verified 2026-11-15)
+
+Measured on sandbox `alpha` using a throwaway confidential `zzemur4emu-…`
+client, a next-gen access-token modification script, per-client scripted
+plugin override, and stateless tokens. Only `description` and exception fields
+were captured; no identity, request or session was serialized wholesale.
+
+On `client_credentials`, `setAttribute("description", ["example"])` returned
+`undefined`. Reads before, between and after the calls were `[]`.
+`store()` threw a catchable exception with `name: "JavaException"` and message:
+
+```text
+org.forgerock.openam.scripting.api.identity.ScriptedIdentityScriptWrapper$IdentityUpdateException: Exception persisting attribute: Plug-in com.sun.identity.idm.plugins.internal.AgentsRepo: Error while setting attributes for agentonly=<client-id>
+```
+
+`String(e)` was `JavaException: ` followed by that message. Catching the
+exception allowed HTTP 200 and a token containing the script's diagnostic
+claim. The exact two-call script without a catch returned HTTP 500,
+`error: "server_error"`,
+`error_description: "Error running access token modification plugin"`, with
+no access token. A separate read-only token request after each attempt still
+reported `description: []`.
+
+A second throwaway client using `password` and a `zzemur4emu-…` managed user
+confirmed the user behavior below: pending set returned `undefined`, reads
+stayed `["baseline"]` until store, then became `["example"]`; caught and
+uncaught store scripts both issued tokens. The next read-only token and a
+fresh managed read (`_fields=description`) confirmed `example` persisted.
+
+All created scripts, clients and the user were deleted (HTTP 200), each then
+re-read as HTTP 404. An initial user create using a non-UUID `_id` was rejected
+with HTTP 400; the successful create used a UUID and the prefixed `userName`.
+No realm configuration was changed; only throwaway clients had overrides.
 
 #### `identity.setAttribute` and `identity.store` (verified 2026-11-14)
 
