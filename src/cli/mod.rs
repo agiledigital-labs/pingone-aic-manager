@@ -1957,9 +1957,12 @@ async fn whoami(
                 let remaining = remaining_secs(expires_at, now);
                 if remaining < i64::from(floor) {
                     return Err(Error::Auth(format!(
-                        "agent returned a token with {remaining}s remaining, below \
-                         --min-ttl {floor}s; if the agent predates this check, run \
-                         `aic session stop` and retry"
+                        "agent returned a token with {remaining}s remaining for the \
+                         requested {floor}s floor. A floor at the token's full \
+                         issued lifetime can fall short by the time the CLI checks \
+                         it; choose a slightly lower floor to accommodate elapsed \
+                         time. If the agent predates this check, run `aic session \
+                         stop` and retry"
                     )));
                 }
             }

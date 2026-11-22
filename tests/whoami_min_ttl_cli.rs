@@ -100,6 +100,10 @@ fn refuses_a_short_token_from_a_mixed_version_agent_without_printing_it() {
         String::from_utf8_lossy(&output.stdout)
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("899s remaining"), "{stderr}");
+    assert!(stderr.contains("900s floor"), "{stderr}");
+    assert!(stderr.contains("full issued lifetime"), "{stderr}");
+    assert!(stderr.contains("slightly lower floor"), "{stderr}");
     assert!(stderr.contains("aic session stop"), "{stderr}");
     assert!(!stderr.contains("synthetic-short-token"), "{stderr}");
 }

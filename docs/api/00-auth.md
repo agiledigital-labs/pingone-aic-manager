@@ -56,10 +56,10 @@ a JWK at account creation).
 ```
 
 - TTL is nominally **898 seconds** (~15 min). On 2026-11-14, `aic whoami
-  --json` reported `expires_in` 898, and an earlier fresh mint that day
-  reported 899. The latter measurement was an earlier mint; the later JSON
-  read reports remaining time and does not establish a different issued
-  lifetime. Refresh proactively at ~60s before expiry. `whoami --json` reports
+  --json` showed `expires_in` 898 seconds remaining. An earlier reported
+  fresh-mint reading that day was 899 seconds; the historical record does not
+  specify how it was captured, so it does not establish the token endpoint's
+  raw lifetime. Refresh proactively at ~60s before expiry. `whoami --json` reports
   `expires_at`/`expires_in` without decoding the token; `access_token` is
   present only with `--token`.
   `whoami --min-ttl <secs>` returns the in-memory token when its remaining life
@@ -67,9 +67,13 @@ a JWK at account creation).
   disk. On 2026-11-14, a cached remainder of 783s was below a floor of 803s,
   the agent minted, and the following `--json` reported 898. At that time,
   `--min-ttl 898` was refused before requesting a token and printed none. That
-  up-front refusal has since been removed: a fresh mint's returned
-  `expires_in` decides whether the requested floor is possible. Remeasurement
-  of raw token-endpoint lifetimes is pending.
+  up-front refusal has since been removed. The agent checks a fresh token
+  against the raw `expires_in` from the endpoint; the CLI then checks remaining
+  life from the agent's `expires_at` using a later timestamp. A floor at the
+  token's full issued lifetime can fall short by the time the CLI checks it, so
+  a slightly lower floor accommodates elapsed time. If a short reply came from
+  an older daemon, the CLI recommends `aic session stop`. Remeasurement of raw
+  token-endpoint lifetimes is pending.
 - `scope` may be a re-ordered subset of requested scopes — compare as a set.
 
 ## Who the service-account token is inside IDM (verified 2026-11-14)
