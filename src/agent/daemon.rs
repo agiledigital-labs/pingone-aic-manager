@@ -1116,7 +1116,9 @@ mod tests {
             .lock()
             .unwrap()
             .store("cached-token".into(), cached_expiry);
-        let floor = (cached_expiry - now()).try_into().unwrap();
+        // Well under the cached bearer's 120 s, so a second tick before the
+        // cache check cannot push this request into a mint of its own.
+        let floor = 60;
         let refresh = async {
             selected_rx.await.unwrap();
             let before = now();
