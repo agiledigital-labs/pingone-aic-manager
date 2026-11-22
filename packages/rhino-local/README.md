@@ -151,6 +151,22 @@ and `toArray` answer as Java does, and an empty result is an empty list.
 does (`3`, not `3.0`); AIC's rendering of that one was not measured. A has-many
 array read with `*` alone, or with no field list, is still a JS array.
 
+## Breaking change: access-token identity persistence follows the grant
+
+Older access-token modification cases could persist a seeded user identity
+without setting `given.accessToken.grantType`. Omitting it still defaults to
+`client_credentials`, but `identity.store()` now throws the measured client
+identity exception and records no `identityWrites`.
+
+For tests of user persistence, set `given.accessToken.grantType` to `"password"`
+and set `given.accessToken.resourceOwnerId` and `given.identity.name` to the
+same user ID. Seed that user's starting attributes in `given.identity.attributes`.
+If a test needs to exercise any other grant, keep its actual grant. Outside
+`password` and `client_credentials`, calling `store()` raises
+`oauth2-token-unmeasured/identity.store()` even if the script catches it.
+Setting `given.request.params.grant_type` only changes what the script reads
+from the request. `given.accessToken.grantType` selects persistence behavior.
+
 ## Using the installed package
 
 ```sh

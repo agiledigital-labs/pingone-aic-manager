@@ -1783,7 +1783,7 @@ afterwards. `identity.getAttributes()` was never called.
 | Binding | Present | Notes |
 | --- | --- | --- |
 | `accessToken` | yes | `AccessTokenScriptWrapper`. Getters return JS strings and numbers: `getClientId() === "<id>"` is `true`. |
-| `identity` | yes | `ScriptedIdentityScriptWrapper`: `getName`, `getUniversalId`, `exists()`, `getAttributeValues` (a list; `[]` for an attribute it lacks). `getAttribute` and `isExists` are `Cannot find function`. `setAttribute` and `store` on a password grant: verified 2026-11-14, below. |
+| `identity` | yes | `ScriptedIdentityScriptWrapper`: `getName`, `getUniversalId`, `exists()`, `getAttributeValues` (a list; `[]` for an attribute it lacks). `getAttribute` and `isExists` are `Cannot find function`. `setAttribute` stages values. On `password`, `store()` persists the user write (verified 2026-11-14 and rechecked 2026-11-15). On `client_credentials`, `store()` throws a catchable `IdentityUpdateException` and no write persists (verified 2026-11-15). See the [identity persistence probes below](#clientagent-identity-persistence-verified-2026-11-15). For other grants the emulator raises `oauth2-token-unmeasured/identity.store()`. |
 | `session` | **no** | Not bound at all: reading it is `ReferenceError: "session" is not defined.`, where legacy binds `null`. |
 | `scopes` | yes | A Java list: `size()`, `contains()`, `scopes[0]` and `length` work, and `add()` mutates it. |
 | `requestProperties` | yes | Four entries (`size()` is 4): `realm`, `requestHeaders`, `requestParams`, `requestUri`. Param and header values are lists; headers answer to lower and Title case. `requestParams` renders as JSON (`{ "grant_type": [ … ] }`). |

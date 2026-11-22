@@ -969,10 +969,18 @@ leaves out:
   than `setField("aud", …)` (a string, a non-empty array of strings, or `null`,
   measured 2026-11-14; `setFields` of `aud` is still unmeasured, and there is
   no `removeField`), and
-  `identity.addAttribute` (`setAttribute` and `store` are measured on this
-  context; they stay faults on the other contexts that share this view).
+  `identity.addAttribute`.
   `identity.getAttributes()` is a fault on purpose: it
   returns the client's password (`.ai/core.md` §8).
+- **Identity persistence.** `setAttribute` stages the write. On `password`,
+  `store()` persists a user write (measured 2026-11-14 and rechecked
+  2026-11-15). On `client_credentials`, `store()` throws a catchable
+  `IdentityUpdateException` without persisting the client identity write
+  (measured 2026-11-15). See the
+  [identity persistence probes](api/12-script-bindings-matrix.md#clientagent-identity-persistence-verified-2026-11-15).
+  For other grants, `store()` raises `oauth2-token-unmeasured/identity.store()`
+  even if caught. `setAttribute` and `store` still fault in the other contexts
+  that share this identity view.
 - **The AIC lane** runs only decision-node scripts, so a token-context case is
   reported unsupported there and runs locally only.
 
