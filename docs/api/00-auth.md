@@ -55,15 +55,21 @@ a JWK at account creation).
 }
 ```
 
-- On 2026-11-15, five fresh-token measurements returned `expires_in` values
-  **898, 895, 892, 899, 896 seconds**. The tenant's issued lifetime varies;
-  898 seconds is nominal, not a ceiling. Refresh proactively at ~60s before
-  expiry. `whoami --json` reports the remaining `expires_at`/`expires_in`
-  without decoding the token; `access_token` is present only with `--token`.
-  `whoami --min-ttl <secs>` reuses a cached token only when it meets the floor,
-  otherwise mints. If a fresh token's returned lifetime is below the floor,
-  the command refuses and reports that issued lifetime. Nothing is written to
-  disk.
+- TTL is nominally **898 seconds** (~15 min). On 2026-11-14, `aic whoami
+  --json` reported `expires_in` 898, and an earlier fresh mint that day
+  reported 899. The latter measurement was an earlier mint; the later JSON
+  read reports remaining time and does not establish a different issued
+  lifetime. Refresh proactively at ~60s before expiry. `whoami --json` reports
+  `expires_at`/`expires_in` without decoding the token; `access_token` is
+  present only with `--token`.
+  `whoami --min-ttl <secs>` returns the in-memory token when its remaining life
+  meets the floor and otherwise asks the agent to mint; nothing is written to
+  disk. On 2026-11-14, a cached remainder of 783s was below a floor of 803s,
+  the agent minted, and the following `--json` reported 898. At that time,
+  `--min-ttl 898` was refused before requesting a token and printed none. That
+  up-front refusal has since been removed: a fresh mint's returned
+  `expires_in` decides whether the requested floor is possible. Remeasurement
+  of raw token-endpoint lifetimes is pending.
 - `scope` may be a re-ordered subset of requested scopes — compare as a set.
 
 ## Who the service-account token is inside IDM (verified 2026-11-14)
