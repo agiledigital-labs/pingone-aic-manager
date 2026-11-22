@@ -1102,23 +1102,47 @@ async fn relationship(command: RelationshipCommand) -> Result<()> {
                 output(json, &body)?;
                 return activation_check(&source_object, &key, &unverified, false);
             }
-            record_config_undo(
-                &tenant,
-                &doc,
-                &updated,
-                format!("Revert relationship {source_object}.{key}"),
-            )?;
             let expect = relationship_expectations(&doc, &updated)?;
             let mapped = storage::set_with(
                 property.is_none(),
-                async || put_managed(&ok, &doc, updated.clone(), &expect).await,
                 async || {
+                    if wait_activation.is_none() || property.is_some() {
+                        return Ok(None);
+                    }
+                    let added = {
+                        let repo = api::get_repo_ds(&tenant).await?;
+                        let pair = storage::pair(&updated, &repo, &source_object, &key)
+                            .map_err(crate::Error::Config)?;
+                        if storage::mode(&pair) == storage::Mode::Mapped {
+                            Vec::new()
+                        } else {
+                            let plan = repair::plan_add(&updated, &repo, &source_object, &key)
+                                .map_err(crate::Error::Config)?;
+                            activation::added_type_names(plan.addition())
+                        }
+                    };
+                    let pending =
+                        activation::prepare(&tenant, &added, wait_activation, activation_force)
+                            .await?;
+                    Ok(Some((added, pending)))
+                },
+                async || {
+                    record_config_undo(
+                        &tenant,
+                        &doc,
+                        &updated,
+                        format!("Revert relationship {source_object}.{key}"),
+                    )?;
+                    put_managed(&ok, &doc, updated.clone(), &expect).await
+                },
+                async |pending| {
                     map_created_pair(
                         &ok,
                         &source_object,
                         &key,
                         wait_activation,
                         activation_force,
+                        pending,
                         &command,
                     )
                     .await
@@ -2150,6 +2174,7 @@ async fn map_created_pair(
     key: &str,
     wait_activation: Option<u64>,
     force: bool,
+    prepared_probe: Option<(Vec<String>, activation::Pending)>,
     command: &activation::CommandInterrupt,
 ) -> Result<(
     Option<VerificationOutput>,
@@ -2187,20 +2212,25 @@ async fn map_created_pair(
     })?;
     let mut storage_activation = if let Some(plan) = prepared {
         let added = activation::added_type_names(plan.addition());
-        let pending = activation::prepare(ok.tenant, &added, wait_activation, force)
-            .await
-            .map_err(|error| {
-                crate::Error::Config(format!(
-                    "config/managed was written, but mapping {field} was not attempted: {error}. \
-                     The pair remains generic unless another writer changed it. Re-run \
-                     `aic managed relationship map {field} --wait-activation --force` to add the \
-                     mapping and probe"
-                ))
-            })?;
+        let pending = match prepared_probe {
+            Some((consented_types, pending)) if added == consented_types => pending,
+            Some(_) => {
+                return Err(crate::Error::Config(format!(
+                    "config/managed was written, but mapping {field} was not attempted: planned per-type stores changed since probe consent; nothing probed. Verify the relationship before retrying relationship map {field} --wait-activation --force"
+                )));
+            }
+            None => activation::prepare(ok.tenant, &added, None, false).await?,
+        };
         let permit = repair::authorize(false, true)
             .ok_or_else(|| crate::Error::Config("mapping authorization failed".into()))?;
         apply_mapping(ok, &plan, &permit).await?;
-        activation::finish(ok.tenant, ok.confirmed_prod, &added, pending, command).await?
+        activation::finish(ok.tenant, ok.confirmed_prod, &added, pending, command)
+            .await
+            .map_err(|error| {
+                crate::Error::Config(format!(
+                    "config/managed and config/repo.ds were written for {field}; {error}"
+                ))
+            })?
     } else {
         check_orphans(ok.tenant, object, key, "existing mapping").await?;
         activation::settle(

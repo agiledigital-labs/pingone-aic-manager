@@ -880,10 +880,12 @@ cannot be read, the command refuses even with `--force`, and never calls that
 inventory empty. Otherwise `--force` skips the probe prompt; `--yes` authorizes
 only the production environment. On map, one `--force` approves both conversion
 and the requested probe, as operation consent. Without a terminal or `--force`,
-refusal creates no probe: on `relationship set`
-the schema write has landed and the per-type entry has not, so finish with
-`relationship map --wait-activation --force`; on `relationship map` nothing is
-switched. `--dry-run` writes no probe.
+refusal happens before any tenant write on both commands. The command re-reads
+hook and sync mapping contents immediately before probing. Changes since consent
+refuse the probe even with `--force`; at that point configuration writes have
+landed, and the error names them. Verify the relationship and re-read inventories
+before creating records. Re-running map on the installed mappings does not repeat
+the probe. `--dry-run` writes no probe.
 
 `--json` adds `storage_activation`, including `interrupted`. `readable` means
 the probe was read within the deadline and its delete was confirmed; it does

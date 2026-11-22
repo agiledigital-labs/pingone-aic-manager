@@ -339,15 +339,18 @@ pub(crate) fn activation_warning_for(objects: &[String]) -> Option<String> {
 }
 
 /// The CLI's real write sequence. Editing never changes storage mode.
-/// Managed confirmation precedes even planning/writing the mapping.
-pub async fn set_with<T>(
+/// Probe planning and consent precede all writes; managed confirmation still
+/// precedes writing the mapping.
+pub async fn set_with<T, P>(
     creating: bool,
+    prepare: impl AsyncFnOnce() -> crate::Result<P>,
     managed: impl AsyncFnOnce() -> crate::Result<()>,
-    mapping: impl AsyncFnOnce() -> crate::Result<T>,
+    mapping: impl AsyncFnOnce(P) -> crate::Result<T>,
 ) -> crate::Result<Option<T>> {
+    let pending = prepare().await?;
     managed().await?;
     if creating {
-        return mapping().await.map(Some);
+        return mapping(pending).await.map(Some);
     }
     Ok(None)
 }
@@ -608,11 +611,12 @@ mod tests {
             let calls = RefCell::new(Vec::new());
             set_with(
                 creating,
+                async || Ok(()),
                 async || {
                     calls.borrow_mut().push("managed");
                     Ok(())
                 },
-                async || {
+                async |()| {
                     calls.borrow_mut().push("mapping");
                     Ok(())
                 },
@@ -632,8 +636,9 @@ mod tests {
         assert!(
             set_with(
                 true,
+                async || Ok(()),
                 async || Err(crate::Error::Config("failed".into())),
-                async || {
+                async |()| {
                     *called.borrow_mut() = true;
                     Ok(())
                 }
