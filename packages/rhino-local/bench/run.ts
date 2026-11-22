@@ -9,13 +9,13 @@
  * set; otherwise it lives in a temporary directory and is removed after the
  * summary is printed.
  */
-import { spawn } from "node:child_process";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { loadavg, tmpdir } from "node:os";
 import { join } from "node:path";
-import { buildIdentity, packageVersion } from "../src/paths.ts";
+import { buildIdentity, packageRoot, packageVersion } from "../src/paths.ts";
 import { summarizeTiming } from "../src/timing.ts";
+import { readCheckoutIdentity } from "../src/write-build-identity.ts";
 import { watchRunnerJvms } from "../test/harness/runner-jvms.ts";
 
 const workersArg = process.argv.find((a) => a.startsWith("--workers="));
@@ -27,23 +27,6 @@ function count(args: readonly string[]): number {
     return out.split("\n").filter((line) => line.trim() !== "").length;
   } catch {
     return 0;
-  }
-}
-
-function checkoutIdentity(): string | undefined {
-  try {
-    execFileSync("git", ["ls-files", "--error-unmatch", "--", "package.json"], {
-      cwd: new URL("..", import.meta.url), stdio: "ignore",
-    });
-    const commit = execFileSync("git", ["rev-parse", "--short=12", "HEAD"], {
-      cwd: new URL("..", import.meta.url), encoding: "utf8",
-    }).trim();
-    const dirty = execFileSync("git", ["status", "--porcelain", "--untracked-files=normal", "--", "."], {
-      cwd: new URL("..", import.meta.url), encoding: "utf8",
-    }).trim() !== "";
-    return `${packageVersion} (${commit}${dirty ? "-dirty" : ""} checkout)`;
-  } catch {
-    return undefined;
   }
 }
 
@@ -60,7 +43,6 @@ console.log(`bench quiet: ${JSON.stringify(quiet)}`);
 const keep = process.env.BENCH_TIMING;
 const dir = keep === undefined || keep === "" ? mkdtempSync(join(tmpdir(), "rhino-bench-")) : undefined;
 const timing = keep !== undefined && keep !== "" ? keep : join(dir as string, "timing.jsonl");
-const root = new URL("..", import.meta.url).pathname;
 
 const args = ["vitest", "run", "--config", "bench/vitest.config.ts", `--maxWorkers=${workers}`];
 const env: NodeJS.ProcessEnv = { ...process.env, AIC_SCRIPT_TESTER_TIMING: timing };
@@ -68,7 +50,7 @@ delete env.CI;
 
 const started = performance.now();
 const child = spawn("npx", args, {
-  cwd: root,
+  cwd: packageRoot,
   env,
   stdio: ["ignore", "inherit", "inherit"],
 });
@@ -76,7 +58,10 @@ const census = watchRunnerJvms(child.pid as number);
 const code: number = await new Promise((resolve) => child.on("exit", (c) => resolve(c ?? 1)));
 const javas = census.stop();
 const wallMs = performance.now() - started;
-const harnessIdentity = checkoutIdentity() ?? buildIdentity;
+const checkout = readCheckoutIdentity(packageRoot);
+const harnessIdentity = checkout === undefined
+  ? buildIdentity
+  : `${packageVersion} (${checkout.commit}${checkout.dirty ? "-dirty" : ""} checkout)`;
 
 const summary = summarizeTiming(readFileSync(timing, "utf8"));
 const sum = (field: string): number => summary.fields.find((row) => row.field === field)?.sum ?? 0;

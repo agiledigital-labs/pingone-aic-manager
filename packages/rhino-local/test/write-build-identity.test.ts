@@ -7,7 +7,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { writeBuildIdentity } from "../src/write-build-identity.ts";
 
 const roots: string[] = [];
@@ -21,10 +21,9 @@ function tree(): string {
 }
 
 function gitEnv(): NodeJS.ProcessEnv {
-  const env = { ...process.env };
-  delete env.GIT_DIR;
-  delete env.GIT_WORK_TREE;
-  delete env.GIT_INDEX_FILE;
+  const env = Object.fromEntries(
+    Object.entries(process.env).filter(([key]) => !key.toUpperCase().startsWith("GIT_")),
+  );
   env.GIT_AUTHOR_NAME = "dev";
   env.GIT_AUTHOR_EMAIL = "dev@example.com";
   env.GIT_COMMITTER_NAME = "dev";
@@ -43,6 +42,7 @@ function git(root: string, args: readonly string[]): string {
 
 describe("writeBuildIdentity", () => {
   afterEach(() => {
+    vi.unstubAllEnvs();
     for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
   });
 
@@ -59,6 +59,21 @@ describe("writeBuildIdentity", () => {
     writeFileSync(join(root, "package.json"), "{\"name\":\"example\"}\n");
     const identity = join(root, "dist", "build-identity.json");
     writeFileSync(identity, "{\"commit\":\"0123456789ab\",\"dirty\":false}\n");
+    expect(writeBuildIdentity(root)).toEqual({ status: "unknown", path: identity });
+    expect(existsSync(identity)).toBe(false);
+  });
+
+  it("ignores an inherited Git directory and worktree for an unpacked package", () => {
+    const other = tree();
+    git(other, ["init", "-q"]);
+    git(other, ["add", "package.json"]);
+    git(other, ["commit", "-q", "-m", "init"]);
+
+    const root = tree();
+    const identity = join(root, "dist", "build-identity.json");
+    vi.stubEnv("GIT_DIR", join(other, ".git"));
+    vi.stubEnv("GIT_WORK_TREE", other);
+
     expect(writeBuildIdentity(root)).toEqual({ status: "unknown", path: identity });
     expect(existsSync(identity)).toBe(false);
   });
@@ -94,6 +109,9 @@ describe("writeBuildIdentity", () => {
     expect(writeBuildIdentity(root)).toMatchObject({ status: "written", dirty: false });
 
     writeFileSync(join(root, "inside.txt"), "inside package\n");
+    vi.stubEnv("GIT_CEILING_DIRECTORIES", join(enclosing, "packages"));
+    vi.stubEnv("GIT_COMMON_DIR", join(root, "missing-common-dir"));
+    vi.stubEnv("GIT_INDEX_FILE", join(root, "missing-index"));
     expect(writeBuildIdentity(root)).toMatchObject({ status: "written", dirty: true });
   });
 });
