@@ -17,6 +17,25 @@ fn reply(stream: &mut UnixStream, value: serde_json::Value) {
     writeln!(stream, "{value}").expect("write mock agent response");
 }
 
+fn assert_reported_remainder_is_below_floor(stderr: &str, floor: i64) {
+    assert!(
+        stderr.contains(&format!("requested {floor}s floor")),
+        "{stderr}"
+    );
+    let remainder_text = stderr
+        .split_once("agent returned a token with ")
+        .expect("TTL refusal diagnostic")
+        .1
+        .split_once("s remaining")
+        .expect("reported remaining lifetime")
+        .0;
+    let remaining: i64 = remainder_text.parse().expect("integer remaining lifetime");
+    assert!(
+        (0..floor).contains(&remaining),
+        "{remaining}s is not below {floor}s"
+    );
+}
+
 #[derive(Debug, PartialEq, Eq)]
 enum MockAgentEnd {
     Shutdown,
@@ -117,6 +136,7 @@ fn mock_agent(
                         .duration_since(UNIX_EPOCH)
                         .expect("system clock")
                         .as_secs() as i64;
+                    thread::sleep(Duration::from_millis(1100));
                     reply(
                         &mut stream,
                         serde_json::json!({
@@ -213,8 +233,7 @@ fn refuses_a_short_token_from_a_mixed_version_agent_without_printing_it() {
         String::from_utf8_lossy(&output.stdout)
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("899s remaining"), "{stderr}");
-    assert!(stderr.contains("900s floor"), "{stderr}");
+    assert_reported_remainder_is_below_floor(&stderr, 900);
     assert!(stderr.contains("full issued lifetime"), "{stderr}");
     assert!(stderr.contains("slightly lower floor"), "{stderr}");
     assert!(stderr.contains("aic session stop"), "{stderr}");
