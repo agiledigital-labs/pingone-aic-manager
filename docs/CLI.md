@@ -207,7 +207,7 @@ binary deliberately does not read passwords from environment variables.
 | `aic whoami [--tenant <name>]` | Mint and print token info plus the local operator name and host for a context.                                 |
 | `aic whoami --token`           | Print **only** the bearer token (for scripting, e.g. `curl -H "Authorization: Bearer $(aic whoami --token)"`). |
 | `aic whoami --json`            | The same identity as plain `whoami`, as JSON: `tenant`, `host`, `sa`, `operator`, `expires_at`, `expires_in`. `access_token` is present only with `--token`. |
-| `aic whoami --min-ttl <secs>`  | Return the cached token only when it has at least `<secs>` left; otherwise the agent mints a new one (still in memory). Replaces `--token`'s 840s floor, including a smaller one. If a fresh token cannot meet the floor, reports the lifetime the tenant issued. |
+| `aic whoami --min-ttl <secs>`  | Return the cached token only when it has at least `<secs>` left; otherwise the agent mints one in memory. Replaces `--token`'s 840s floor, including a smaller one. The CLI checks the reply expiry too; a short reply is refused without printing the token, with `aic session stop` guidance for an older daemon. |
 | `aic whoami --idm [--json]`    | Show the IDM component, its roles, and the scopes the service-account token requested. Prints no token and no id. States that a management scope is not the IDM admin role. Cannot be combined with `--token` or `--min-ttl`. |
 | `aic whoami --scope <scope>`   | Repeat for each scope. Mint a token that carries only those, each one this install already requests. The agent does not cache it in place of the normal token. Refuses a scope outside that list. A scope the service account does not hold fails the whole grant. Cannot be combined with `--idm` or `--min-ttl`. |
 | `aic whoami --token --host <url-or-host>` | As `--token`, for the context whose host the URL names (unless `--tenant` is given); refuses — no token printed, non-zero exit — unless the host is that context's own or one of its custom domains. |
@@ -279,9 +279,9 @@ token on stdout.
 60s, which is right for a request it is about to make itself and far too short
 for a token handed to another process that will hold it — so `--token` asks for
 at least **840s** and the agent mints a fresh one when the cached token is below
-that. AIC issues 898s tokens, so in practice a scripted caller always gets more
-than fourteen minutes, and the cached token is reused only within the first
-minute of its life. Plain `whoami` deliberately sends no floor: its job is to
+that. The nominal issued lifetime is 898s, so a scripted caller usually gets more
+than fourteen minutes; the CLI checks the expiry returned by the agent before
+printing any token. Plain `whoami` deliberately sends no floor: its job is to
 report the cache, and refreshing would make `expires:` say the same thing every
 time.
 
@@ -293,13 +293,14 @@ subtraction `aic session status` uses for `Ns remaining` (zero or below is
 the object rather than the bare token and stderr stays empty. `--min-ttl`
 applies with or without `--token`: the agent returns the cached token when
 it still has that many seconds left, and otherwise mints a new one into the
-same in-memory cache. A value of 898 or more is refused before `GetToken`,
-because that is the issued life the program records and a token is already
-under it almost immediately. The unlock/status preflight still runs first.
-Verified 2026-11-14: a cached token reported
-`expires_in` 783; `--min-ttl 803` minted, and the following `--json`
-reported 898 with no `access_token`. `--min-ttl 898` exited non-zero and
-printed nothing. `--token` alone stayed one line.
+same in-memory cache. The CLI then independently checks `expires_at - now`
+against the requested floor and refuses without printing a token if the reply
+is too short; if an older daemon returned it, the error recommends
+`aic session stop`. The unlock/status preflight still runs first. Verified
+2026-11-14: a cached token reported `expires_in` 783; `--min-ttl 803` minted,
+and the following `--json` reported 898 with no `access_token`. At that time,
+`--min-ttl 898` was refused before `GetToken`; that up-front refusal has since
+been removed. `--token` alone stayed one line.
 
 `whoami --idm` reports how IDM authenticates the service-account token. It reads
 `GET /openidm/info/login` and `GET /am/oauth2/realms/root/tokeninfo` and

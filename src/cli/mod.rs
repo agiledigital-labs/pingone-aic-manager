@@ -160,8 +160,8 @@ pub enum Command {
             help = "Return the cached token only when it has at least this many \
                     seconds left; otherwise the agent mints a new one, still kept \
                     in memory. Replaces the 840s floor --token uses on its own, \
-                    including a smaller floor. If a fresh token cannot meet \
-                    the floor, the command reports the lifetime the tenant issued"
+                    including a smaller floor. The CLI checks the reply expiry \
+                    too, and refuses a short result without printing its token"
         )]
         min_ttl: Option<u32>,
         #[arg(
@@ -1953,6 +1953,16 @@ async fn whoami(
             scopes: issued,
         } => {
             let now = chrono::Utc::now().timestamp();
+            if let Some(floor) = min_ttl_secs {
+                let remaining = remaining_secs(expires_at, now);
+                if remaining < i64::from(floor) {
+                    return Err(Error::Auth(format!(
+                        "agent returned a token with {remaining}s remaining, below \
+                         --min-ttl {floor}s; if the agent predates this check, run \
+                         `aic session stop` and retry"
+                    )));
+                }
+            }
             // The service account is worth printing even though it's local
             // config: it's the `iss`/`sub` of the assertion that minted this
             // token, so it names which of several same-titled accounts in the
