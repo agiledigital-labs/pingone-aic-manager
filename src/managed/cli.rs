@@ -1142,14 +1142,13 @@ async fn relationship(command: RelationshipCommand) -> Result<()> {
                     if let Some((added, pending)) = prepared {
                         pending.recheck_before_write(&tenant, added).await?;
                     }
-                    let persist_undo = || {
-                        record_config_undo(
-                            &tenant,
-                            &doc,
-                            &updated,
-                            format!("Revert relationship {source_object}.{key}"),
-                        )
-                    };
+                    let entry = config_undo_entry(
+                        &tenant,
+                        &doc,
+                        &updated,
+                        format!("Revert relationship {source_object}.{key}"),
+                    );
+                    let mut undo = DiskLog::load_default()?;
                     if prepared
                         .as_ref()
                         .is_some_and(|(_, pending)| pending.will_probe())
@@ -1160,11 +1159,12 @@ async fn relationship(command: RelationshipCommand) -> Result<()> {
                             updated.clone(),
                             &expect,
                             ok.confirmed_prod,
-                            persist_undo,
+                            // A blocking append here would age the final schema read.
+                            || undo.try_record(entry),
                         )
                         .await
                     } else {
-                        persist_undo()?;
+                        undo.record(entry)?;
                         put_managed(&ok, &doc, updated.clone(), &expect).await
                     }
                 },
@@ -3838,9 +3838,17 @@ fn record_config_undo(
     updated: &Value,
     description: String,
 ) -> Result<crate::undo::UndoId> {
+    DiskLog::load_default()?.record(config_undo_entry(tenant, previous, updated, description))
+}
+
+fn config_undo_entry(
+    tenant: &str,
+    previous: &Value,
+    updated: &Value,
+    description: String,
+) -> crate::undo::UndoEntry {
     use crate::undo::{Capability, ConflictCheck, Sensitivity, UndoEntry, UndoOp};
-    let mut undo = DiskLog::load_default()?;
-    undo.record(UndoEntry::pending(
+    UndoEntry::pending(
         tenant.to_string(),
         "managed",
         description,
@@ -3853,7 +3861,7 @@ fn record_config_undo(
         ConflictCheck::ContentEqualsAfter {
             body: updated.clone(),
         },
-    ))
+    )
 }
 
 pub(super) fn parse_object_key(value: &str) -> Result<(String, String)> {

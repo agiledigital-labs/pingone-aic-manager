@@ -285,6 +285,76 @@ fn observed_managed_drift_refuses_without_writing_or_recording_undo() {
     );
 }
 
+#[test]
+fn busy_undo_log_refuses_before_overwriting_a_concurrent_schema_edit() {
+    use std::sync::mpsc;
+
+    let project = Project::new();
+    let undo_path = project.0.join(".aic/undo.log");
+    let lock = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(pingone_aic_manager::statefile::lock_path(&undo_path))
+        .unwrap();
+    // This fixture process holds the lock while the separate CLI runs.
+    lock.lock().unwrap();
+    let mut lock = Some(lock);
+    let (release, released) = mpsc::channel::<()>();
+    let mut released = Some(released);
+    let mut holder = None;
+
+    let mut args = set_args().to_vec();
+    args.push("--force");
+    let mut surveys = 0;
+    let mut read_repo = false;
+    let mut changed = false;
+    let (output, tenant) = run(&project, &args, Tenant::new(false), |tenant, request, _| {
+        if request["method"] == "GET" {
+            if request["path"] == SYNC {
+                surveys += 1;
+            }
+            if surveys == 2 && request["path"] == REPO {
+                read_repo = true;
+            }
+            if read_repo && request["path"] == MANAGED && !changed {
+                // Serve the final checked snapshot, but change the document
+                // at the tenant while undo recording is still locked out.
+                let response = tenant.api(request);
+                tenant.managed["objects"][0]["onCreate"]["source"] = json!("concurrent edit");
+                changed = true;
+                let lock = lock.take().unwrap();
+                let released = released.take().unwrap();
+                holder = Some(std::thread::spawn(move || {
+                    // Release even for the old blocking path, so the test
+                    // observes its stale PUT instead of just timing out.
+                    let _ = released.recv_timeout(Duration::from_secs(3));
+                    drop(lock);
+                }));
+                return Some(response);
+            }
+        }
+        None
+    });
+    let _ = release.send(());
+    if let Some(holder) = holder {
+        holder.join().unwrap();
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        changed,
+        "fixture never observed the final schema read: {stderr}"
+    );
+    assert!(tenant.writes().is_empty(), "{:?} {stderr}", tenant.writes());
+    assert_eq!(
+        tenant.managed["objects"][0]["onCreate"]["source"],
+        "concurrent edit"
+    );
+    assert_eq!(output.status.code(), Some(1), "{stderr}");
+    assert!(stderr.contains("undo log is busy"), "{stderr}");
+    assert!(!undo_path.exists(), "the refused write left undo history");
+}
+
 fn reported_writes(set: bool) -> Value {
     if set {
         json!(["config/managed", "config/repo.ds"])

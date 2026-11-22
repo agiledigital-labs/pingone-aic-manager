@@ -371,6 +371,11 @@ pub struct DiskLog {
     rewrite_pause: Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>,
 }
 
+enum LockWait {
+    Blocking,
+    NoWait,
+}
+
 impl DiskLog {
     pub fn load_default() -> Result<Self> {
         Self::load(crate::config::project_paths().undo_log_path())
@@ -394,7 +399,7 @@ impl DiskLog {
     /// A rename replaces the log's inode, so every writer locks the same
     /// sidecar. Hold the guard from before loading a rewrite snapshot until
     /// after installing it, or through the entire append.
-    fn lock_mutations(&self) -> Result<fs::File> {
+    fn lock_mutations(&self, wait: LockWait) -> Result<fs::File> {
         let parent = self.path.parent().expect("absolute undo log path");
         fs::create_dir_all(parent)?;
         let lock = OpenOptions::new()
@@ -404,15 +409,41 @@ impl DiskLog {
             .truncate(false)
             .mode(0o600)
             .open(crate::statefile::lock_path(&self.path))?;
-        lock.lock()?;
+        match wait {
+            LockWait::Blocking => lock.lock()?,
+            LockWait::NoWait => match lock.try_lock() {
+                Ok(()) => {}
+                Err(fs::TryLockError::WouldBlock) => {
+                    return Err(Error::Config(format!(
+                        "undo log is busy ({}); retry after the other operation finishes",
+                        self.path.display()
+                    )));
+                }
+                Err(fs::TryLockError::Error(error)) => return Err(error.into()),
+            },
+        }
         if parent.file_name() == Some(std::ffi::OsStr::new(".aic")) {
             ProjectConfig::write_gitignore_to(parent)?;
         }
         Ok(lock)
     }
 
-    fn append_entry(&self, entry: &UndoEntry) -> Result<()> {
-        let _lock = self.lock_mutations()?;
+    /// Record immediately or refuse if another writer owns the mutation lock.
+    pub(crate) fn try_record(&mut self, entry: UndoEntry) -> Result<UndoId> {
+        self.record_with(entry, LockWait::NoWait)
+    }
+
+    fn record_with(&mut self, entry: UndoEntry, wait: LockWait) -> Result<UndoId> {
+        let id = entry.id;
+        if persistable(entry.sensitivity) {
+            self.append_entry(&entry, wait)?;
+        }
+        self.entries.push(entry);
+        Ok(id)
+    }
+
+    fn append_entry(&self, entry: &UndoEntry, wait: LockWait) -> Result<()> {
+        let _lock = self.lock_mutations(wait)?;
         let mut file = OpenOptions::new()
             .create(true)
             .append(true)
@@ -427,7 +458,7 @@ impl DiskLog {
         &mut self,
         change: impl FnOnce(&mut Vec<UndoEntry>) -> Result<(R, bool)>,
     ) -> Result<R> {
-        let _lock = self.lock_mutations()?;
+        let _lock = self.lock_mutations(LockWait::Blocking)?;
         // History views can outlive other writers. Use the current file under
         // the lock, preserving entries this instance never persisted.
         let mut entries = load_entries(&self.path)?;
@@ -475,12 +506,7 @@ impl DiskLog {
 
 impl UndoLog for DiskLog {
     fn record(&mut self, entry: UndoEntry) -> Result<UndoId> {
-        let id = entry.id;
-        if persistable(entry.sensitivity) {
-            self.append_entry(&entry)?;
-        }
-        self.entries.push(entry);
-        Ok(id)
+        self.record_with(entry, LockWait::Blocking)
     }
 
     fn list(&self, limit: usize) -> Vec<UndoSummary> {
