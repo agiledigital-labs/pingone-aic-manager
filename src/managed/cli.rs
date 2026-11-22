@@ -304,6 +304,9 @@ pub enum RelationshipCommand {
             long_help = super::activation::WAIT_ACTIVATION_LONG
         )]
         wait_activation: Option<u64>,
+        /// Prefix to prepend to the probe UUID (1–64 ASCII letters, digits, '-' or '_', starting with a letter or digit).
+        #[arg(long, value_name = "PREFIX", requires = "wait_activation", value_parser = activation::parse_probe_prefix)]
+        probe_prefix: Option<activation::ProbePrefix>,
         #[arg(long)]
         json: bool,
     },
@@ -374,6 +377,9 @@ pub enum RelationshipCommand {
             long_help = super::activation::WAIT_ACTIVATION_LONG
         )]
         wait_activation: Option<u64>,
+        /// Prefix to prepend to the probe UUID (1–64 ASCII letters, digits, '-' or '_', starting with a letter or digit).
+        #[arg(long, value_name = "PREFIX", requires = "wait_activation", value_parser = activation::parse_probe_prefix)]
+        probe_prefix: Option<activation::ProbePrefix>,
         #[arg(long)]
         json: bool,
     },
@@ -961,6 +967,7 @@ async fn relationship(command: RelationshipCommand) -> Result<()> {
             check,
             force: _,
             wait_activation,
+            probe_prefix,
             json,
         } => {
             if let Some(seconds) = wait_activation {
@@ -1121,9 +1128,14 @@ async fn relationship(command: RelationshipCommand) -> Result<()> {
                             activation::added_type_names(plan.addition())
                         }
                     };
-                    let pending =
-                        activation::prepare(&tenant, &added, wait_activation, activation_force)
-                            .await?;
+                    let pending = activation::prepare(
+                        &tenant,
+                        &added,
+                        wait_activation,
+                        activation_force,
+                        probe_prefix.as_ref(),
+                    )
+                    .await?;
                     Ok(Some((added, pending)))
                 },
                 async || {
@@ -1141,7 +1153,7 @@ async fn relationship(command: RelationshipCommand) -> Result<()> {
                         &source_object,
                         &key,
                         wait_activation,
-                        activation_force,
+                        probe_prefix.as_ref(),
                         pending,
                         &command,
                     )
@@ -1541,6 +1553,7 @@ async fn relationship(command: RelationshipCommand) -> Result<()> {
             tenant,
             yes,
             wait_activation,
+            probe_prefix,
             json,
         } => {
             super::conversion_cli::map(
@@ -1553,6 +1566,7 @@ async fn relationship(command: RelationshipCommand) -> Result<()> {
                     force: activation_force,
                     yes,
                     wait_activation,
+                    probe_prefix,
                     json,
                 },
             )
@@ -2173,13 +2187,14 @@ async fn map_created_pair(
     object: &str,
     key: &str,
     wait_activation: Option<u64>,
-    force: bool,
+    probe_prefix: Option<&activation::ProbePrefix>,
     prepared_probe: Option<(Vec<String>, activation::Pending)>,
     command: &activation::CommandInterrupt,
 ) -> Result<(
     Option<VerificationOutput>,
     Option<activation::StorageActivation>,
 )> {
+    let retry_probe = activation::retry_flags(wait_activation, probe_prefix);
     let field = format!("{object}.{key}");
     let mut generic = false;
     let prepared = async {
@@ -2202,7 +2217,7 @@ async fn map_created_pair(
         crate::Error::Config(format!(
             "config/managed was written, but mapping {field} was not attempted: {error}. {} \
              Run `aic managed relationship verify {field}`; if generic, finish with \
-             `aic managed relationship map {field} --force` before writing links",
+             `aic managed relationship map {field} --force{retry_probe}` before writing links",
             if generic {
                 "The pair remains a consistent generic pair unless another writer changed it."
             } else {
@@ -2216,14 +2231,14 @@ async fn map_created_pair(
             Some((consented_types, pending)) if added == consented_types => pending,
             Some(_) => {
                 return Err(crate::Error::Config(format!(
-                    "config/managed was written, but mapping {field} was not attempted: planned per-type stores changed since probe consent; nothing probed. Verify the relationship before retrying relationship map {field} --wait-activation --force"
+                    "config/managed was written, but mapping {field} was not attempted: planned per-type stores changed since probe consent; nothing probed. Verify the relationship before retrying relationship map {field} --force{retry_probe}"
                 )));
             }
-            None => activation::prepare(ok.tenant, &added, None, false).await?,
+            None => activation::prepare(ok.tenant, &added, None, false, None).await?,
         };
         let permit = repair::authorize(false, true)
             .ok_or_else(|| crate::Error::Config("mapping authorization failed".into()))?;
-        apply_mapping(ok, &plan, &permit).await?;
+        apply_mapping(ok, &plan, &permit, &retry_probe).await?;
         activation::finish(ok.tenant, ok.confirmed_prod, &added, pending, command)
             .await
             .map_err(|error| {
@@ -2238,7 +2253,7 @@ async fn map_created_pair(
             ok.confirmed_prod,
             &[],
             wait_activation,
-            force,
+            false,
             command,
         )
         .await?
@@ -2273,13 +2288,14 @@ async fn apply_mapping(
     ok: &WriteOk<'_>,
     plan: &repair::Plan,
     permit: &repair::WritePermit,
+    retry_probe: &str,
 ) -> Result<repair::Applied> {
     let field = plan.label();
     let applied = send_repo_change(ok, plan, permit).await.map_err(|failure| crate::Error::Config(match failure {
         repair::Failure::NotWritten(error) => format!(
             "mapping {field} was not written: {error}. This command sent no mapping PUT. \
              If no other writer changed it, the pair remains consistent and generic. \
-             Verify its current state, then finish with `aic managed relationship map {field} --force` \
+             Verify its current state, then finish with `aic managed relationship map {field} --force{retry_probe}` \
              after pausing all link writers"),
         repair::Failure::SendFailed { error, backup } => format!(
             "mapping {field} PUT failed ({error}); whether it landed is unknown. \
@@ -4208,6 +4224,50 @@ mod tests {
                 }
             })
         ));
+    }
+
+    #[test]
+    fn probe_prefix_accepts_only_safe_path_prefixes_on_set_and_map() {
+        use clap::error::ErrorKind;
+        for verb in ["set", "map"] {
+            let mut args = vec!["aic", "managed", "relationship", verb, "thing.owner"];
+            if verb == "set" {
+                args.extend(["--target", "other", "--forward", "one"]);
+            }
+            let missing_wait = args.iter().copied().chain(["--probe-prefix", "sample-"]);
+            assert_eq!(
+                Cli::try_parse_from(missing_wait).unwrap_err().kind(),
+                ErrorKind::MissingRequiredArgument
+            );
+            args.push("--wait-activation");
+            let max = "a".repeat(64);
+            let too_long = "a".repeat(65);
+            for value in ["a", "sample_123-", max.as_str()] {
+                let input = args.iter().copied().chain(["--probe-prefix", value]);
+                assert!(Cli::try_parse_from(input).is_ok(), "{verb}: {value:?}");
+            }
+            for value in [
+                "",
+                "_reserved",
+                "a/b",
+                "a%2fb",
+                ".",
+                "..",
+                "a.b",
+                "a?b",
+                "a#b",
+                "a b",
+                "é",
+                too_long.as_str(),
+            ] {
+                let input = args.iter().copied().chain(["--probe-prefix", value]);
+                assert_eq!(
+                    Cli::try_parse_from(input).unwrap_err().kind(),
+                    ErrorKind::ValueValidation,
+                    "{verb}: {value:?}"
+                );
+            }
+        }
     }
 
     #[test]

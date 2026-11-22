@@ -51,6 +51,7 @@ pub struct Flags {
     pub force: bool,
     pub yes: bool,
     pub wait_activation: Option<u64>,
+    pub probe_prefix: Option<activation::ProbePrefix>,
     pub json: bool,
 }
 impl From<Options> for Flags {
@@ -61,6 +62,7 @@ impl From<Options> for Flags {
             force: options.force.operation(),
             yes: options.yes,
             wait_activation: None,
+            probe_prefix: None,
             json: options.json,
         }
     }
@@ -218,12 +220,13 @@ fn output(flags: &Flags, value: &Value) -> Result<()> {
     Ok(())
 }
 
-fn stopped(path: &Path, capture: &Capture, error: Error) -> Error {
+fn stopped(path: &Path, capture: &Capture, flags: &Flags, error: Error) -> Error {
     let resume = match capture.origin {
         Origin::InPlace => format!(
-            "map {} --capture {} --force",
+            "map {} --capture {} --force{}",
             capture.pairs[0].forward.label(),
-            path.display()
+            path.display(),
+            activation::retry_flags(flags.wait_activation, flags.probe_prefix.as_ref())
         ),
         Origin::Promotion => format!("restore-links {} --force", path.display()),
     };
@@ -727,8 +730,14 @@ pub async fn map(
             return Err(Error::Config("column allocation changed since the capture; inspect before retrying with a new plan".into()));
         }
         let added = activation::added_type_names(plan.addition());
-        let pending =
-            activation::prepare(ok.tenant, &added, flags.wait_activation, flags.force).await?;
+        let pending = activation::prepare(
+            ok.tenant,
+            &added,
+            flags.wait_activation,
+            flags.force,
+            flags.probe_prefix.as_ref(),
+        )
+        .await?;
         (Some(plan), added, pending)
     } else {
         (None, Vec::new(), activation::Pending::Quiet)
@@ -797,7 +806,7 @@ pub async fn map(
             .unwrap_or(Ok(()))
     }
     .await;
-    result.map_err(|error| stopped(&path, &capture, error))?;
+    result.map_err(|error| stopped(&path, &capture, &flags, error))?;
     if storage_activation.is_none() && flags.wait_activation.is_some() {
         storage_activation = activation::settle(
             ok.tenant,
@@ -823,7 +832,7 @@ fn finish_map(
     if interrupted {
         eprintln!(
             "{}",
-            stopped(path, capture, activation::command_interrupted())
+            stopped(path, capture, flags, activation::command_interrupted())
         );
     }
     let mut body = json!({"capture": path, "links": capture.count(), "complete": !interrupted, "interrupted": interrupted,
@@ -988,7 +997,7 @@ pub async fn restore_links(
     let mut file = FileSession::open(path.clone(), Some(capture.clone())).await?;
     finish_restore(&ok, &mut capture, &mut file, &permit)
         .await
-        .map_err(|error| stopped(&path, &capture, error))?;
+        .map_err(|error| stopped(&path, &capture, &flags, error))?;
     output(
         &flags,
         &json!({"capture":path,"links":capture.count(),"complete":true}),
@@ -1295,6 +1304,7 @@ mod tests {
                 force: true,
                 yes: true,
                 wait_activation: Some(1),
+                probe_prefix: None,
                 json: true,
             };
             finish_map(&flags, &path, &capture, &mut storage, &command)
@@ -1473,6 +1483,12 @@ mod tests {
         let error = stopped(
             Path::new("capture.json"),
             &capture,
+            &Flags::from(Options {
+                dry_run: false,
+                force: OperationForce::default(),
+                yes: false,
+                json: false,
+            }),
             Error::Config("Q14: declaration disappeared".into()),
         )
         .to_string();

@@ -651,11 +651,11 @@ aic managed field rename custom_widget.code external_code [--yes] [--json]
 aic managed field delete custom_widget.external_code [--yes] [--json]
 aic managed hook add custom_widget onCreate [--yes] [--json]
 aic managed hook delete custom_widget onCreate [--yes] [--json]
-aic managed relationship set custom_widget.owner --target alpha_user --forward one [--reverse none|one|many] [--reverse-key widgets] [--check] [--force] [--wait-activation[=SECONDS]] [--yes] [--json]
+aic managed relationship set custom_widget.owner --target alpha_user --forward one [--reverse none|one|many] [--reverse-key widgets] [--check] [--force] [--wait-activation[=SECONDS]] [--probe-prefix PREFIX] [--yes] [--json]
 aic managed relationship delete custom_widget.owner [--remove-mapping [--force]] [--yes] [--json]
 aic managed relationship verify custom_widget[.owner] [--sample 5] [--scan 200] [--probe [--force] [--yes]] [--json]
 aic managed relationship relink custom_widget.owner [--dry-run] [--force] [--yes] [--json]
-aic managed relationship map custom_widget.owner [--capture FILE] [--acknowledge-request-finished] [--dry-run] [--force] [--wait-activation[=SECONDS]] [--yes] [--json]
+aic managed relationship map custom_widget.owner [--capture FILE] [--acknowledge-request-finished] [--dry-run] [--force] [--wait-activation[=SECONDS]] [--probe-prefix PREFIX] [--yes] [--json]
 aic managed relationship capture-links --lower dev --upper uat --output FILE [--new-pair object.key]... [--dry-run] [--force] [--yes] [--json]
 aic managed relationship restore-links FILE [--tenant uat] [--acknowledge-request-finished] [--dry-run] [--force] [--yes] [--json]
 aic managed relationship rollback-map FILE [--tenant dev] [--acknowledge-request-finished] [--dry-run] [--force] [--yes] [--json]
@@ -856,14 +856,14 @@ cutover. The client-reported lag (2026-11-03) was not reproduced here on
 
 `--wait-activation[=SECONDS]` on `relationship set` and `relationship map`
 (default 60, from 1 to 3600) offers a consented probe when a per-type entry is
-added. It sends one create-only POST per type with a caller-chosen UUID in
-`_id`, reads that ID, deletes it, and confirms absence. It prints the UUID
-before dispatch and never retries create. One deadline bounds all create/read
-waits; no create starts after expiry. Each started type gets a separate
+added. It sends one create-only POST per type with the planned `_id`, reads that
+id, deletes it, and confirms absence. It never retries create. One deadline
+bounds all create/read waits. No create starts after expiry. Each started type
+gets a separate
 15-second cleanup allowance, including up to ten seconds settling an
 outstanding create. Each cleanup request waits at most two seconds. Transient
 DELETE failures retry, with confirm reads between attempts. An unsettled
-create or unresolved cleanup is explicitly reported with its UUID for manual
+create or unresolved cleanup is explicitly reported with its full id for manual
 removal. A 404 alone cannot settle an outstanding create. Ctrl-C is latched
 until bounded cleanup finishes, then exits non-zero; repeated Ctrl-C cannot
 skip cleanup. After a normal probe, the same interruption latch covers the
@@ -881,20 +881,27 @@ inventory empty. Otherwise `--force` skips the probe prompt; `--yes` authorizes
 only the production environment. On map, one `--force` approves both conversion
 and the requested probe, as operation consent. Without a terminal or `--force`,
 refusal happens before any tenant write on both commands. The command re-reads
-hook and sync mapping contents immediately before probing. Changes since consent
+hook and sync mapping contents before each probe. Changes since consent
 refuse the probe even with `--force`; at that point configuration writes have
 landed, and the error names them. Verify the relationship and re-read inventories
 before creating records. Re-running map on the installed mappings does not repeat
 the probe. `--dry-run` writes no probe.
 
+`--probe-prefix PREFIX` requires `--wait-activation`. It forms the id as
+`<PREFIX><uuid>`. The default remains a bare random UUID. A prefix is 1–64 ASCII
+characters, starts with a letter or digit, and may also contain `-` and `_`.
+The consent plan prints each full id. A type can still reject a prefixed id
+under its own schema rules. If a mapping was never written and you retry with
+`relationship map`, pass the same prefix with `--wait-activation`.
+
 `--json` adds `storage_activation`, including `interrupted`. `readable` means
 the probe was read within the deadline and its delete was confirmed; it does
 not establish cutover or prevent a later generic-store write. `not_confirmed`
-covers timeout, a refused create, interruption, or unresolved cleanup. The UUID
+covers timeout, a refused create, interruption, or unresolved cleanup. The full id
 is retained unless the result is `readable`. Ordinary unconfirmed probes keep
 the command successful and print the warning; interruption renders recovery
-details then exits non-zero (map retains its capture). `declined` writes no
-probe and keeps the warning. `not_needed` means no per-type entry was added.
+details then exits non-zero (map retains its capture).
+`not_needed` means no per-type entry was added.
 Without the flag the command only warns and omits `storage_activation`.
 `activation`, above, remains the relationship-end liveness wait.
 
