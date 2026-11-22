@@ -11,12 +11,32 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { buildIdentityPath, packageRoot } from "./paths.ts";
 
-function git(root: string, args: readonly string[]): string {
+function git(root: string, env: NodeJS.ProcessEnv, args: readonly string[]): string {
   return execFileSync("git", args, {
     cwd: root,
+    env,
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
   }).trim();
+}
+
+/** Read the identity of the checkout that tracks this package's manifest. */
+export function readCheckoutIdentity(root: string): { commit: string; dirty: boolean } | undefined {
+  // Discover the repository from the package directory. Inherited Git
+  // settings can redirect discovery, the worktree, the index or object and config reads.
+  const env = Object.fromEntries(
+    Object.entries(process.env).filter(([key]) => !key.toUpperCase().startsWith("GIT_")),
+  );
+  let commit: string;
+  let dirty: boolean;
+  try {
+    git(root, env, ["ls-files", "--error-unmatch", "--", "package.json"]);
+    commit = git(root, env, ["rev-parse", "--short=12", "HEAD"]);
+    dirty = git(root, env, ["status", "--porcelain", "--untracked-files=normal", "--", "."]) !== "";
+  } catch {
+    return undefined;
+  }
+  return { commit, dirty };
 }
 
 function identityPath(root: string): string {
@@ -33,18 +53,12 @@ export type BuildIdentityWrite =
  */
 export function writeBuildIdentity(root: string = packageRoot): BuildIdentityWrite {
   const path = identityPath(root);
-  let commit: string;
-  let dirty: boolean;
-  try {
-    // Git walks upward from unpacked trees. Accept its identity only when
-    // this package's own manifest belongs to the discovered repository.
-    git(root, ["ls-files", "--error-unmatch", "--", "package.json"]);
-    commit = git(root, ["rev-parse", "--short=12", "HEAD"]);
-    dirty = git(root, ["status", "--porcelain", "--untracked-files=normal", "--", "."]) !== "";
-  } catch {
+  const identity = readCheckoutIdentity(root);
+  if (identity === undefined) {
     if (existsSync(path)) rmSync(path);
     return { status: "unknown", path };
   }
+  const { commit, dirty } = identity;
   if (!/^[0-9a-f]{7,}$/.test(commit)) {
     throw new Error(`rhino-local: git rev-parse --short=12 HEAD returned ${JSON.stringify(commit)}`);
   }

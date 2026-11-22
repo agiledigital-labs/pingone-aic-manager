@@ -40,10 +40,10 @@ impl TokenCache {
     /// needs only enough life to arrive, while a token handed to an external
     /// process is out of our hands the moment we print it and has to outlive
     /// whatever that process does with it.
-    pub fn get_with_min_ttl(&self, min_ttl: i64) -> Option<&str> {
+    pub fn get_with_min_ttl(&self, min_ttl: i64) -> Option<(&str, i64)> {
         let now = unix_now();
         if self.expires_at > now && self.expires_at >= now + min_ttl {
-            self.token.as_deref()
+            self.token.as_deref().map(|token| (token, self.expires_at))
         } else {
             None
         }
@@ -51,6 +51,7 @@ impl TokenCache {
 
     pub fn get_valid(&self) -> Option<&str> {
         self.get_with_min_ttl(MIN_TTL_FOR_OUR_OWN_REQUEST)
+            .map(|(token, _)| token)
     }
 
     pub fn store(&mut self, token: String, expires_at: i64) {
@@ -340,11 +341,12 @@ mod tests {
     #[test]
     fn a_higher_floor_rejects_a_token_a_lower_floor_accepts() {
         let mut cache = TokenCache::new();
-        cache.store("t".into(), unix_now() + 500);
+        let expires_at = unix_now() + 500;
+        cache.store("t".into(), expires_at);
 
         assert_eq!(
             cache.get_with_min_ttl(MIN_TTL_FOR_OUR_OWN_REQUEST),
-            Some("t")
+            Some(("t", expires_at))
         );
         assert_eq!(cache.get_with_min_ttl(840), None);
     }
@@ -365,7 +367,7 @@ mod tests {
         let now = unix_now();
         let mut cache = TokenCache::new();
         cache.store("equal".into(), now + 120);
-        assert_eq!(cache.get_with_min_ttl(120), Some("equal"));
+        assert_eq!(cache.get_with_min_ttl(120), Some(("equal", now + 120)));
 
         cache.store("expired".into(), now - 1);
         assert_eq!(cache.get_with_min_ttl(0), None);

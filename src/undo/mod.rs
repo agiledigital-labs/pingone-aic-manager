@@ -773,18 +773,17 @@ mod tests {
 
     #[test]
     fn forget_tenant_removes_only_the_named_tenant_on_disk_log() {
-        let path = std::env::temp_dir().join(format!("aic-undo-{}.log", uuid::Uuid::new_v4()));
+        let dir = crate::config::TestDir::new();
+        let path = dir.path("undo.log");
         let mut log = DiskLog::load(path.clone()).unwrap();
         log.record(entry_for("uat", "keep")).unwrap();
         log.record(entry_for("UAT", "drop")).unwrap();
 
         assert_eq!(log.forget_tenant("UAT").unwrap(), 1);
-        let reloaded = DiskLog::load(path.clone()).unwrap();
+        let reloaded = DiskLog::load(path).unwrap();
         let listed = reloaded.list(10);
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].tenant, "uat");
-
-        let _ = fs::remove_file(path);
     }
 
     #[test]

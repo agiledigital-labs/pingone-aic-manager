@@ -61,9 +61,9 @@ describe("paths", () => {
   });
 
   it("uses the packed identity file when it is present, and never invents a commit", () => {
-    expect(packageVersion).toBe("0.4.0-emulator.2");
+    expect(packageVersion).toBe("0.4.0-emulator.3");
     if (!existsSync(buildIdentityPath)) {
-      expect(buildIdentity).toBe("0.4.0-emulator.2 (commit unknown)");
+      expect(buildIdentity).toBe("0.4.0-emulator.3 (commit unknown)");
       return;
     }
     const parsed = JSON.parse(readFileSync(buildIdentityPath, "utf8")) as { commit: string; dirty: boolean };

@@ -56,8 +56,9 @@ rechecks inventories after consent and before each probe, including hooks on man
 targets. Set checks config/managed for drift immediately before writing. This narrows the \
 window for overwriting a concurrent edit but cannot close it: the document has no conditional \
 write. Pause other managed-schema writers through the write. Changes or unreadable inventory \
-after writing report confirmed_writes and per-type results, then exit non-zero. A recheck \
-that starts but exceeds the shared deadline counts as unreadable inventory. Map retains its \
+after writing report confirmed_writes and per-type results, then exit non-zero. The \
+shared probe deadline starts after the first post-write inventory recheck. A later recheck \
+that starts but exceeds the deadline counts as unreadable inventory. Map retains its \
 capture and stops before restoring links. \
 Ctrl-C during a post-write survey also reports confirmed writes. A probe only runs when \
 adding a per-type entry.

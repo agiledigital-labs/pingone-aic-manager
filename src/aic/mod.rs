@@ -93,17 +93,18 @@ impl AicClient {
     pub async fn bearer(&self) -> Result<String> {
         self.bearer_with_min_ttl(auth::MIN_TTL_FOR_OUR_OWN_REQUEST)
             .await
+            .map(|(token, _)| token)
     }
 
-    /// A bearer with at least `min_ttl` seconds left, minting a fresh one if
+    /// A bearer and its expiry with at least `min_ttl` seconds left, minting a fresh one if
     /// the cached token is shorter-lived than that. If a fresh token cannot
     /// meet the floor, report the lifetime issued by the tenant.
-    pub async fn bearer_with_min_ttl(&self, min_ttl: i64) -> Result<String> {
+    pub async fn bearer_with_min_ttl(&self, min_ttl: i64) -> Result<(String, i64)> {
         // Check cache first
         {
             let cache = self.token_cache.lock().unwrap();
-            if let Some(t) = cache.get_with_min_ttl(min_ttl) {
-                return Ok(t.to_string());
+            if let Some((token, expires_at)) = cache.get_with_min_ttl(min_ttl) {
+                return Ok((token.to_string(), expires_at));
             }
         }
         // Mint a fresh token
@@ -113,7 +114,7 @@ impl AicClient {
             let mut cache = self.token_cache.lock().unwrap();
             cache.store(minted.access_token.clone(), minted.expires_at);
         }
-        Ok(minted.access_token)
+        Ok((minted.access_token, minted.expires_at))
     }
 
     /// Mint a token that carries only `scopes`, and do not store it.
@@ -454,7 +455,7 @@ fn gateway_retry_delay(status: reqwest::StatusCode, attempt: u32) -> Option<std:
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     fn tenant(base_url: String) -> Tenant {
@@ -481,7 +482,7 @@ mod tests {
         assert!(client.ensure_write_allowed(true).is_ok());
     }
 
-    fn synthetic_signing_key() -> serde_json::Value {
+    pub(crate) fn synthetic_signing_key() -> serde_json::Value {
         serde_json::json!({
             "kty":"RSA",
             "n":"AKpuDplQxCLK-rAKU07dO7TzfBy7kEzc_dfqET0uBLRifyWGGIX4IphLDLoY4-BcNWAP6hLRRRIP_FkYu1m2MPPuO7pOaua8ZaCzfyjXWt77G0OZP493fXndGKam3sy-UTKgMIN5DfJ557CCPFFN3IEX5I8QzUye8CRCnuyXBP-h",
@@ -499,7 +500,7 @@ mod tests {
         .await
     }
 
-    async fn token_endpoint_body(body: String) -> String {
+    pub(crate) async fn token_endpoint_body(body: String) -> String {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
@@ -526,7 +527,7 @@ mod tests {
         configured.scopes = vec!["fr:am:*".into()];
         let accepted = AicClient::new(configured, synthetic_signing_key());
         assert_eq!(
-            accepted.bearer_with_min_ttl(899).await.unwrap(),
+            accepted.bearer_with_min_ttl(899).await.unwrap().0,
             "narrow-token"
         );
 
