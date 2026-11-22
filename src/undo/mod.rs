@@ -13,7 +13,7 @@ pub mod view;
 
 use std::fs::{self, OpenOptions};
 use std::io::Write;
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
@@ -367,6 +367,15 @@ impl UndoLog for MemoryLog {
 pub struct DiskLog {
     path: PathBuf,
     entries: Vec<UndoEntry>,
+    #[cfg(test)]
+    rewrite_pause: Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>,
+    #[cfg(test)]
+    append_pause: Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>,
+}
+
+enum LockWait {
+    Blocking,
+    NoWait,
 }
 
 impl DiskLog {
@@ -381,34 +390,117 @@ impl DiskLog {
             std::env::current_dir()?.join(path)
         };
         let entries = load_entries(&path)?;
-        Ok(Self { path, entries })
+        Ok(Self {
+            path,
+            entries,
+            #[cfg(test)]
+            rewrite_pause: None,
+            #[cfg(test)]
+            append_pause: None,
+        })
     }
 
-    fn append_entry(&self, entry: &UndoEntry) -> Result<()> {
-        if !persistable(entry.sensitivity) {
-            return Ok(());
+    /// A rename replaces the log's inode, so every writer locks the same
+    /// sidecar. Hold the guard from before loading a rewrite snapshot until
+    /// after installing it, or through the entire append.
+    fn lock_mutations(&self, wait: LockWait) -> Result<fs::File> {
+        let parent = self.path.parent().expect("absolute undo log path");
+        fs::create_dir_all(parent)?;
+        let lock = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .mode(0o600)
+            .open(crate::statefile::lock_path(&self.path))?;
+        match wait {
+            LockWait::Blocking => lock.lock()?,
+            LockWait::NoWait => match lock.try_lock() {
+                Ok(()) => {}
+                Err(fs::TryLockError::WouldBlock) => {
+                    return Err(Error::Config(format!(
+                        "undo log is busy ({}); retry after the other operation finishes",
+                        self.path.display()
+                    )));
+                }
+                Err(fs::TryLockError::Error(error)) => return Err(error.into()),
+            },
         }
-        self.prepare_parent()?;
+        if parent.file_name() == Some(std::ffi::OsStr::new(".aic")) {
+            ProjectConfig::write_gitignore_to(parent)?;
+        }
+        Ok(lock)
+    }
+
+    /// Record immediately or refuse if another writer owns the mutation lock.
+    pub(crate) fn try_record(&mut self, entry: UndoEntry) -> Result<UndoId> {
+        self.record_with(entry, LockWait::NoWait)
+    }
+
+    fn record_with(&mut self, entry: UndoEntry, wait: LockWait) -> Result<UndoId> {
+        let id = entry.id;
+        if persistable(entry.sensitivity) {
+            self.append_entry(&entry, wait)?;
+        }
+        self.entries.push(entry);
+        Ok(id)
+    }
+
+    fn append_entry(&self, entry: &UndoEntry, wait: LockWait) -> Result<()> {
+        let _lock = self.lock_mutations(wait)?;
+        #[cfg(test)]
+        if let Some((paused, resume)) = &self.append_pause {
+            paused.send(()).unwrap();
+            resume.recv().unwrap();
+        }
         let mut file = OpenOptions::new()
             .create(true)
             .append(true)
+            .mode(0o600)
             .open(&self.path)?;
         writeln!(file, "{}", serde_json::to_string(entry)?)?;
         fs::set_permissions(&self.path, fs::Permissions::from_mode(0o600))?;
         Ok(())
     }
 
-    fn rewrite(&self) -> Result<()> {
-        self.prepare_parent()?;
+    fn update_entries<R>(
+        &mut self,
+        change: impl FnOnce(&mut Vec<UndoEntry>) -> Result<(R, bool)>,
+    ) -> Result<R> {
+        let _lock = self.lock_mutations(LockWait::Blocking)?;
+        // History views can outlive other writers. Use the current file under
+        // the lock, preserving entries this instance never persisted.
+        let mut entries = load_entries(&self.path)?;
+        entries.extend(
+            self.entries
+                .iter()
+                .filter(|entry| !persistable(entry.sensitivity))
+                .cloned(),
+        );
+        let (result, changed) = change(&mut entries)?;
+        if changed {
+            self.rewrite(&entries)?;
+        }
+        self.entries = entries;
+        Ok(result)
+    }
+
+    /// Only called by `update_entries`, with the mutation lock held.
+    fn rewrite(&self, entries: &[UndoEntry]) -> Result<()> {
+        #[cfg(test)]
+        if let Some((paused, resume)) = &self.rewrite_pause {
+            paused.send(()).unwrap();
+            resume.recv().unwrap();
+        }
         let tmp = self.path.with_extension("log.tmp");
         {
             let mut file = OpenOptions::new()
                 .create(true)
                 .write(true)
                 .truncate(true)
+                .mode(0o600)
                 .open(&tmp)?;
-            for entry in self
-                .entries
+            for entry in entries
                 .iter()
                 .filter(|entry| persistable(entry.sensitivity))
             {
@@ -419,29 +511,11 @@ impl DiskLog {
         fs::rename(tmp, &self.path)?;
         Ok(())
     }
-
-    /// Create the log parent. Write `.gitignore` only when that parent is
-    /// `.aic`, using that path rather than the process-global relative
-    /// [`ProjectConfig::dir`].
-    fn prepare_parent(&self) -> Result<()> {
-        let Some(parent) = self.path.parent() else {
-            return Ok(());
-        };
-        if parent.file_name() == Some(std::ffi::OsStr::new(".aic")) {
-            ProjectConfig::write_gitignore_to(parent)?;
-        } else {
-            fs::create_dir_all(parent)?;
-        }
-        Ok(())
-    }
 }
 
 impl UndoLog for DiskLog {
     fn record(&mut self, entry: UndoEntry) -> Result<UndoId> {
-        let id = entry.id;
-        self.append_entry(&entry)?;
-        self.entries.push(entry);
-        Ok(id)
+        self.record_with(entry, LockWait::Blocking)
     }
 
     fn list(&self, limit: usize) -> Vec<UndoSummary> {
@@ -457,12 +531,15 @@ impl UndoLog for DiskLog {
     }
 
     fn mark_applied(&mut self, id: UndoId, status: EntryStatus) -> Result<()> {
-        if let Some(entry) = self.entries.iter_mut().find(|entry| entry.id == id) {
+        self.update_entries(|entries| {
+            let entry = entries
+                .iter_mut()
+                .find(|entry| entry.id == id)
+                .ok_or_else(|| Error::Config(format!("undo entry not found: {id}")))?;
+            let changed = entry.status != status;
             entry.status = status;
-            self.rewrite()?;
-            return Ok(());
-        }
-        Err(Error::Config(format!("undo entry not found: {id}")))
+            Ok(((), changed))
+        })
     }
 
     fn latest_pending(&self, tenant: &str, executor: UndoExecutor) -> Option<UndoSummary> {
@@ -470,19 +547,23 @@ impl UndoLog for DiskLog {
     }
 
     fn expire_stale(&mut self, now: DateTime<Utc>) -> Result<usize> {
-        let count = expire_in_place(&mut self.entries, now);
-        if count > 0 {
-            self.rewrite()?;
+        // The startup sweep can skip an absent log without creating project
+        // files. Explicit mutations still lock before reading the log.
+        if !self.path.try_exists()? {
+            self.entries.retain(|entry| !persistable(entry.sensitivity));
+            return Ok(expire_in_place(&mut self.entries, now));
         }
-        Ok(count)
+        self.update_entries(|entries| {
+            let count = expire_in_place(entries, now);
+            Ok((count, count > 0))
+        })
     }
 
     fn forget_tenant(&mut self, tenant: &str) -> Result<usize> {
-        let count = forget_in_place(&mut self.entries, tenant);
-        if count > 0 {
-            self.rewrite()?;
-        }
-        Ok(count)
+        self.update_entries(|entries| {
+            let count = forget_in_place(entries, tenant);
+            Ok((count, count > 0))
+        })
     }
 }
 
@@ -704,6 +785,103 @@ mod tests {
         assert_eq!(listed[0].tenant, "uat");
 
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn disk_log_purge_waits_for_first_append() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let dir = crate::config::TestDir::new();
+        let path = dir.path("undo.log");
+        let mut writer = DiskLog::load(path.clone()).unwrap();
+        let mut purging = DiskLog::load(path.clone()).unwrap();
+
+        let (paused_tx, paused_rx) = mpsc::channel();
+        let (resume_tx, resume_rx) = mpsc::channel();
+        writer.append_pause = Some((paused_tx, resume_rx));
+        let appender =
+            std::thread::spawn(move || writer.record(entry_for("UAT", "first")).unwrap());
+        paused_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert!(!path.exists(), "the paused append already created the log");
+
+        let (started_tx, started_rx) = mpsc::channel();
+        let (purged_tx, purged_rx) = mpsc::channel();
+        let purger = std::thread::spawn(move || {
+            started_tx.send(()).unwrap();
+            let count = purging.forget_tenant("UAT").unwrap();
+            purged_tx.send(()).unwrap();
+            count
+        });
+        started_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        let purged_while_paused = purged_rx.recv_timeout(Duration::from_millis(300)).is_ok();
+        resume_tx.send(()).unwrap();
+        appender.join().unwrap();
+        let count = purger.join().unwrap();
+
+        assert_eq!(count, 1, "purge skipped the first append");
+        assert!(!purged_while_paused, "purge bypassed the append lock");
+        assert!(DiskLog::load(path).unwrap().list(10).is_empty());
+    }
+
+    #[test]
+    fn disk_log_retirement_preserves_appends_around_rewrite() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let dir = crate::config::TestDir::new();
+        let path = dir.path("undo.log");
+        let mut retiring = DiskLog::load(path.clone()).unwrap();
+        let rejected = retiring.record(entry("rejected write")).unwrap();
+        let mut writer = DiskLog::load(path.clone()).unwrap();
+        // A long-lived history view must reload under lock before rewriting.
+        let before_rewrite = writer.record(entry("before rewrite")).unwrap();
+
+        let (paused_tx, paused_rx) = mpsc::channel();
+        let (resume_tx, resume_rx) = mpsc::channel();
+        retiring.rewrite_pause = Some((paused_tx, resume_rx));
+        let rewriter = std::thread::spawn(move || {
+            retiring
+                .mark_applied(rejected, EntryStatus::Expired)
+                .unwrap();
+        });
+        // The rewriter has loaded the snapshot it is about to install.
+        paused_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+
+        let (started_tx, started_rx) = mpsc::channel();
+        let (appended_tx, appended_rx) = mpsc::channel();
+        let appender = std::thread::spawn(move || {
+            started_tx.send(()).unwrap();
+            let id = writer.record(entry("during rewrite")).unwrap();
+            appended_tx.send(()).unwrap();
+            id
+        });
+        started_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        let appended_while_paused = appended_rx.recv_timeout(Duration::from_millis(300)).is_ok();
+        resume_tx.send(()).unwrap();
+        rewriter.join().unwrap();
+        let during_rewrite = appender.join().unwrap();
+
+        let finished = DiskLog::load(path).unwrap();
+        assert_eq!(
+            finished.load(rejected).unwrap().status,
+            EntryStatus::Expired
+        );
+        assert_eq!(
+            finished
+                .load(during_rewrite)
+                .expect("concurrent append was erased")
+                .status,
+            EntryStatus::Pending
+        );
+        assert_eq!(
+            finished
+                .load(before_rewrite)
+                .expect("earlier append was erased")
+                .status,
+            EntryStatus::Pending
+        );
+        assert!(!appended_while_paused, "append bypassed the rewrite lock");
     }
 
     #[test]

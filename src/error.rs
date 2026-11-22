@@ -23,6 +23,10 @@ pub enum Error {
     #[error("Auth error: {0}")]
     Auth(String),
 
+    /// The daemon returned `Locked` instead of dispatching the API request.
+    #[error("Auth error: agent is locked — run `aic session login` (CLI) or unlock the TUI")]
+    AgentLocked,
+
     #[error(
         "agent is locked and no terminal is available to prompt.\n  Run `aic session login` first, or pipe the password:\n  printf '%s\\n' \"$PASSWORD\" | aic session login --password-stdin"
     )]

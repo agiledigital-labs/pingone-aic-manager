@@ -51,6 +51,7 @@ pub struct Flags {
     pub force: bool,
     pub yes: bool,
     pub wait_activation: Option<u64>,
+    pub probe_prefix: Option<activation::ProbePrefix>,
     pub json: bool,
 }
 impl From<Options> for Flags {
@@ -61,6 +62,7 @@ impl From<Options> for Flags {
             force: options.force.operation(),
             yes: options.yes,
             wait_activation: None,
+            probe_prefix: None,
             json: options.json,
         }
     }
@@ -218,12 +220,13 @@ fn output(flags: &Flags, value: &Value) -> Result<()> {
     Ok(())
 }
 
-fn stopped(path: &Path, capture: &Capture, error: Error) -> Error {
+fn stopped(path: &Path, capture: &Capture, flags: &Flags, error: Error) -> Error {
     let resume = match capture.origin {
         Origin::InPlace => format!(
-            "map {} --capture {} --force",
+            "map {} --capture {} --force{}",
             capture.pairs[0].forward.label(),
-            path.display()
+            path.display(),
+            activation::retry_flags(flags.wait_activation, flags.probe_prefix.as_ref())
         ),
         Origin::Promotion => format!("restore-links {} --force", path.display()),
     };
@@ -708,91 +711,165 @@ pub async fn map(
         );
     };
     let ok = ensure_prod_confirmed(&configured.name, flags.yes)?;
+    // Use fresh config to decide whether the switch needs probe consent.
+    // Do this before creating or updating the local capture.
+    let pair = capture.pairs[0].clone();
+    let managed = api::get_managed(ok.tenant).await?;
+    let repo = api::get_repo_ds(ok.tenant).await?;
+    let report = storage::pair(&managed, &repo, &object, &key)
+        .map_err(|reason| Error::Config(format!("Q14/schema guard: {reason}")))?;
+    let (plan, added, pending) = if storage::mode(&report) == storage::Mode::Generic {
+        if !matches!(capture.state, State::Captured | State::Switching) {
+            return Err(Error::Config(
+                "mapping disappeared after restore began; inspect before remapping".into(),
+            ));
+        }
+        conversion::guard(&pair, &managed, &repo, storage::Mode::Generic)?;
+        let plan = repair::plan_add(&managed, &repo, &object, &key).map_err(Error::Config)?;
+        if plan.addition().map(|addition| &addition.entries) != Some(&pair.mappings) {
+            return Err(Error::Config("column allocation changed since the capture; inspect before retrying with a new plan".into()));
+        }
+        let added = activation::added_type_names(plan.addition());
+        let pending = activation::prepare(
+            ok.tenant,
+            &added,
+            flags.wait_activation,
+            flags.force,
+            flags.probe_prefix.as_ref(),
+        )
+        .await?;
+        (Some(plan), added, pending)
+    } else {
+        (None, Vec::new(), activation::Pending::Quiet)
+    };
+    pending.recheck_before_write(ok.tenant, &added).await?;
     let mut file = FileSession::open(path.clone(), previous).await?;
     file.save(&capture).await?;
     let mut storage_activation = None;
+    let mut wrote_mapping = false;
     let result = async {
-        let pair = capture.pairs[0].clone();
-        let managed = api::get_managed(ok.tenant).await?;
-        let repo = api::get_repo_ds(ok.tenant).await?;
-        let report = storage::pair(&managed, &repo, &object, &key).map_err(|reason| Error::Config(format!("Q14/schema guard: {reason}")))?;
         match storage::mode(&report) {
             storage::Mode::Generic => {
-                if !matches!(capture.state, State::Captured | State::Switching) {
-                    return Err(Error::Config("mapping disappeared after restore began; inspect before remapping".into()));
-                }
-                conversion::guard(&pair, &managed, &repo, storage::Mode::Generic)?;
-                let plan = repair::plan_add(&managed, &repo, &object, &key).map_err(Error::Config)?;
-                if plan.addition().map(|addition| &addition.entries) != Some(&pair.mappings) {
-                    return Err(Error::Config("column allocation changed since the capture; inspect before retrying with a new plan".into()));
-                }
-                let added = activation::added_type_names(plan.addition());
-                let pending = activation::prepare(ok.tenant, &added, flags.wait_activation, flags.force).await?;
-                conversion::switch_with(&mut capture, &permit,
+                let plan = plan.expect("a generic pair has a switch plan");
+                conversion::switch_with(
+                    &mut capture,
+                    &permit,
                     async |capture| file.save(capture).await,
-                    async || { conversion::exact(&pair, &generic_snapshot(ok.tenant, &pair).await?)?; guard(ok.tenant, &pair, storage::Mode::Generic).await?; Ok(()) },
-                    async || write_plan(&ok, &pair, &plan, storage::Mode::Generic).await).await?;
-                storage_activation = activation::finish(ok.tenant, ok.confirmed_prod, &added, pending, &command).await?;
-                if storage_activation.as_ref().is_some_and(|a| a.interrupted) {
+                    async || {
+                        conversion::exact(&pair, &generic_snapshot(ok.tenant, &pair).await?)?;
+                        guard(ok.tenant, &pair, storage::Mode::Generic).await?;
+                        pending.recheck_before_write(ok.tenant, &added).await
+                    },
+                    async || write_plan(&ok, &pair, &plan, storage::Mode::Generic).await,
+                )
+                .await?;
+                wrote_mapping = true;
+                storage_activation =
+                    activation::finish(ok.tenant, ok.confirmed_prod, &added, pending, &command)
+                        .await
+                        .map_err(|error| {
+                            Error::Config(format!("config/repo.ds was written; {error}"))
+                        })?;
+                if storage_activation
+                    .as_ref()
+                    .and_then(activation::StorageActivation::stop_error)
+                    .is_some()
+                {
                     return Ok(());
                 }
-                let Some(records) = command.run(api::present_records(ok.tenant, &object, &key)).await else {
+                let Some(records) = command
+                    .run(api::present_records(ok.tenant, &object, &key))
+                    .await
+                else {
                     return Ok(());
                 };
                 let records = records?;
-                storage::no_orphans(&object, &key, column(&pair), &records).map_err(Error::Config)?;
-            },
+                storage::no_orphans(&object, &key, column(&pair), &records)
+                    .map_err(Error::Config)?;
+            }
             storage::Mode::Mapped => {
                 conversion::guard(&pair, &managed, &repo, storage::Mode::Mapped)?;
                 if matches!(capture.state, State::Captured | State::Switching) {
-                    let Some(records) = command.run(api::present_records(ok.tenant, &object, &key)).await else {
+                    let Some(records) = command
+                        .run(api::present_records(ok.tenant, &object, &key))
+                        .await
+                    else {
                         return Ok(());
                     };
                     let records = records?;
-                    storage::no_orphans(&object, &key, column(&pair), &records).map_err(Error::Config)?;
+                    storage::no_orphans(&object, &key, column(&pair), &records)
+                        .map_err(Error::Config)?;
                 }
-            },
-            storage::Mode::Mixed => return Err(Error::Config("pair is mixed; inspect mappings before resuming".into())),
+            }
+            storage::Mode::Mixed => {
+                return Err(Error::Config(
+                    "pair is mixed; inspect mappings before resuming".into(),
+                ));
+            }
         }
-        command.run(finish_restore(&ok, &mut capture, &mut file, &permit)).await.unwrap_or(Ok(()))
-    }.await;
-    result.map_err(|error| stopped(&path, &capture, error))?;
+        command
+            .run(finish_restore(&ok, &mut capture, &mut file, &permit))
+            .await
+            .unwrap_or(Ok(()))
+    }
+    .await;
+    result.map_err(|error| stopped(&path, &capture, &flags, error))?;
     if storage_activation.is_none() && flags.wait_activation.is_some() {
         storage_activation = activation::settle(
             ok.tenant,
             ok.confirmed_prod,
             &[],
             flags.wait_activation,
-            flags.yes,
+            flags.force,
             &command,
         )
         .await?;
     }
-    finish_map(&flags, &path, &capture, &mut storage_activation, &command)
+    finish_map(
+        &flags,
+        &path,
+        &capture,
+        wrote_mapping,
+        &mut storage_activation,
+        &command,
+    )
 }
 
 fn finish_map(
     flags: &Flags,
     path: &Path,
     capture: &Capture,
+    wrote_mapping: bool,
     storage_activation: &mut Option<activation::StorageActivation>,
     command: &activation::CommandInterrupt,
 ) -> Result<()> {
     let interrupted = command.mark(storage_activation);
+    let failure = if interrupted {
+        Some(activation::command_interrupted())
+    } else {
+        storage_activation
+            .as_ref()
+            .and_then(activation::StorageActivation::stop_error)
+    };
+    let mut body = json!({"capture": path, "links": capture.count(), "complete": failure.is_none(), "interrupted": interrupted,
+        "restored": capture.restored, "pending": capture.pending});
+    if failure.is_some() && wrote_mapping {
+        activation::report_confirmed_writes(&mut body, &["config/repo.ds"]);
+    }
+    activation::attach(&mut body, storage_activation.as_ref())?;
     if interrupted {
+        // Print recovery information even if stdout is blocked.
         eprintln!(
             "{}",
-            stopped(path, capture, activation::command_interrupted())
+            stopped(path, capture, flags, activation::command_interrupted())
         );
     }
-    let mut body = json!({"capture": path, "links": capture.count(), "complete": !interrupted, "interrupted": interrupted,
-        "restored": capture.restored, "pending": capture.pending});
-    activation::attach(&mut body, storage_activation.as_ref())?;
     output(flags, &body)?;
-    if interrupted {
-        return Err(activation::command_interrupted());
+    match failure {
+        Some(error) if interrupted => Err(error),
+        Some(error) => Err(stopped(path, capture, flags, error)),
+        None => Ok(()),
     }
-    activation::check_interrupted(storage_activation.as_ref())
 }
 
 async fn read_promotion(lower: &str, upper: &str) -> Result<conversion::PromotionRead> {
@@ -947,7 +1024,7 @@ pub async fn restore_links(
     let mut file = FileSession::open(path.clone(), Some(capture.clone())).await?;
     finish_restore(&ok, &mut capture, &mut file, &permit)
         .await
-        .map_err(|error| stopped(&path, &capture, error))?;
+        .map_err(|error| stopped(&path, &capture, &flags, error))?;
     output(
         &flags,
         &json!({"capture":path,"links":capture.count(),"complete":true}),
@@ -1254,9 +1331,10 @@ mod tests {
                 force: true,
                 yes: true,
                 wait_activation: Some(1),
+                probe_prefix: None,
                 json: true,
             };
-            finish_map(&flags, &path, &capture, &mut storage, &command)
+            finish_map(&flags, &path, &capture, false, &mut storage, &command)
                 .unwrap_err()
                 .exit_code()
         });
@@ -1432,6 +1510,12 @@ mod tests {
         let error = stopped(
             Path::new("capture.json"),
             &capture,
+            &Flags::from(Options {
+                dry_run: false,
+                force: OperationForce::default(),
+                yes: false,
+                json: false,
+            }),
             Error::Config("Q14: declaration disappeared".into()),
         )
         .to_string();

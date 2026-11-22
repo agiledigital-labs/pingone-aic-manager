@@ -3,6 +3,7 @@
 //! transaction id through ApiCall; relink_call assembles the tested wire shape.
 //! All HTTP goes through `aic::api` → agent. See `docs/api/10-managed-objects.md`.
 
+use crate::undo::{DiskLog, EntryStatus, UndoId, UndoLog};
 use crate::{Error, Result};
 use serde_json::Value;
 
@@ -584,8 +585,43 @@ pub async fn replace_managed_confirmed(
     expect: &[ConfigConfirm],
     confirmed_prod: bool,
 ) -> Result<()> {
-    replace_managed_confirmed_with(
+    replace_managed_confirmed_mode(tenant, base, doc, expect, confirmed_prod, None::<fn() -> _>)
+        .await
+}
+
+/// A consented probe checks the observed base immediately before writing.
+/// Run the caller's undo persistence only after preflight succeeds and before
+/// the first PUT, returning its entry id so a definitive rejection can
+/// retire it. The revisionless endpoint cannot make this check atomic.
+pub(super) async fn replace_managed_confirmed_against_base(
+    tenant: &str,
+    base: &Value,
+    doc: Value,
+    expect: &[ConfigConfirm],
+    confirmed_prod: bool,
+    before_first_put: impl FnOnce() -> Result<UndoId>,
+) -> Result<()> {
+    replace_managed_confirmed_mode(
+        tenant,
         base,
+        doc,
+        expect,
+        confirmed_prod,
+        Some(before_first_put),
+    )
+    .await
+}
+
+async fn replace_managed_confirmed_mode(
+    tenant: &str,
+    base: &Value,
+    doc: Value,
+    expect: &[ConfigConfirm],
+    confirmed_prod: bool,
+    before_first_put: Option<impl FnOnce() -> Result<UndoId>>,
+) -> Result<()> {
+    replace_managed_confirmed_with(
+        (base, before_first_put),
         doc,
         expect,
         || get_managed(tenant),
@@ -601,7 +637,7 @@ pub async fn replace_managed_confirmed(
 /// closures returning futures rather than `AsyncFn`: the TUI spawns these
 /// writes, and an async closure's future cannot be proven `Send` there.
 async fn replace_managed_confirmed_with<G, R, P>(
-    base: &Value,
+    (base, before_first_put): (&Value, Option<impl FnOnce() -> Result<UndoId>>),
     doc: Value,
     expect: &[ConfigConfirm],
     mut get: impl FnMut() -> G,
@@ -619,18 +655,53 @@ where
             "managed config write requires at least one confirmation condition".into(),
         ));
     }
+    let require_base = before_first_put.is_some();
+    let check_base = |observed: &Value| {
+        if require_base && observed != base {
+            Err(Error::Config("config/managed changed since the relationship was planned; refusing to overwrite it. Re-read the configuration and retry".into()))
+        } else {
+            Ok(())
+        }
+    };
     let current = get().await?;
+    check_base(&current)?;
     let baselines = [base, &current];
     if crate::managed::verify::needs_repo_ds(&baselines, &doc) {
         let repo_ds = get_repo_ds().await?;
         crate::managed::verify::transition_refusal(&baselines, &doc, &repo_ds)
             .map_err(Error::Config)?;
+        if require_base {
+            check_base(&get().await?)?;
+        }
     }
+
+    let undo_id = before_first_put.map(|persist| persist()).transpose()?;
 
     const ATTEMPTS: u32 = 6;
     let mut failed = None;
     for attempt in 0..ATTEMPTS {
         if let Err(error) = put(doc.clone()).await {
+            // A typed pre-dispatch refusal or an HTTP rejection can only
+            // rule out this attempt. Keep undo if an earlier PUT could have
+            // landed or if this reply does not establish rejection.
+            let refused = match &error {
+                Error::AgentLocked | Error::ProdConfirmRequired => true,
+                Error::Api { status, .. } => (400..500).contains(status) && *status != 408,
+                _ => false,
+            };
+            if attempt == 0
+                && refused
+                && let Some(id) = undo_id
+            {
+                if let Err(retire) = DiskLog::load_default()
+                    .and_then(|mut log| log.mark_applied(id, EntryStatus::Expired))
+                {
+                    eprintln!(
+                        "warning: could not retire undo entry {id} for the rejected managed write: {retire}"
+                    );
+                }
+                return Err(error);
+            }
             return settle_failed_put(error, expect, (&baselines, &doc), get().await, tenant);
         }
         let fetched = get().await?;
@@ -640,6 +711,15 @@ where
         }
         if attempt + 1 < ATTEMPTS {
             tokio::time::sleep(std::time::Duration::from_millis(500 * (1 << attempt))).await;
+            if require_base {
+                let fresh = get().await?;
+                if expect.iter().all(|condition| condition.holds(&fresh)) {
+                    return Ok(());
+                }
+                check_base(&fresh).map_err(|error| Error::Config(format!(
+                    "{error}. An earlier config/managed PUT was accepted but its result was not confirmed"
+                )))?;
+            }
         }
     }
 
@@ -1100,7 +1180,7 @@ mod tests {
             let puts = std::cell::Cell::new(0);
             let stored = std::cell::RefCell::new(before.clone());
             let result = replace_managed_confirmed_with(
-                &before,
+                (&before, None::<fn() -> _>),
                 after.clone(),
                 &[ConfigConfirm::DocumentEquals(after.clone())],
                 || std::future::ready(Ok(stored.borrow().clone())),
@@ -1135,7 +1215,7 @@ mod tests {
         for (base, refused) in [(&before, true), (&after, false)] {
             let puts = std::cell::Cell::new(0);
             let result = replace_managed_confirmed_with(
-                base,
+                (base, None::<fn() -> _>),
                 after.clone(),
                 &[ConfigConfirm::DocumentEquals(after.clone())],
                 || std::future::ready(Ok(after.clone())),
@@ -1184,7 +1264,7 @@ mod tests {
             let puts = std::cell::Cell::new(0);
             let stored = std::cell::RefCell::new(before.clone());
             let result = replace_managed_confirmed_with(
-                &before,
+                (&before, None::<fn() -> _>),
                 after.clone(),
                 &[ConfigConfirm::DocumentEquals(after.clone())],
                 || std::future::ready(Ok(stored.borrow().clone())),
@@ -1256,7 +1336,7 @@ mod tests {
             let stored = std::cell::RefCell::new(before.clone());
             let error = std::cell::RefCell::new(Some(error));
             let result = replace_managed_confirmed_with(
-                &before,
+                (&before, None::<fn() -> _>),
                 after.clone(),
                 &[ConfigConfirm::ObjectPresent {
                     name: "custom_widget".into(),
@@ -1287,7 +1367,7 @@ mod tests {
         let theirs = json!({"objects": [widget(json!({"y": {}})), other.clone()]});
         let reads = std::cell::RefCell::new(vec![theirs, after.clone()]);
         let result = replace_managed_confirmed_with(
-            &before,
+            (&before, None::<fn() -> _>),
             after.clone(),
             &[ConfigConfirm::ObjectPresent {
                 name: "custom_widget".into(),

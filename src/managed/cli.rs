@@ -304,6 +304,9 @@ pub enum RelationshipCommand {
             long_help = super::activation::WAIT_ACTIVATION_LONG
         )]
         wait_activation: Option<u64>,
+        /// Prefix to prepend to the probe UUID (1–64 ASCII letters, digits, '-' or '_', starting with a letter or digit).
+        #[arg(long, value_name = "PREFIX", requires = "wait_activation", value_parser = activation::parse_probe_prefix)]
+        probe_prefix: Option<activation::ProbePrefix>,
         #[arg(long)]
         json: bool,
     },
@@ -374,6 +377,9 @@ pub enum RelationshipCommand {
             long_help = super::activation::WAIT_ACTIVATION_LONG
         )]
         wait_activation: Option<u64>,
+        /// Prefix to prepend to the probe UUID (1–64 ASCII letters, digits, '-' or '_', starting with a letter or digit).
+        #[arg(long, value_name = "PREFIX", requires = "wait_activation", value_parser = activation::parse_probe_prefix)]
+        probe_prefix: Option<activation::ProbePrefix>,
         #[arg(long)]
         json: bool,
     },
@@ -961,6 +967,7 @@ async fn relationship(command: RelationshipCommand) -> Result<()> {
             check,
             force: _,
             wait_activation,
+            probe_prefix,
             json,
         } => {
             if let Some(seconds) = wait_activation {
@@ -1102,23 +1109,73 @@ async fn relationship(command: RelationshipCommand) -> Result<()> {
                 output(json, &body)?;
                 return activation_check(&source_object, &key, &unverified, false);
             }
-            record_config_undo(
-                &tenant,
-                &doc,
-                &updated,
-                format!("Revert relationship {source_object}.{key}"),
-            )?;
             let expect = relationship_expectations(&doc, &updated)?;
             let mapped = storage::set_with(
                 property.is_none(),
-                async || put_managed(&ok, &doc, updated.clone(), &expect).await,
                 async || {
+                    if wait_activation.is_none() || property.is_some() {
+                        return Ok(None);
+                    }
+                    let added = {
+                        let repo = api::get_repo_ds(&tenant).await?;
+                        let pair = storage::pair(&updated, &repo, &source_object, &key)
+                            .map_err(crate::Error::Config)?;
+                        if storage::mode(&pair) == storage::Mode::Mapped {
+                            Vec::new()
+                        } else {
+                            let plan = repair::plan_add(&updated, &repo, &source_object, &key)
+                                .map_err(crate::Error::Config)?;
+                            activation::added_type_names(plan.addition())
+                        }
+                    };
+                    let pending = activation::prepare(
+                        &tenant,
+                        &added,
+                        wait_activation,
+                        activation_force,
+                        probe_prefix.as_ref(),
+                    )
+                    .await?;
+                    Ok(Some((added, pending)))
+                },
+                async |prepared: &Option<(Vec<String>, activation::Pending)>| {
+                    if let Some((added, pending)) = prepared {
+                        pending.recheck_before_write(&tenant, added).await?;
+                    }
+                    let entry = config_undo_entry(
+                        &tenant,
+                        &doc,
+                        &updated,
+                        format!("Revert relationship {source_object}.{key}"),
+                    );
+                    let mut undo = DiskLog::load_default()?;
+                    if prepared
+                        .as_ref()
+                        .is_some_and(|(_, pending)| pending.will_probe())
+                    {
+                        api::replace_managed_confirmed_against_base(
+                            &tenant,
+                            &doc,
+                            updated.clone(),
+                            &expect,
+                            ok.confirmed_prod,
+                            // A blocking append here would age the final schema read.
+                            || undo.try_record(entry),
+                        )
+                        .await
+                    } else {
+                        undo.record(entry)?;
+                        put_managed(&ok, &doc, updated.clone(), &expect).await
+                    }
+                },
+                async |pending| {
                     map_created_pair(
                         &ok,
                         &source_object,
                         &key,
                         wait_activation,
-                        activation_force,
+                        probe_prefix.as_ref(),
+                        pending,
                         &command,
                     )
                     .await
@@ -1127,15 +1184,19 @@ async fn relationship(command: RelationshipCommand) -> Result<()> {
             .await?;
             confirmation(&format!("relationship {source_object}.{key} set"));
             if let Some((mapping, Some(storage))) = &mapped
-                && storage.interrupted
+                && let Some(error) = storage.stop_error()
             {
                 let mut body = serde_json::json!({
                     "changed": changed_objects(&doc, &updated)?,
                     "mapping_verification": mapping,
                 });
+                activation::report_confirmed_writes(
+                    &mut body,
+                    &["config/managed", "config/repo.ds"],
+                );
                 activation::attach(&mut body, Some(storage))?;
                 output(json, &body)?;
-                return Err(activation::command_interrupted());
+                return Err(error);
             }
             let remaining = command
                 .run(async {
@@ -1517,6 +1578,7 @@ async fn relationship(command: RelationshipCommand) -> Result<()> {
             tenant,
             yes,
             wait_activation,
+            probe_prefix,
             json,
         } => {
             super::conversion_cli::map(
@@ -1529,6 +1591,7 @@ async fn relationship(command: RelationshipCommand) -> Result<()> {
                     force: activation_force,
                     yes,
                     wait_activation,
+                    probe_prefix,
                     json,
                 },
             )
@@ -2149,12 +2212,14 @@ async fn map_created_pair(
     object: &str,
     key: &str,
     wait_activation: Option<u64>,
-    force: bool,
+    probe_prefix: Option<&activation::ProbePrefix>,
+    prepared_probe: Option<(Vec<String>, activation::Pending)>,
     command: &activation::CommandInterrupt,
 ) -> Result<(
     Option<VerificationOutput>,
     Option<activation::StorageActivation>,
 )> {
+    let retry_probe = activation::retry_flags(wait_activation, probe_prefix);
     let field = format!("{object}.{key}");
     let mut generic = false;
     let prepared = async {
@@ -2177,7 +2242,7 @@ async fn map_created_pair(
         crate::Error::Config(format!(
             "config/managed was written, but mapping {field} was not attempted: {error}. {} \
              Run `aic managed relationship verify {field}`; if generic, finish with \
-             `aic managed relationship map {field} --force` before writing links",
+             `aic managed relationship map {field} --force{retry_probe}` before writing links",
             if generic {
                 "The pair remains a consistent generic pair unless another writer changed it."
             } else {
@@ -2187,20 +2252,25 @@ async fn map_created_pair(
     })?;
     let mut storage_activation = if let Some(plan) = prepared {
         let added = activation::added_type_names(plan.addition());
-        let pending = activation::prepare(ok.tenant, &added, wait_activation, force)
+        let pending = match prepared_probe {
+            Some((consented_types, pending)) if added == consented_types => pending,
+            Some(_) => {
+                return Err(crate::Error::Config(format!(
+                    "config/managed was written, but mapping {field} was not attempted: planned per-type stores changed since probe consent; nothing probed. Verify the relationship before retrying relationship map {field} --force{retry_probe}"
+                )));
+            }
+            None => activation::prepare(ok.tenant, &added, None, false, None).await?,
+        };
+        let permit = repair::authorize(false, true)
+            .ok_or_else(|| crate::Error::Config("mapping authorization failed".into()))?;
+        apply_mapping(ok, &plan, &permit, &retry_probe).await?;
+        activation::finish(ok.tenant, ok.confirmed_prod, &added, pending, command)
             .await
             .map_err(|error| {
                 crate::Error::Config(format!(
-                    "config/managed was written, but mapping {field} was not attempted: {error}. \
-                     The pair remains generic unless another writer changed it. Re-run \
-                     `aic managed relationship map {field} --wait-activation --force` to add the \
-                     mapping and probe"
+                    "config/managed and config/repo.ds were written for {field}; {error}"
                 ))
-            })?;
-        let permit = repair::authorize(false, true)
-            .ok_or_else(|| crate::Error::Config("mapping authorization failed".into()))?;
-        apply_mapping(ok, &plan, &permit).await?;
-        activation::finish(ok.tenant, ok.confirmed_prod, &added, pending, command).await?
+            })?
     } else {
         check_orphans(ok.tenant, object, key, "existing mapping").await?;
         activation::settle(
@@ -2208,13 +2278,17 @@ async fn map_created_pair(
             ok.confirmed_prod,
             &[],
             wait_activation,
-            force,
+            false,
             command,
         )
         .await?
     };
     // Return directly to rendering recovery evidence after bounded cleanup.
-    if storage_activation.as_ref().is_some_and(|a| a.interrupted) {
+    if storage_activation
+        .as_ref()
+        .and_then(activation::StorageActivation::stop_error)
+        .is_some()
+    {
         return Ok((None, storage_activation));
     }
     let Some(verification) = command
@@ -2243,13 +2317,14 @@ async fn apply_mapping(
     ok: &WriteOk<'_>,
     plan: &repair::Plan,
     permit: &repair::WritePermit,
+    retry_probe: &str,
 ) -> Result<repair::Applied> {
     let field = plan.label();
     let applied = send_repo_change(ok, plan, permit).await.map_err(|failure| crate::Error::Config(match failure {
         repair::Failure::NotWritten(error) => format!(
             "mapping {field} was not written: {error}. This command sent no mapping PUT. \
              If no other writer changed it, the pair remains consistent and generic. \
-             Verify its current state, then finish with `aic managed relationship map {field} --force` \
+             Verify its current state, then finish with `aic managed relationship map {field} --force{retry_probe}` \
              after pausing all link writers"),
         repair::Failure::SendFailed { error, backup } => format!(
             "mapping {field} PUT failed ({error}); whether it landed is unknown. \
@@ -3762,10 +3837,18 @@ fn record_config_undo(
     previous: &Value,
     updated: &Value,
     description: String,
-) -> Result<()> {
+) -> Result<crate::undo::UndoId> {
+    DiskLog::load_default()?.record(config_undo_entry(tenant, previous, updated, description))
+}
+
+fn config_undo_entry(
+    tenant: &str,
+    previous: &Value,
+    updated: &Value,
+    description: String,
+) -> crate::undo::UndoEntry {
     use crate::undo::{Capability, ConflictCheck, Sensitivity, UndoEntry, UndoOp};
-    let mut undo = DiskLog::load_default()?;
-    undo.record(UndoEntry::pending(
+    UndoEntry::pending(
         tenant.to_string(),
         "managed",
         description,
@@ -3778,8 +3861,7 @@ fn record_config_undo(
         ConflictCheck::ContentEqualsAfter {
             body: updated.clone(),
         },
-    ))?;
-    Ok(())
+    )
 }
 
 pub(super) fn parse_object_key(value: &str) -> Result<(String, String)> {
@@ -4178,6 +4260,50 @@ mod tests {
                 }
             })
         ));
+    }
+
+    #[test]
+    fn probe_prefix_accepts_only_safe_path_prefixes_on_set_and_map() {
+        use clap::error::ErrorKind;
+        for verb in ["set", "map"] {
+            let mut args = vec!["aic", "managed", "relationship", verb, "thing.owner"];
+            if verb == "set" {
+                args.extend(["--target", "other", "--forward", "one"]);
+            }
+            let missing_wait = args.iter().copied().chain(["--probe-prefix", "sample-"]);
+            assert_eq!(
+                Cli::try_parse_from(missing_wait).unwrap_err().kind(),
+                ErrorKind::MissingRequiredArgument
+            );
+            args.push("--wait-activation");
+            let max = "a".repeat(64);
+            let too_long = "a".repeat(65);
+            for value in ["a", "sample_123-", max.as_str()] {
+                let input = args.iter().copied().chain(["--probe-prefix", value]);
+                assert!(Cli::try_parse_from(input).is_ok(), "{verb}: {value:?}");
+            }
+            for value in [
+                "",
+                "_reserved",
+                "a/b",
+                "a%2fb",
+                ".",
+                "..",
+                "a.b",
+                "a?b",
+                "a#b",
+                "a b",
+                "é",
+                too_long.as_str(),
+            ] {
+                let input = args.iter().copied().chain(["--probe-prefix", value]);
+                assert_eq!(
+                    Cli::try_parse_from(input).unwrap_err().kind(),
+                    ErrorKind::ValueValidation,
+                    "{verb}: {value:?}"
+                );
+            }
+        }
     }
 
     #[test]

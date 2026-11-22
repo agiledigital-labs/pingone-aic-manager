@@ -31,8 +31,9 @@ read it by id, delete it, and confirm the delete. SECONDS bounds create/read wai
 types (default 60, from 1 to 3600); no create starts after expiry. Each started type gets a \
 separate 15-second cleanup allowance, including up to ten seconds settling an outstanding \
 create. Cleanup requests wait at most two seconds and transient DELETE failures retry. The \
-create-only POST carries a caller-chosen UUID, printed before dispatch, and is never retried. \
-An unsettled create or unresolved cleanup is reported with its UUID for manual removal. \
+create-only POST sends the id shown in the plan and is never retried. By default the id is a \
+random UUID. --probe-prefix prepends a literal prefix to that UUID. \
+An unsettled create or unresolved cleanup is reported with its full id for manual removal. \
 Ctrl-C is latched until bounded cleanup finishes, then exits non-zero. After a normal probe, \
 Ctrl-C also interrupts remaining verification/restoration waits; map reports confirmed restored \
 links and any unresolved request, and retains its capture.
@@ -50,15 +51,76 @@ The command names every script-shaped hook, including file-backed hooks and any 
 firing behavior is unknown where unmeasured for this probe. It refuses even with --force if \
 either config/managed or config/sync cannot be inventoried. Otherwise it lists hooks and \
 mappings and asks before writing. --force skips the probe prompt; --yes is only the production gate. On map, --force approves both conversion and probe. \
-A non-interactive run without --force refuses before any probe record is created. On relationship \
-set the schema write has already landed and the per-type entry is not added: finish with \
-relationship map --wait-activation --force. On relationship map nothing is switched.
+A refusal without --force happens before any tenant write on set and map. The command \
+rechecks inventories after consent and before each probe, including hooks on managed sync \
+targets. Set checks config/managed for drift immediately before writing. This narrows the \
+window for overwriting a concurrent edit but cannot close it: the document has no conditional \
+write. Pause other managed-schema writers through the write. Changes or unreadable inventory \
+after writing report confirmed_writes and per-type results, then exit non-zero. A recheck \
+that starts but exceeds the shared deadline counts as unreadable inventory. Map retains its \
+capture and stops before restoring links. \
+Ctrl-C during a post-write survey also reports confirmed writes. A probe only runs when \
+adding a per-type entry.
 
---json adds storage_activation with outcome readable, not_confirmed, declined, or not_needed, \
+--json adds storage_activation with outcome readable, not_confirmed, refused, or not_needed, \
 and interrupted. Recovery ids are retained unless readable. The JSON report is rendered before \
 an interrupted command exits non-zero. This is separate from activation, the relationship-end \
 liveness wait. --dry-run writes no probe. A type rejecting the empty content plus _id (required \
 fields) ends not_confirmed and is not retried. Without the flag the command only warns.";
+
+/// A literal prefix safe to use unescaped in an IDM record path.
+#[derive(Debug, Clone)]
+pub struct ProbePrefix(String);
+
+pub(crate) fn parse_probe_prefix(value: &str) -> std::result::Result<ProbePrefix, &'static str> {
+    if !(1..=64).contains(&value.len())
+        || !value.as_bytes()[0].is_ascii_alphanumeric()
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    {
+        return Err(
+            "expected 1 to 64 ASCII characters, starting with a letter or digit and containing only letters, digits, '-' or '_'",
+        );
+    }
+    Ok(ProbePrefix(value.into()))
+}
+
+pub(crate) fn retry_flags(wait_seconds: Option<u64>, prefix: Option<&ProbePrefix>) -> String {
+    let Some(seconds) = wait_seconds else {
+        return String::new();
+    };
+    let mut flags = format!(" --wait-activation={seconds}");
+    if let Some(prefix) = prefix {
+        use std::fmt::Write;
+        let _ = write!(flags, " --probe-prefix {}", prefix.0);
+    }
+    flags
+}
+
+struct ProbeRecord {
+    object: String,
+    id: String,
+}
+
+impl ProbeRecord {
+    fn new(object: &str, prefix: Option<&ProbePrefix>) -> Self {
+        let prefix = prefix.map_or("", |prefix| prefix.0.as_str());
+        Self {
+            object: object.into(),
+            id: format!("{prefix}{}", uuid::Uuid::new_v4()),
+        }
+    }
+}
+
+fn probe_plan_text(effects: &[SideEffects], records: &[ProbeRecord]) -> String {
+    let mut plan = plan_text(effects);
+    for record in records {
+        use std::fmt::Write;
+        let _ = write!(plan, "\n  managed/{} probe id {}", record.object, record.id);
+    }
+    plan
+}
 
 /// What to do with a per-type entry that was, or was not, added.
 #[derive(Debug, PartialEq, Eq)]
@@ -104,6 +166,8 @@ pub(crate) struct SideEffects {
     pub hooks_unknown: bool,
     pub mappings: Vec<String>,
     pub mappings_unknown: bool,
+    hook_content: Value,
+    mapping_content: Value,
 }
 
 pub(crate) fn side_effects(
@@ -131,6 +195,32 @@ pub(crate) fn side_effects(
         hooks_unknown,
         mappings,
         mappings_unknown,
+        hook_content: object
+            .map(|object| {
+                present_hooks(object)
+                    .into_iter()
+                    .map(|key| (key.clone(), object[&key].clone()))
+                    .collect::<serde_json::Map<String, Value>>()
+            })
+            .map(Value::Object)
+            .unwrap_or(Value::Null),
+        mapping_content: sync
+            .and_then(|doc| doc.get("mappings"))
+            .and_then(Value::as_array)
+            .map(|items| {
+                Value::Array(
+                    items
+                        .iter()
+                        .filter(|item| {
+                            let resource = format!("managed/{object_name}");
+                            item.get("source").and_then(Value::as_str) == Some(&resource)
+                                || item.get("target").and_then(Value::as_str) == Some(&resource)
+                        })
+                        .cloned()
+                        .collect(),
+                )
+            })
+            .unwrap_or_else(|| json!([])),
     }
 }
 
@@ -447,32 +537,14 @@ pub(crate) fn not_needed() -> StorageActivation {
     }
 }
 
-pub(crate) fn declined(objects: &[String]) -> StorageActivation {
-    StorageActivation {
-        interrupted: false,
-        outcome: "declined",
-        seconds: None,
-        timeout_seconds: None,
-        objects: objects
-            .iter()
-            .map(|object| ObjectProbe {
-                object: object.clone(),
-                outcome: "declined",
-                seconds: None,
-                id: None,
-                detail: None,
-            })
-            .collect(),
-        detail: Some("probe declined; no record written".to_string()),
-    }
-}
-
 pub(crate) fn from_objects(
     timeout: Duration,
     seconds: f64,
     objects: Vec<ObjectProbe>,
 ) -> StorageActivation {
-    let outcome = if objects.iter().all(|object| object.outcome == "readable") {
+    let outcome = if objects.iter().any(|object| object.outcome == "refused") {
+        "refused"
+    } else if objects.iter().all(|object| object.outcome == "readable") {
         "readable"
     } else {
         "not_confirmed"
@@ -486,8 +558,13 @@ pub(crate) fn from_objects(
         outcome,
         seconds: Some(seconds),
         timeout_seconds: Some(timeout.as_secs()),
-        detail: (outcome != "readable")
-            .then(|| format!("{failed} of {} not confirmed", objects.len())),
+        detail: match outcome {
+            "readable" => None,
+            "refused" => {
+                Some("probe consent could no longer be verified; see per-type outcomes".into())
+            }
+            _ => Some(format!("{failed} of {} not confirmed", objects.len())),
+        },
         objects,
     }
 }
@@ -523,26 +600,86 @@ pub(crate) fn added_type_names(addition: Option<&storage::Addition>) -> Vec<Stri
         .unwrap_or_default()
 }
 
-/// Decided before the `repo.ds` write. `Probe` has already asked, when a
+/// Decided before the first tenant write. `Probe` has already asked, when a
 /// prompt was required.
 pub(crate) enum Pending {
     Quiet,
     Warn,
     NotNeeded,
-    Probe {
-        timeout: Duration,
-        consent: ProbeConsent,
-    },
+    Probe(ProbePlan),
+}
+
+impl Pending {
+    pub(crate) fn will_probe(&self) -> bool {
+        matches!(self, Self::Probe(_))
+    }
+
+    /// Check again after the operator has had time to consider the prompt.
+    pub(crate) async fn recheck_before_write(&self, tenant: &str, added: &[String]) -> Result<()> {
+        if let Self::Probe(plan) = self {
+            let io = TenantIo {
+                tenant: tenant.into(),
+                confirmed_prod: false,
+            };
+            check_inventory(&io, added, &plan.effects).await?;
+        }
+        Ok(())
+    }
+}
+
+async fn check_inventory(
+    io: &impl ProbeIo,
+    added: &[String],
+    expected: &[SideEffects],
+) -> Result<()> {
+    let current = load_effects_with(io, added).await;
+    require_inventory(&current)?;
+    if current != expected {
+        return Err(Error::Config(
+            "probe refused: hooks or sync mappings changed since consent".into(),
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) struct ProbePlan {
+    timeout: Duration,
+    effects: Vec<SideEffects>,
+    records: Vec<ProbeRecord>,
 }
 
 /// Print the probe plan and ask, when a probe will run. Call this before the
-/// `repo.ds` write so a non-interactive refusal creates no record and adds no
-/// per-type entry.
+/// first tenant write so a refusal leaves the tenant unchanged.
 pub(crate) async fn prepare(
     tenant: &str,
     added: &[String],
     wait_seconds: Option<u64>,
     force: bool,
+    prefix: Option<&ProbePrefix>,
+) -> Result<Pending> {
+    let io = TenantIo {
+        tenant: tenant.into(),
+        confirmed_prod: false,
+    };
+    prepare_with(&io, added, wait_seconds, prefix, || {
+        if force {
+            return Ok(true);
+        }
+        crate::cli::confirm_destructive(
+            "storage activation probe",
+            "create, read, and delete one probe record in each new per-type store named above?",
+            "--force",
+        )
+    })
+    .await
+}
+
+async fn prepare_with(
+    io: &impl ProbeIo,
+    added: &[String],
+    wait_seconds: Option<u64>,
+    prefix: Option<&ProbePrefix>,
+    confirm: impl FnOnce() -> Result<bool>,
 ) -> Result<Pending> {
     let timeout = match follow_up(added.len(), wait_seconds)
         .map_err(|error| Error::Config(error.to_string()))?
@@ -552,30 +689,27 @@ pub(crate) async fn prepare(
         FollowUp::NotNeeded => return Ok(Pending::NotNeeded),
         FollowUp::Probe(timeout) => timeout,
     };
-    let effects = load_effects(tenant, added).await;
-    eprintln!("{}", plan_text(&effects));
+    let effects = load_effects_with(io, added).await;
+    let records = added
+        .iter()
+        .map(|name| ProbeRecord::new(name, prefix))
+        .collect::<Vec<_>>();
+    eprintln!("{}", probe_plan_text(&effects, &records));
     require_inventory(&effects)?;
-    let granted = if force {
-        consent(true, None)
-    } else {
-        let answered = crate::cli::confirm_destructive(
-            "storage activation probe",
-            "create, read, and delete one probe record in each new per-type store named above?",
-            "--force",
-        )?;
-        consent(false, Some(answered))
+    let granted = consent(false, Some(confirm()?)).map_err(|error| Error::Config(error.into()))?;
+    if granted == ProbeConsent::Declined {
+        return Err(Error::Config("probe declined; nothing written".into()));
     }
-    .map_err(|error| Error::Config(error.to_string()))?;
-    Ok(Pending::Probe {
+    Ok(Pending::Probe(ProbePlan {
         timeout,
-        consent: granted,
-    })
+        effects,
+        records,
+    }))
 }
 
 /// Carry out [`prepare`]'s decision after the per-type entry is confirmed.
-/// A declined probe and an unconfirmed one both return `Ok`: the mapping has
-/// already landed. The `Err` from [`prepare`] is the refusal that happens
-/// before that write.
+/// Return a report even on a refusal after the mapping landed so callers
+/// can attach completed work and recovery evidence before exiting.
 pub(crate) async fn finish(
     tenant: &str,
     confirmed_prod: bool,
@@ -613,27 +747,50 @@ async fn finish_with(
             eprintln!("no new per-type repo.ds entry; storage activation was not probed");
             not_needed()
         }
-        Pending::Probe {
-            consent: ProbeConsent::Declined,
-            ..
-        } => {
-            if let Some(warning) = storage::activation_warning_for(added) {
-                eprintln!("{warning}");
-            }
-            eprintln!("probe declined; no record written");
-            declined(added)
-        }
-        Pending::Probe {
+        Pending::Probe(ProbePlan {
             timeout,
-            consent: ProbeConsent::Granted,
-        } => {
+            effects,
+            records,
+        }) => {
+            // Configuration is already confirmed. Latch SIGINT before any
+            // survey request can block, even though nothing needs cleanup yet.
             command
                 .interrupt
                 .cleanup_done
                 .store(false, Ordering::SeqCst);
             command.listen()?;
-            let activation =
-                probe_types_with(io, added, timeout, LIMITS, command.interrupt.clone()).await;
+            let activation = match command
+                .run(check_inventory(io.as_ref(), added, &effects))
+                .await
+            {
+                None => {
+                    let reason = "interrupted while refreshing the probe inventory";
+                    let mut report = from_objects(
+                        timeout,
+                        0.0,
+                        skipped_records(&records, "not_confirmed", reason).collect(),
+                    );
+                    report.interrupted = true;
+                    report.detail = Some(reason.into());
+                    report
+                }
+                Some(Err(reason)) => from_objects(
+                    timeout,
+                    0.0,
+                    skipped_records(&records, "refused", &reason.to_string()).collect(),
+                ),
+                Some(Ok(())) => {
+                    probe_types_with(
+                        io,
+                        &records,
+                        timeout,
+                        LIMITS,
+                        command.interrupt.clone(),
+                        Some((added, &effects)),
+                    )
+                    .await
+                }
+            };
             command.interrupt.cleanup_done.store(true, Ordering::SeqCst);
             announce(added, &activation);
             activation
@@ -651,7 +808,7 @@ pub(crate) async fn settle(
     force: bool,
     command: &CommandInterrupt,
 ) -> Result<Option<StorageActivation>> {
-    let pending = prepare(tenant, added, wait_seconds, force).await?;
+    let pending = prepare(tenant, added, wait_seconds, force, None).await?;
     finish(tenant, confirmed_prod, added, pending, command).await
 }
 
@@ -666,15 +823,16 @@ fn announce(added: &[String], activation: &StorageActivation) {
                 eprintln!("{warning}");
             }
             for object in &activation.objects {
-                if object.outcome != "readable" {
+                if object.outcome != "readable" || activation.outcome == "refused" {
                     let detail = object
                         .detail
                         .as_deref()
                         .map(|detail| format!(": {detail}"))
                         .unwrap_or_default();
                     eprintln!(
-                        "warning: managed/{} storage activation not confirmed{detail}",
-                        object.object
+                        "managed/{} storage activation {}{detail}",
+                        object.object,
+                        object.outcome.replace('_', " ")
                     );
                 }
             }
@@ -682,15 +840,29 @@ fn announce(added: &[String], activation: &StorageActivation) {
     }
 }
 
-async fn load_effects(tenant: &str, added: &[String]) -> Vec<SideEffects> {
-    load_effects_with(
-        &TenantIo {
-            tenant: tenant.into(),
-            confirmed_prod: false,
-        },
-        added,
-    )
-    .await
+/// Implicit sync can write managed targets. Include those types in the
+/// consent inventory, following managed-to-managed mappings to closure.
+fn affected_types(added: &[String], sync: Option<&Value>) -> Vec<String> {
+    let mut types = added.to_vec();
+    let mut seen: std::collections::BTreeSet<_> = added.iter().cloned().collect();
+    if let Some(items) = sync.and_then(|doc| doc["mappings"].as_array()) {
+        let mut next = 0;
+        while next < types.len() {
+            let source = format!("managed/{}", types[next]);
+            next += 1;
+            for item in items {
+                if item["source"].as_str() == Some(&source)
+                    && let Some(target) = item["target"]
+                        .as_str()
+                        .and_then(|path| path.strip_prefix("managed/"))
+                    && seen.insert(target.to_owned())
+                {
+                    types.push(target.to_owned());
+                }
+            }
+        }
+    }
+    types
 }
 
 async fn load_effects_with(io: &impl ProbeIo, added: &[String]) -> Vec<SideEffects> {
@@ -699,7 +871,7 @@ async fn load_effects_with(io: &impl ProbeIo, added: &[String]) -> Vec<SideEffec
         .await
         .ok();
     let sync = io.request("GET", SYNC_PATH.into(), None).await.ok();
-    added
+    affected_types(added, sync.as_ref())
         .iter()
         .map(|name| {
             let object = managed
@@ -710,12 +882,25 @@ async fn load_effects_with(io: &impl ProbeIo, added: &[String]) -> Vec<SideEffec
         .collect()
 }
 
-/// Called after rendering JSON, so interruption never hides recovery ids.
-pub(crate) fn check_interrupted(activation: Option<&StorageActivation>) -> Result<()> {
-    if activation.is_some_and(|a| a.interrupted) {
-        return Err(Error::Config("interrupted; probe cleanup attempted; inspect storage_activation and stderr for recovery ids".into()));
+impl StorageActivation {
+    pub(crate) fn stop_error(&self) -> Option<Error> {
+        if self.interrupted {
+            Some(command_interrupted())
+        } else if self.outcome == "refused" {
+            Some(Error::Config(
+                "probe refused: consent inventory changed or could not be re-read. Verify the relationship and review the inventories before creating records. An installed mapping will not be probed again by map".into(),
+            ))
+        } else {
+            None
+        }
     }
-    Ok(())
+}
+
+pub(crate) fn report_confirmed_writes(body: &mut Value, documents: &[&str]) {
+    if !documents.is_empty() {
+        eprintln!("Confirmed configuration writes: {}", documents.join(", "));
+        body["confirmed_writes"] = json!(documents);
+    }
 }
 
 /// Own the listener through command completion, including post-probe awaits.
@@ -854,16 +1039,46 @@ impl ProbeIo for TenantIo {
 
 async fn probe_types_with(
     io: Arc<impl ProbeIo>,
-    added: &[String],
+    records: &[ProbeRecord],
     timeout: Duration,
     limits: ProbeLimits,
     interrupt: Arc<Interrupt>,
+    inventory: Option<(&[String], &[SideEffects])>,
 ) -> StorageActivation {
     let started = Instant::now();
     let deadline = started + timeout;
-    let mut objects = Vec::with_capacity(added.len());
-    for name in added {
-        objects.push(probe_run(io.clone(), name, deadline, limits, interrupt.clone()).await);
+    let mut objects = Vec::with_capacity(records.len());
+    for (index, record) in records.iter().enumerate() {
+        // A prior record may spend seconds in cleanup. Recheck the full
+        // consent inventory, including hooks on managed sync targets.
+        if index > 0
+            && Instant::now() < deadline
+            && !interrupt.is_set()
+            && let Some((added, effects)) = inventory
+        {
+            let survey = tokio::time::timeout_at(
+                deadline.into(),
+                check_inventory(io.as_ref(), added, effects),
+            );
+            let checked = tokio::select! {
+                biased;
+                _ = interrupt.cancelled() => None,
+                result = survey => Some(result.unwrap_or_else(|_| {
+                    Err(Error::Config(
+                        "probe refused: inventory could not be re-read before the shared probe deadline".into(),
+                    ))
+                })),
+            };
+            if let Some(Err(reason)) = checked {
+                objects.extend(skipped_records(
+                    &records[index..],
+                    "refused",
+                    &reason.to_string(),
+                ));
+                break;
+            }
+        }
+        objects.push(probe_run(io.clone(), record, deadline, limits, interrupt.clone()).await);
     }
     let mut activation = from_objects(timeout, started.elapsed().as_secs_f64(), objects);
     activation.interrupted = interrupt.is_set();
@@ -875,6 +1090,20 @@ async fn probe_types_with(
         );
     }
     activation
+}
+
+fn skipped_records<'a>(
+    records: &'a [ProbeRecord],
+    outcome: &'static str,
+    reason: &'a str,
+) -> impl Iterator<Item = ObjectProbe> + 'a {
+    records.iter().map(move |record| ObjectProbe {
+        object: record.object.clone(),
+        outcome,
+        seconds: None,
+        id: None,
+        detail: Some(format!("{reason}. No probe record created")),
+    })
 }
 
 #[derive(Clone, Copy)]
@@ -902,16 +1131,24 @@ async fn probe_with_limits(
     deadline: Instant,
     limits: ProbeLimits,
 ) -> ObjectProbe {
-    probe_run(io, object, deadline, limits, Arc::new(Interrupt::default())).await
+    probe_run(
+        io,
+        &ProbeRecord::new(object, None),
+        deadline,
+        limits,
+        Arc::new(Interrupt::default()),
+    )
+    .await
 }
 
 async fn probe_run(
     io: Arc<impl ProbeIo>,
-    object: &str,
+    record: &ProbeRecord,
     deadline: Instant,
     limits: ProbeLimits,
     interrupt: Arc<Interrupt>,
 ) -> ObjectProbe {
+    let object = record.object.as_str();
     let started = Instant::now();
     let mut facts = ProbeFacts {
         create: CreateAttempt::NotStarted,
@@ -925,7 +1162,7 @@ async fn probe_run(
     }
     // POST with an explicit _id is the documented create-only request, without
     // PUT's upsert fallback. Never repeat a create, even after an uncertain reply.
-    let id = uuid::Uuid::new_v4().to_string();
+    let id = record.id.clone();
     let base = format!(
         "/openidm/managed/{}",
         crate::idmstore::api::path_segment(object)
@@ -934,7 +1171,6 @@ async fn probe_run(
     let record_path = format!("{base}/{id}");
     let read_path = format!("{record_path}?_fields=_id");
     facts.id = Some(id.clone());
-    eprintln!("probe managed/{object} id {id}");
     let create_io = io.clone();
     // Keep ownership of the response future on timeout. Cancelling a socket
     // wait does not cancel the daemon's write. Cleanup first waits for this
@@ -1306,13 +1542,6 @@ mod tests {
     fn outcomes_for_a_flag_that_does_not_probe() {
         assert_eq!(not_needed().outcome, "not_needed");
         assert!(not_needed().objects.is_empty());
-        let declined = declined(&["thing".into(), "owner".into()]);
-        assert_eq!(declined.outcome, "declined");
-        assert_eq!(declined.objects.len(), 2);
-        assert!(declined.objects.iter().all(|object| object.id.is_none()));
-        let mut body = json!({"changed": []});
-        attach(&mut body, Some(&declined)).unwrap();
-        assert_eq!(body["storage_activation"]["outcome"], "declined");
         let mut fresh = json!({"changed": []});
         attach(&mut fresh, None).unwrap();
         assert!(fresh.get("storage_activation").is_none());
@@ -1369,6 +1598,7 @@ pub(super) mod lifecycle_tests {
         interrupt_on_read: Option<Arc<Interrupt>>,
         signal_on_read: bool,
         managed_inventory: Option<Value>,
+        managed_inventory_after_delete: Option<Value>,
         sync_inventory: Option<Value>,
     }
 
@@ -1391,6 +1621,16 @@ pub(super) mod lifecycle_tests {
                 .unwrap()
                 .push((method, path.clone(), body.clone()));
             if path == "/openidm/config/managed" {
+                if let Some(after) = &self.managed_inventory_after_delete
+                    && self
+                        .calls
+                        .lock()
+                        .unwrap()
+                        .iter()
+                        .any(|call| call.0 == "DELETE")
+                {
+                    return Ok(after.clone());
+                }
                 return self.managed_inventory.clone().ok_or_else(|| api_error(503));
             }
             if path == SYNC_PATH {
@@ -1471,6 +1711,173 @@ pub(super) mod lifecycle_tests {
         }
     }
 
+    #[tokio::test]
+    async fn refused_consent_precedes_every_set_write() {
+        for answer in [
+            Ok(false),
+            Err(Error::Config("no terminal; pass --force".into())),
+        ] {
+            let io = Fake {
+                managed_inventory: Some(json!({"objects":[{"name":"thing"}]})),
+                sync_inventory: Some(json!({"mappings":[]})),
+                ..Fake::default()
+            };
+            let result = storage::set_with(
+                true,
+                async || prepare_with(&io, &["thing".into()], Some(3), None, || answer).await,
+                async |_: &Pending| {
+                    io.request("PUT", "/openidm/config/managed".into(), Some(json!({})))
+                        .await
+                        .map(|_| ())
+                },
+                async |_pending| {
+                    io.request("PUT", "/openidm/config/repo.ds".into(), Some(json!({})))
+                        .await
+                },
+            )
+            .await;
+            assert!(result.is_err());
+            let calls = io.calls.lock().unwrap();
+            assert!(calls.iter().any(|call| call.1 == SYNC_PATH));
+            assert!(calls.iter().all(|call| call.0 == "GET"), "{calls:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn changed_hook_or_mapping_content_refuses_probe_after_configuration() {
+        for change_hook in [true, false] {
+            let mut io = Fake {
+                managed_inventory: Some(
+                    json!({"objects":[{"name":"thing", "onCreate":{"type":"text/javascript", "source":"old"}}]}),
+                ),
+                sync_inventory: Some(
+                    json!({"mappings":[{"name":"same", "source":"managed/thing", "target":"system/example", "onCreate":{"source":"old"}}]}),
+                ),
+                ..Fake::default()
+            };
+            let added = ["thing".into()];
+            let pending = prepare_with(&io, &added, Some(3), None, || Ok(true))
+                .await
+                .unwrap();
+            if change_hook {
+                io.managed_inventory.as_mut().unwrap()["objects"][0]["onCreate"]["source"] =
+                    json!("new");
+            } else {
+                io.sync_inventory.as_mut().unwrap()["mappings"][0]["onCreate"]["source"] =
+                    json!("new");
+            }
+            let io = Arc::new(io);
+            let report = finish_with(io.clone(), &added, pending, &CommandInterrupt::new())
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(report.outcome, "refused");
+            assert!(
+                report.objects[0]
+                    .detail
+                    .as_ref()
+                    .unwrap()
+                    .contains("changed since consent")
+            );
+            assert!(io.calls.lock().unwrap().iter().all(|call| call.0 == "GET"));
+        }
+    }
+
+    #[tokio::test]
+    async fn planned_probe_id_is_used_for_create_and_unresolved_cleanup() {
+        let prefix = parse_probe_prefix("probe-fixture_").unwrap();
+        for prefix in [None, Some(&prefix)] {
+            let io = Arc::new(Fake {
+                managed_inventory: Some(json!({"objects":[{"name":"thing"}]})),
+                sync_inventory: Some(json!({"mappings":[]})),
+                delete_failure: Some(403),
+                ..Fake::default()
+            });
+            let added = ["thing".into()];
+            let pending = prepare_with(io.as_ref(), &added, Some(3), prefix, || Ok(true))
+                .await
+                .unwrap();
+            let Pending::Probe(plan) = &pending else {
+                panic!("expected a probe plan");
+            };
+            let id = plan.records[0].id.clone();
+            let expected_prefix = if prefix.is_some() {
+                "probe-fixture_"
+            } else {
+                ""
+            };
+            let uuid = id.strip_prefix(expected_prefix).expect("literal prefix");
+            assert_eq!(uuid::Uuid::parse_str(uuid).unwrap().get_version_num(), 4);
+            assert!(
+                probe_plan_text(&plan.effects, &plan.records)
+                    .contains(&format!("managed/thing probe id {id}"))
+            );
+            let result = finish_with(io.clone(), &added, pending, &CommandInterrupt::new())
+                .await
+                .unwrap()
+                .unwrap();
+            let calls = io.calls.lock().unwrap();
+            let create = calls.iter().find(|call| call.0 == "POST").unwrap();
+            assert_eq!(create.2, Some(json!({"_id": id})));
+            let path = format!("/openidm/managed/thing/{id}");
+            assert!(
+                calls
+                    .iter()
+                    .any(|call| call.0 == "GET" && call.1 == format!("{path}?_fields=_id"))
+            );
+            assert!(
+                calls
+                    .iter()
+                    .any(|call| call.0 == "DELETE" && call.1 == path)
+            );
+            let mut body = json!({});
+            attach(&mut body, Some(&result)).unwrap();
+            let report = &body["storage_activation"]["objects"][0];
+            assert_eq!(report["id"], id);
+            assert!(report["detail"].as_str().unwrap().contains(&id));
+        }
+    }
+
+    #[tokio::test]
+    async fn later_type_refuses_drift_during_first_probe() {
+        let io = Arc::new(Fake {
+            managed_inventory: Some(json!({"objects":[{"name":"thing"},{"name":"other"}]})),
+            managed_inventory_after_delete: Some(json!({"objects":[{"name":"thing"},{
+                "name":"other", "onCreate":{"type":"text/javascript","source":"new"}
+            }]})),
+            sync_inventory: Some(json!({"mappings":[]})),
+            ..Fake::default()
+        });
+        let added = ["thing".into(), "other".into()];
+        let pending = prepare_with(io.as_ref(), &added, Some(3), None, || Ok(true))
+            .await
+            .unwrap();
+        let result = finish_with(io.clone(), &added, pending, &CommandInterrupt::new())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(result.objects[0].outcome, "readable");
+        assert_eq!(result.outcome, "refused");
+        assert_eq!(result.objects[1].outcome, "refused");
+        assert!(
+            result.objects[1]
+                .detail
+                .as_ref()
+                .unwrap()
+                .contains("probe refused")
+        );
+        assert_eq!(
+            io.calls
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|call| call.0 == "POST")
+                .count(),
+            1
+        );
+        assert!(io.record.lock().unwrap().is_none());
+    }
+
     const FAST: ProbeLimits = ProbeLimits {
         cleanup: Duration::from_millis(120),
         request: Duration::from_millis(15),
@@ -1492,10 +1899,14 @@ pub(super) mod lifecycle_tests {
             });
             let result = probe_types_with(
                 io.clone(),
-                &["thing".into(), "other".into()],
+                &[
+                    ProbeRecord::new("thing", None),
+                    ProbeRecord::new("other", None),
+                ],
                 Duration::from_millis(10),
                 FAST,
                 interrupt,
+                None,
             )
             .await;
             assert_eq!(result.outcome, "not_confirmed");
@@ -1667,7 +2078,7 @@ pub(super) mod lifecycle_tests {
             });
             let result = probe_run(
                 io.clone(),
-                "thing",
+                &ProbeRecord::new("thing", None),
                 Instant::now() + Duration::from_secs(1),
                 FAST,
                 interrupt,
@@ -1683,17 +2094,16 @@ pub(super) mod lifecycle_tests {
     }
 
     pub(crate) async fn normal_probe(command: &CommandInterrupt) -> Option<StorageActivation> {
-        let result = finish_with(
-            Arc::new(Fake::default()),
-            &["thing".into()],
-            Pending::Probe {
-                timeout: Duration::from_secs(1),
-                consent: ProbeConsent::Granted,
-            },
-            command,
-        )
-        .await
-        .unwrap();
+        let io = Arc::new(Fake {
+            managed_inventory: Some(json!({"objects":[{"name":"thing"}]})),
+            sync_inventory: Some(json!({"mappings":[]})),
+            ..Fake::default()
+        });
+        let added = ["thing".into()];
+        let pending = prepare_with(io.as_ref(), &added, Some(1), None, || Ok(true))
+            .await
+            .unwrap();
+        let result = finish_with(io, &added, pending, command).await.unwrap();
         assert_eq!(result.as_ref().unwrap().outcome, "readable");
         assert!(!result.as_ref().unwrap().interrupted);
         result
@@ -1714,10 +2124,11 @@ pub(super) mod lifecycle_tests {
             });
             let activation = probe_types_with(
                 io.clone(),
-                &["thing".into()],
+                &[ProbeRecord::new("thing", None)],
                 Duration::from_secs(1),
                 FAST,
                 interrupt.clone(),
+                None,
             )
             .await;
             assert!(interrupt.is_set());
@@ -1728,9 +2139,7 @@ pub(super) mod lifecycle_tests {
             let mut body = json!({});
             attach(&mut body, Some(&activation)).unwrap();
             println!("{body}");
-            check_interrupted(Some(&activation))
-                .unwrap_err()
-                .exit_code()
+            activation.stop_error().unwrap().exit_code()
         });
         std::process::exit(exit_code);
     }
