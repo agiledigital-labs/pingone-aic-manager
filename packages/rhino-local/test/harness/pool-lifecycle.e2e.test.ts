@@ -388,3 +388,73 @@ it.skipIf(process.platform === "win32").each([
     rmSync(directory, { recursive: true, force: true });
   }
 }, 60_000);
+
+it("only an owner's live host callback can re-enter during close", async () => {
+  const pool = await JvmPool.start();
+  try {
+    const owner = await RhinoRunner.borrow(pool.address, { lane: "host", shared: true, shutdownWaitMs: 15_000 });
+    const sibling = await RhinoRunner.borrow(pool.address, { lane: "host", shared: true });
+    const caller = await RhinoRunner.borrow(pool.address, { lane: "host" });
+    let entered!: () => void;
+    let release!: () => void;
+    const started = new Promise<void>((resolve) => { entered = resolve; });
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const owned = owner.eval({
+      hostCalls: true,
+      timeoutMs: 0,
+      preamble: `
+        var runtime = { callbacks: [], outcome: "done", shared: {}, transient: {} };
+        __rhinoLocalJourneyHost("install", runtime, {});
+        var read = __rhinoLocalJourneyHost("method", "read");
+      `,
+      source: 'runtime.shared.value = read("probe");',
+      classAllowList: [],
+    }, {
+      onCall: async () => {
+        entered();
+        await gate;
+        const nested = await owner.eval({ source: "42", classAllowList: [] });
+        return Number(nested.value);
+      },
+    });
+
+    const probe = async (): Promise<unknown> => {
+      const result = await caller.eval({ engine: "idm", source: 'openidm.read("probe")' }, {
+        onCall: async () => {
+          try {
+            return Number((await owner.eval({ source: "99", classAllowList: [] })).value);
+          } catch (error) {
+            return (error as Error).message;
+          }
+        },
+      });
+      expect(result.outcome).toBe("ok");
+      return result.value;
+    };
+
+    try {
+      await Promise.race([started, owned.then((result) => {
+        throw new Error(`owned job finished before entering the callback: ${JSON.stringify(result)}`);
+      })]);
+      expectEmulationFailure("rhino-local: runner is closing");
+      const closing = owner.close();
+      const duringDrain = await probe();
+      // The owner's own callback can still do the work it needs to finish.
+      release();
+      const result = await owned;
+      expect(result.outcome).toBe("ok");
+      expect(JSON.parse(String(result.value)).effects.sharedState.final.value).toBe(42);
+      await closing;
+      const afterRelease = await probe();
+      await expect(owner.eval({ source: "99", classAllowList: [] })).rejects.toThrow("runner is closing");
+      expect([duringDrain, afterRelease]).toEqual(["rhino-local: runner is closing", "rhino-local: runner is closing"]);
+      expect(await sibling.eval({ source: "43", classAllowList: [] })).toMatchObject({ outcome: "ok", value: 43 });
+    } finally {
+      release();
+      await Promise.allSettled([owned]);
+      await Promise.all([owner.close(), sibling.close(), caller.close()]);
+    }
+  } finally {
+    await pool.stop();
+  }
+}, 60_000);

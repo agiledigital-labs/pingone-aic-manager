@@ -745,14 +745,19 @@ export interface BorrowRunnerOptions extends Pick<SpawnRunnerOptions, "lane" | "
 
 // The logical host-call chain can cross runner instances; independent async
 // chains still have separate stores. A nested runner must mark its caller's scope.
-const callScope = new AsyncLocalStorage<{ failure?: NonNullable<HostError["emulation"]> }>();
+interface CallbackScope {
+  runner: RhinoRunner;
+  active: boolean;
+  failure?: NonNullable<HostError["emulation"]>;
+}
+const callScope = new AsyncLocalStorage<CallbackScope>();
 
 export class RhinoRunner {
   readonly lane: JvmLane;
   readonly #failures = new EmulationFailureJournal();
   #primary: JvmProcess;
   #shadow: JvmProcess | undefined;
-  #closing = false;
+  #state: "open" | "draining" | "closed" = "open";
   #closePromise: Promise<void> | undefined;
   #jobs = new Set<Promise<void>>();
   readonly #shutdownWaitMs: number;
@@ -888,6 +893,12 @@ export class RhinoRunner {
 
   async #evaluate(job: JobRequest, options: EvalOptions): Promise<JobResponse> {
     const id = job.id ?? randomUUID();
+    const callback = this.#state === "draining" ? callScope.getStore() : undefined;
+    if (this.#state !== "open" && (callback?.runner !== this || !callback.active)) {
+      const failure = { kind: "protocol" as const, message: "rhino-local: runner is closing" };
+      this.#failures.record(failure, `job ${id}`);
+      throw new EmulationFailure(failure);
+    }
     if (this.#shared && ((job.engine !== undefined && job.engine !== "am") || !Array.isArray(job.classAllowList))) {
       const failure = { kind: "protocol" as const, message: "rhino-local: shared JVM borrows require a class shutter; use an exclusive borrow for unshuttered work" };
       this.#failures.record(failure, `job ${id}`);
@@ -898,11 +909,6 @@ export class RhinoRunner {
       this.#failures.record(failure, `job ${id}`);
       const parent = callScope.getStore();
       if (parent) parent.failure ??= failure;
-      throw new EmulationFailure(failure);
-    }
-    if (this.#closing && (this.#cancel.signal.aborted || !callScope.getStore())) {
-      const failure = { kind: "protocol" as const, message: "rhino-local: runner is closing" };
-      this.#failures.record(failure, `job ${id}`);
       throw new EmulationFailure(failure);
     }
     this.#activeIds.add(id);
@@ -991,7 +997,7 @@ export class RhinoRunner {
       transcript.push(entry);
       let reply: HostReply;
       const provenance: BehaviorEvidence[] = [];
-      const scope: { failure?: NonNullable<HostError["emulation"]> } = {};
+      const scope: CallbackScope = { runner: this, active: true };
       try {
         if (options.onCall === undefined)
           throw new EmulationFailure({ kind: "protocol", message: "rhino-local: no onCall handler for IDM job" });
@@ -1014,6 +1020,8 @@ export class RhinoRunner {
           seq: entry.call.seq,
           error: hostError(scope.failure ? new EmulationFailure(scope.failure) : error),
         };
+      } finally {
+        scope.active = false;
       }
       if (provenance.length > 0) reply = { ...reply, provenance: structuredClone(provenance) };
       const fatal = !owner?.aborted && "error" in reply ? emulationFailure(reply.error) : undefined;
@@ -1080,9 +1088,10 @@ export class RhinoRunner {
 
   async close(): Promise<void> {
     this.#closePromise ??= (async () => {
-      this.#closing = true;
-      // Keep both lanes usable until accepted evaluations (including shadow replay) finish.
+      this.#state = "draining";
+      // Only this borrower's live callbacks can submit nested work during the drain.
       await Promise.race([Promise.all([...this.#jobs]), sleep(this.#shutdownWaitMs)]);
+      this.#state = "closed";
       if (this.#releaseBorrow !== undefined) {
         const owner = this.#cancel.signal;
         // A failed lane can settle the logical eval before its other lane
