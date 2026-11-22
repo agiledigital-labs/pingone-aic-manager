@@ -267,3 +267,50 @@ it.skipIf(process.platform === "win32").each([
     }
   });
 }, 60_000);
+
+it.skipIf(process.env.AIC_SCRIPT_TESTER_JVM !== "both")("closing a paired borrow cancels work on the surviving lane", async () => {
+  const pool = await JvmPool.start();
+  try {
+    const paired = await RhinoRunner.borrow(pool.address, { lane: "both", shared: true });
+    const host = await RhinoRunner.borrow(pool.address, { lane: "host", shared: true });
+    const survivor = await RhinoRunner.borrow(pool.address, { lane: "container", shared: true });
+    try {
+      expect(pool.started).toBe(2);
+      const id = "paired-job";
+      expectEmulationFailure(/RhinoRunnerExitError: .*JVM discarded by its borrower[\s\S]*/);
+      const pending = paired.eval({
+        id,
+        source: `
+          java.lang.System.err.println("paired job started");
+          try { java.lang.Thread.sleep(120000); }
+          catch (error) { java.lang.System.err.println("paired job interrupted"); }
+        `,
+        classAllowList: ["java.lang.System", "java.io.PrintStream", "java.lang.Thread"],
+        timeoutMs: 0,
+      }).catch((error: unknown) => error);
+      await expect.poll(() => host.stderr.includes("paired job started") && survivor.stderr.includes("paired job started"),
+        { timeout: 15_000 }).toBe(true);
+      await host.kill();
+      expect(await pending).toMatchObject({ message: expect.stringContaining("JVM discarded by its borrower") });
+      await paired.close();
+      // The logical eval has already rejected. Its other lane still needs a
+      // cancellation, and can only free the wire ID once its worker exits.
+      await expect.poll(() => survivor.stderr.includes("paired job interrupted"), { timeout: 8_000 }).toBe(true);
+      expect(await survivor.eval({ source: "42", classAllowList: [] })).toMatchObject({ outcome: "ok", value: 42 });
+      expect(await survivor.eval({ id, source: "43", classAllowList: [] })).toMatchObject({ outcome: "ok", value: 43 });
+      await survivor.close();
+    } finally {
+      await Promise.all([paired.close(), host.close(), survivor.close()]);
+    }
+
+    const next = await RhinoRunner.borrow(pool.address, { lane: "container" });
+    try {
+      expect(pool.started).toBe(2);
+      expect(await next.eval({ source: "44", classAllowList: [] })).toMatchObject({ outcome: "ok", value: 44 });
+    } finally {
+      await next.close();
+    }
+  } finally {
+    await pool.stop();
+  }
+}, 60_000);

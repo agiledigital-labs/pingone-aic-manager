@@ -266,6 +266,12 @@ class JvmProcess {
     return !this.#closed && this.#exit === null && this.#spawnError === undefined;
   }
 
+  addOwnedJobIds(owner: AbortSignal, ids: Set<string>): void {
+    for (const [id, pending] of this.#pending) {
+      if (pending.owner === owner) ids.add(id);
+    }
+  }
+
   cancelOwned(owner: AbortSignal): void {
     for (const [id, pending] of this.#pending) {
       if (pending.owner !== owner || pending.cancelled) continue;
@@ -806,11 +812,9 @@ export class RhinoRunner {
     });
     const release = async (owner?: AbortSignal): Promise<void> => {
       await Promise.all(held.map(async ({ key, shared, borrow }) => {
+        if (owner?.aborted) borrow.process.cancelOwned(owner);
         borrow.users -= 1;
-        if (borrow.users > 0) {
-          if (owner?.aborted) borrow.process.cancelOwned(owner);
-          return;
-        }
+        if (borrow.users > 0) return;
         if (shared !== undefined) {
           shared.delete(borrow);
           if (shared.size === 0) sharedBorrows.delete(key);
@@ -1048,12 +1052,17 @@ export class RhinoRunner {
       // Keep both lanes usable until accepted evaluations (including shadow replay) finish.
       await Promise.race([Promise.all([...this.#jobs]), sleep(this.#shutdownWaitMs)]);
       if (this.#releaseBorrow !== undefined) {
-        if (this.#jobs.size > 0) {
+        const owner = this.#cancel.signal;
+        // A failed lane can settle the logical eval before its other lane
+        // sends a response. Collect wire jobs by owner as well as live evals.
+        const pending = new Set(this.#activeIds);
+        for (const process of this.#processes()) process.addOwnedJobIds(owner, pending);
+        if (pending.size > 0) {
           this.#cancel.abort(new Error(
-            `rhino-local: lease closed with ${this.#jobs.size} job(s) still pending; its jobs cancelled`
+            `rhino-local: lease closed with ${pending.size} job(s) still pending; its jobs cancelled`
           ));
         }
-        await this.#releaseBorrow(this.#cancel.signal);
+        await this.#releaseBorrow(owner);
       } else {
         await Promise.all(this.#processes().map((p) => p.close()));
       }
