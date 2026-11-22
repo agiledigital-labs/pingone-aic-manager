@@ -896,7 +896,8 @@ write. Pause other managed-schema writers through the write.
 Changes or unreadable inventory after writing produce
 `storage_activation.outcome: "refused"`, a nonzero exit and a report with
 `confirmed_writes` and per-type results, including any earlier recovery id.
-A recheck that starts but exceeds the shared deadline counts as unreadable
+The shared probe deadline starts after the first post-write inventory recheck.
+A later recheck that starts but exceeds the deadline counts as unreadable
 inventory. If the deadline has already expired when the next recheck would
 start, the probe outcome is `not_confirmed`. Map retains its capture and stops
 before restoring links on refusal. Verify the

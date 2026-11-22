@@ -979,12 +979,13 @@ writers through the write.
 The command checks the inventory again before each probe. If the inventory
 changed or cannot be re-read after configuration landed, the command reports
 the confirmed writes and per-type outcomes, exits non-zero, and preserves any
-recovery ids from earlier probes. A recheck that starts but exceeds the
-shared deadline counts as unreadable inventory. Expiry before the next
-recheck starts still yields `not_confirmed`. Map retains its
-capture without starting link restoration after that refusal. Verify the
-configuration before resuming with the retained capture. Once an entry is
-installed, mapping it again does not repeat the probe.
+recovery ids from earlier probes.
+The shared probe deadline starts after the first post-write inventory recheck.
+A later recheck that starts but exceeds the deadline counts as unreadable
+inventory. Expiry before the next recheck starts still yields `not_confirmed`.
+Map retains its capture without starting link restoration after that refusal.
+Verify the configuration before resuming with the retained capture. Once an
+entry is installed, mapping it again does not repeat the probe.
 
 After a write adds a per-type entry, the command creates one probe in each
 such type with `POST /openidm/managed/<object>?_action=create` and the planned
