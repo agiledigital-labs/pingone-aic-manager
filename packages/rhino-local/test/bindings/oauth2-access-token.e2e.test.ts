@@ -399,17 +399,20 @@ describe("access-token modification matches the live capture", () => {
       context: "OAUTH2_ACCESS_TOKEN_MODIFICATION",
       script: [
         'var p = {};',
+        'p.before = identity.getAttributeValues("description").length;',
         'p.setReturn = typeof identity.setAttribute("description", ["example"]);',
+        'p.pending = identity.getAttributeValues("description").length;',
         'try { identity.store(); } catch(e) { p.name = e.name; p.message = e.message; p.text = String(e); }',
         'p.after = identity.getAttributeValues("description").length;',
         'accessToken.setField("probe", p);',
       ].join("\n"),
-      given: agent,
+      // Omit grantType to exercise the default client_credentials identity.
+      given: { ...agent, accessToken: { clientId: agent.accessToken.clientId } },
       expect: {
         identityWrites: [],
         accessToken: { issued: true, fields: { added: { probe: {
           setReturn: "undefined", name: "JavaException", message: updateMessage,
-          text: "JavaException: " + updateMessage, after: 0,
+          text: "JavaException: " + updateMessage, before: 0, pending: 0, after: 0,
         } } } },
       },
     }));

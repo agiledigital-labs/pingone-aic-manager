@@ -1115,10 +1115,9 @@ persistence and `store()` raises `oauth2-token-unmeasured/identity.store()`
 even if the script catches it. For a user write, seed e.g.
 `accessToken: { grantType: "password", resourceOwnerId: "user-1" }` and
 `identity: { name: "user-1", attributes: { description: ["baseline"] } }`.
-`client` is
-what `clientProperties` reports. `scopes` overrides the `scopes` binding, which
-otherwise holds the token's scope. `request` is `requestProperties`: params,
-headers and the request URI.
+`client` supplies `clientProperties`. `scopes` overrides the `scopes` binding,
+which otherwise holds the token's scope. `request` supplies `requestProperties`
+with params, headers and the request URI.
 
 **Assertions.** `expect.accessToken` judges the token after the script:
 `fields` and `responseFields` (added/changed/removed, as for state buckets),
