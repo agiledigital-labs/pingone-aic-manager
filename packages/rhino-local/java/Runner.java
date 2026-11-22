@@ -53,7 +53,35 @@ public final class Runner {
     ERR.println(RETIRED_MARKER);
   }
 
-  private static final Map<String, Boolean> ACTIVE = new ConcurrentHashMap<String, Boolean>();
+  private static final Map<String, ActiveJob> ACTIVE = new ConcurrentHashMap<>();
+
+  /** A cancellation can interrupt only the worker still assigned to this job. */
+  static final class ActiveJob {
+    final boolean cancellable;
+    volatile boolean cancelled;
+    private Thread worker;
+
+    ActiveJob(boolean cancellable) {
+      this.cancellable = cancellable;
+    }
+
+    synchronized boolean begin() {
+      if (cancelled) return false;
+      worker = Thread.currentThread();
+      return true;
+    }
+
+    synchronized void end() {
+      worker = null;
+      if (cancelled) Thread.interrupted();
+    }
+
+    synchronized void cancel() {
+      if (!cancellable) return;
+      cancelled = true;
+      if (worker != null) worker.interrupt();
+    }
+  }
 
   /**
    * Sticky: this JVM has run a job with no class shutter (no
@@ -158,18 +186,23 @@ public final class Runner {
         } else if (POOL_STATUS_OP.equals(job.get("op"))) {
           // Answered on the reader, so it cannot queue behind (or be refused like) a job.
           write(poolStatus(id));
+        } else if ("cancel".equals(job.get("op"))) {
+          ActiveJob active = ACTIVE.get(id);
+          if (active != null) active.cancel();
         } else if (Boolean.TRUE.equals(job.get("shutdown")) || "shutdown".equals(job.get("op"))) {
           shuttingDown = true;
           shutdown(workers, shutdownWaitMs, id);
         } else if (retired) {
           write(refusal(id, "rhino-local: JVM retired because a spawned thread survived cleanup"));
-        } else if (ACTIVE.putIfAbsent(id, Boolean.TRUE) != null) {
-          write(refusal(id, "rhino-local: duplicate active job id"));
         } else {
-          // Set before the job can run, on the reader, so a status line sent
-          // after this job always sees it.
-          if (!shuttered(job)) unshuttered = true;
-          try { workers.execute(() -> handleJob(factory, job)); }
+          ActiveJob active = new ActiveJob(shuttered(job));
+          if (ACTIVE.putIfAbsent(id, active) != null) {
+            write(refusal(id, "rhino-local: duplicate active job id"));
+            continue;
+          }
+          // Set on the reader, so a status line sent after this job sees it.
+          if (!active.cancellable) unshuttered = true;
+          try { workers.execute(() -> handleJob(factory, job, active)); }
           catch (RejectedExecutionException e) {
             respond(refusal(id, "rhino-local: concurrent job limit exceeded (" + maxJobs + ")"));
           }
@@ -252,14 +285,18 @@ public final class Runner {
   }
 
   /** The job map the reader already parsed; parsing it again here cost as much as the move. */
-  static void handleJob(AmContextFactory factory, Map<String, Object> job) {
+  static void handleJob(AmContextFactory factory, Map<String, Object> job, ActiveJob active) {
     final String id = (String) job.get("id");
+    if (!active.begin()) {
+      respond(refusal(id, "rhino-local: lease job cancelled"));
+      return;
+    }
     final Timing timing = Timing.begin(job);
     Map<String, Object> result;
     try {
       Object engine = job.get("engine");
       if (engine == null || "am".equals(engine)) {
-        result = evalJob(factory, id, job);
+        result = evalJob(factory, id, job, active);
       } else if ("idm".equals(engine)) {
         result = IdmRuntime.eval(id, job);
       } else {
@@ -274,34 +311,36 @@ public final class Runner {
           : new EmulationFailure("internal", t.toString()).info);
     } finally {
       Timing.end();
+      active.end();
     }
+    if (active.cancelled) result = refusal(id, "rhino-local: lease job cancelled");
     if (timing != null) result.put("timing", timing.toJson());
     respond(result);
   }
 
   static Map<String, Object> evalJob(
-      AmContextFactory factory, String id, Map<String, Object> job) {
-    if (!Boolean.TRUE.equals(job.get("hostCalls"))) return evalAmJob(factory, id, job, null);
+      AmContextFactory factory, String id, Map<String, Object> job, ActiveJob active) {
+    if (!Boolean.TRUE.equals(job.get("hostCalls"))) return evalAmJob(factory, id, job, null, active);
     AmHostBridge bridge = new AmHostBridge(id, Json.optionalLong(job, "timeoutMs", DEFAULT_TIMEOUT_MS));
     Map<String, Object> result;
-    try { result = evalAmJob(factory, id, job, bridge); }
+    try { result = evalAmJob(factory, id, job, bridge, active); }
     catch (EmulationFailure e) { bridge.state.fail(e); result = errorResponse(id, "runtime_error", e, null, -1, -1, null); }
     catch (Throwable e) { bridge.calls.close(); throw e; }
     return bridge.finish(id, result);
   }
 
   private static Map<String, Object> evalAmJob(
-      AmContextFactory factory, String id, Map<String, Object> job, AmHostBridge bridge) {
+      AmContextFactory factory, String id, Map<String, Object> job, AmHostBridge bridge, ActiveJob active) {
     // A journey has its own uncatchable channel (AmHostBridge's unsupported), so
     // the recorder is the script tester's alone.
     HarnessFaults faults = bridge == null ? new HarnessFaults() : null;
-    Map<String, Object> result = evalAmJob(factory, id, job, bridge, faults);
+    Map<String, Object> result = evalAmJob(factory, id, job, bridge, faults, active);
     return faults == null ? result : faults.attach(result);
   }
 
   private static Map<String, Object> evalAmJob(
       AmContextFactory factory, String id, Map<String, Object> job, AmHostBridge bridge,
-      HarnessFaults faults) {
+      HarnessFaults faults, ActiveJob active) {
     final String source = Json.optionalString(job, "source");
     if (source == null) {
       return errorResponse(
@@ -370,6 +409,7 @@ public final class Runner {
       if (cx instanceof AmContextFactory.TimedContext) {
         ((AmContextFactory.TimedContext) cx).timeoutMs = timeoutMs;
         ((AmContextFactory.TimedContext) cx).hostBridge = bridge;
+        ((AmContextFactory.TimedContext) cx).activeJob = active;
       }
       final SimpleScriptContext scriptContext = AmScopes.newEngineContext(sourceName);
       injectGlobals(scriptContext, job.get("globals"));

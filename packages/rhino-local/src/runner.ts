@@ -156,6 +156,8 @@ type Pending = {
   resolve: (response: JobResponse) => void;
   reject: (error: Error) => void;
   onCall: ((call: HostCall) => Promise<HostReply>) | undefined;
+  owner: AbortSignal | undefined;
+  cancelled?: true;
 };
 
 /** What {@link JvmProcess} needs of a child: a spawned JVM, or a pooled one ({@link PooledChild}). */
@@ -264,9 +266,15 @@ class JvmProcess {
     return !this.#closed && this.#exit === null && this.#spawnError === undefined;
   }
 
-  hasPending(ids: ReadonlySet<string>): boolean {
-    for (const id of ids) if (this.#pending.has(id)) return true;
-    return false;
+  cancelOwned(owner: AbortSignal): void {
+    for (const [id, pending] of this.#pending) {
+      if (pending.owner !== owner || pending.cancelled) continue;
+      // Keep the wire ID occupied until the JVM acknowledges that work ended.
+      pending.cancelled = true;
+      pending.onCall = undefined;
+      this.#child.stdin.write(`${JSON.stringify({ id, op: "cancel" })}\n`);
+      pending.reject(owner.reason as Error);
+    }
   }
 
   async waitUntilReady(timeoutMs: number, owner = true): Promise<void> {
@@ -330,8 +338,10 @@ class JvmProcess {
   send(
     id: string,
     payload: Record<string, unknown>,
-    onCall?: Pending["onCall"]
+    onCall?: Pending["onCall"],
+    owner?: AbortSignal
   ): Promise<JobResponse> {
+    if (owner?.aborted) return Promise.reject(owner.reason);
     if (this.#closed || this.#exit) {
       return Promise.reject(
         this.#exit
@@ -376,14 +386,14 @@ class JvmProcess {
         if (!resent && unknownSource(response)) {
           resent = true;
           this.#sources.forget();
-          this.#pending.set(id, { resolve: settle, reject, onCall });
+          this.#pending.set(id, { resolve: settle, reject, onCall, owner });
           write();
           return;
         }
         if (timed) this.#recordJob(id, payload, response, measure, resent);
         resolve(response);
       };
-      this.#pending.set(id, { resolve: settle, reject, onCall });
+      this.#pending.set(id, { resolve: settle, reject, onCall, owner });
       write();
     });
   }
@@ -529,7 +539,9 @@ class JvmProcess {
         return;
       }
       const timing = typeof parsed === "object" && parsed !== null ? (parsed as { id?: unknown; timing?: unknown }) : undefined;
-      if (timing?.timing !== undefined && typeof timing.id === "string") this.#timings.set(timing.id, timing.timing);
+      if (timing?.timing !== undefined && typeof timing.id === "string" && this.#pending.has(timing.id)) {
+        this.#timings.set(timing.id, timing.timing);
+      }
       response = parseJobResponse(parsed, line);
     } catch (error) {
       const first = this.#pending.entries().next().value;
@@ -544,12 +556,13 @@ class JvmProcess {
       return;
     }
     this.#pending.delete(response.id);
-    pending.resolve(response);
+    if (pending.cancelled) this.#timings.delete(response.id);
+    else pending.resolve(response);
   }
 
   async #answerCall(call: HostCall): Promise<void> {
     const pending = this.#pending.get(call.id);
-    if (pending === undefined) return;
+    if (pending === undefined || pending.cancelled || pending.owner?.aborted) return;
     let reply: HostReply;
     try {
       if (pending.onCall === undefined)
@@ -557,7 +570,7 @@ class JvmProcess {
       reply = await pending.onCall(call);
       // Validate serializability before writing, so a bad handler cannot strand a worker.
       const line = stringifyProtocol(reply);
-      if (this.#pending.get(call.id) === pending && !this.#exit)
+      if (this.#pending.get(call.id) === pending && !pending.owner?.aborted && !this.#exit)
         this.#child.stdin.write(`${line}\n`);
       return;
     } catch (error) {
@@ -568,7 +581,7 @@ class JvmProcess {
         error: hostError(error),
       };
     }
-    if (this.#pending.get(call.id) === pending && !this.#exit) {
+    if (this.#pending.get(call.id) === pending && !pending.owner?.aborted && !this.#exit) {
       this.#child.stdin.write(`${stringifyProtocol(reply)}\n`);
     }
   }
@@ -701,7 +714,8 @@ export class RhinoRunner {
   #jobs = new Set<Promise<void>>();
   readonly #shutdownWaitMs: number;
   #activeIds = new Set<string>();
-  #releaseBorrow: (() => Promise<void>) | undefined;
+  #releaseBorrow: ((owner?: AbortSignal) => Promise<void>) | undefined;
+  readonly #cancel = new AbortController();
   #shared = false;
 
   private constructor(lane: JvmLane, primary: JvmProcess, shadow: JvmProcess | undefined, shutdownWaitMs: number) {
@@ -766,10 +780,13 @@ export class RhinoRunner {
       borrow.users += 1;
       return { key, borrow, reused };
     });
-    const release = async (): Promise<void> => {
+    const release = async (owner?: AbortSignal): Promise<void> => {
       await Promise.all(held.map(async ({ key, borrow }) => {
         borrow.users -= 1;
-        if (borrow.users > 0) return;
+        if (borrow.users > 0) {
+          if (owner?.aborted) borrow.process.cancelOwned(owner);
+          return;
+        }
         if (sharedBorrows.get(key) === borrow) sharedBorrows.delete(key);
         await borrow.process.close();
       }));
@@ -822,7 +839,7 @@ export class RhinoRunner {
       if (parent) parent.failure ??= failure;
       throw new EmulationFailure(failure);
     }
-    if (this.#closing && !callScope.getStore()) {
+    if (this.#closing && (this.#cancel.signal.aborted || !callScope.getStore())) {
       const failure = { kind: "protocol" as const, message: "rhino-local: runner is closing" };
       this.#failures.record(failure, `job ${id}`);
       throw new EmulationFailure(failure);
@@ -858,6 +875,7 @@ export class RhinoRunner {
 
   async #evalJob(job: JobRequest & { id: string }, options: EvalOptions): Promise<JobResponse> {
     const id = job.id;
+    const owner = this.#shared ? this.#cancel.signal : undefined;
     const payload: Record<string, unknown> = { id, source: job.source };
     if (job.engine !== undefined) payload.engine = job.engine;
     if (job.hostCalls !== undefined) payload.hostCalls = job.hostCalls;
@@ -916,7 +934,9 @@ export class RhinoRunner {
       try {
         if (options.onCall === undefined)
           throw new EmulationFailure({ kind: "protocol", message: "rhino-local: no onCall handler for IDM job" });
-        const result = await callScope.run(scope, () => withHostEvidence(provenance, () => options.onCall!(call)));
+        const result = await hostResult(
+          callScope.run(scope, () => withHostEvidence(provenance, () => options.onCall!(call))), owner
+        );
         if (scope.failure) throw new EmulationFailure(scope.failure);
         if (result === undefined)
           throw new EmulationFailure({ kind: "protocol", message: "rhino-local: onCall must return a JSON value (use null)" });
@@ -935,16 +955,16 @@ export class RhinoRunner {
         };
       }
       if (provenance.length > 0) reply = { ...reply, provenance: structuredClone(provenance) };
-      const fatal = "error" in reply ? emulationFailure(reply.error) : undefined;
+      const fatal = !owner?.aborted && "error" in reply ? emulationFailure(reply.error) : undefined;
       if (fatal) this.#failures.record(fatal, `host callback ${id}#${call.seq}`);
       if (!transcriptFrozen) entry.reply = reply;
       return reply;
     }));
-    if (this.#shadow === undefined) return this.#primary.send(id, payload, primaryCall);
+    if (this.#shadow === undefined) return this.#primary.send(id, payload, primaryCall, owner);
     if (job.engine !== "idm" && !job.hostCalls) {
       const [host, container] = await Promise.all([
-        this.#primary.send(id, payload),
-        this.#shadow.send(id, payload),
+        this.#primary.send(id, payload, undefined, owner),
+        this.#shadow.send(id, payload, undefined, owner),
       ]);
       if (host.outcome === "protocol_error") return host;
       if (container.outcome === "protocol_error") return container;
@@ -954,7 +974,7 @@ export class RhinoRunner {
       return host;
     }
     // Sequential shadow replay avoids duplicate effects and naturally supports nested evals.
-    const host = await this.#primary.send(id, payload, primaryCall);
+    const host = await this.#primary.send(id, payload, primaryCall, owner);
     transcriptFrozen = true;
     // A harness admission refusal ran no script. Shadow replay must not admit work
     // that the primary refused while its ancestors occupied all workers.
@@ -981,7 +1001,7 @@ export class RhinoRunner {
       // Primary finished without a reply only when its worker timed out waiting.
       // Leave the shadow waiting too, so its own deadline produces the same outcome.
       return !host.unanswered?.includes(call.seq) && recorded.reply ? recorded.reply : new Promise<HostReply>(() => {});
-    });
+    }, owner);
     if (container.outcome === "protocol_error") return container;
     if (divergence !== undefined || at !== replay.length) {
       throw new LaneDivergenceError(
@@ -1003,9 +1023,12 @@ export class RhinoRunner {
       // Keep both lanes usable until accepted evaluations (including shadow replay) finish.
       await Promise.race([Promise.all([...this.#jobs]), sleep(this.#shutdownWaitMs)]);
       if (this.#releaseBorrow !== undefined) {
-        // A closing borrower cannot leave work running in a sibling's JVM.
-        await Promise.all(this.#processes().filter((p) => p.hasPending(this.#activeIds)).map((p) => p.close()));
-        await this.#releaseBorrow();
+        if (this.#jobs.size > 0) {
+          this.#cancel.abort(new Error(
+            `rhino-local: lease closed with ${this.#jobs.size} job(s) still pending; its jobs cancelled`
+          ));
+        }
+        await this.#releaseBorrow(this.#cancel.signal);
       } else {
         await Promise.all(this.#processes().map((p) => p.close()));
       }
@@ -1027,6 +1050,19 @@ export class RhinoRunner {
   #processes(): JvmProcess[] {
     return this.#shadow === undefined ? [this.#primary] : [this.#primary, this.#shadow];
   }
+}
+
+/** Stop tracking a shared lease's host callback when that lease is cancelled.
+ * The callback's own promise may still finish, but cannot reply to the JVM.
+ */
+async function hostResult<T>(result: T | Promise<T>, owner?: AbortSignal): Promise<T> {
+  if (owner === undefined) return result;
+  return new Promise<T>((resolve, reject) => {
+    const abort = (): void => reject(owner.reason);
+    owner.addEventListener("abort", abort, { once: true });
+    if (owner.aborted) abort();
+    void Promise.resolve(result).then(resolve, reject).finally(() => owner.removeEventListener("abort", abort));
+  });
 }
 
 function sleep(ms: number): Promise<void> {
