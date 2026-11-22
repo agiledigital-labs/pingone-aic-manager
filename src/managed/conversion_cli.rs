@@ -746,6 +746,7 @@ pub async fn map(
     let mut file = FileSession::open(path.clone(), previous).await?;
     file.save(&capture).await?;
     let mut storage_activation = None;
+    let mut wrote_mapping = false;
     let result = async {
         match storage::mode(&report) {
             storage::Mode::Generic => {
@@ -762,13 +763,18 @@ pub async fn map(
                     async || write_plan(&ok, &pair, &plan, storage::Mode::Generic).await,
                 )
                 .await?;
+                wrote_mapping = true;
                 storage_activation =
                     activation::finish(ok.tenant, ok.confirmed_prod, &added, pending, &command)
                         .await
                         .map_err(|error| {
                             Error::Config(format!("config/repo.ds was written; {error}"))
                         })?;
-                if storage_activation.as_ref().is_some_and(|a| a.interrupted) {
+                if storage_activation
+                    .as_ref()
+                    .and_then(activation::StorageActivation::stop_error)
+                    .is_some()
+                {
                     return Ok(());
                 }
                 let Some(records) = command
@@ -819,31 +825,51 @@ pub async fn map(
         )
         .await?;
     }
-    finish_map(&flags, &path, &capture, &mut storage_activation, &command)
+    finish_map(
+        &flags,
+        &path,
+        &capture,
+        wrote_mapping,
+        &mut storage_activation,
+        &command,
+    )
 }
 
 fn finish_map(
     flags: &Flags,
     path: &Path,
     capture: &Capture,
+    wrote_mapping: bool,
     storage_activation: &mut Option<activation::StorageActivation>,
     command: &activation::CommandInterrupt,
 ) -> Result<()> {
     let interrupted = command.mark(storage_activation);
+    let failure = if interrupted {
+        Some(activation::command_interrupted())
+    } else {
+        storage_activation
+            .as_ref()
+            .and_then(activation::StorageActivation::stop_error)
+    };
+    let mut body = json!({"capture": path, "links": capture.count(), "complete": failure.is_none(), "interrupted": interrupted,
+        "restored": capture.restored, "pending": capture.pending});
+    if failure.is_some() && wrote_mapping {
+        activation::report_confirmed_writes(&mut body, &["config/repo.ds"]);
+    }
+    activation::attach(&mut body, storage_activation.as_ref())?;
     if interrupted {
+        // Print recovery information even if stdout is blocked.
         eprintln!(
             "{}",
             stopped(path, capture, flags, activation::command_interrupted())
         );
     }
-    let mut body = json!({"capture": path, "links": capture.count(), "complete": !interrupted, "interrupted": interrupted,
-        "restored": capture.restored, "pending": capture.pending});
-    activation::attach(&mut body, storage_activation.as_ref())?;
     output(flags, &body)?;
-    if interrupted {
-        return Err(activation::command_interrupted());
+    match failure {
+        Some(error) if interrupted => Err(error),
+        Some(error) => Err(stopped(path, capture, flags, error)),
+        None => Ok(()),
     }
-    activation::check_interrupted(storage_activation.as_ref())
 }
 
 async fn read_promotion(lower: &str, upper: &str) -> Result<conversion::PromotionRead> {
@@ -1308,7 +1334,7 @@ mod tests {
                 probe_prefix: None,
                 json: true,
             };
-            finish_map(&flags, &path, &capture, &mut storage, &command)
+            finish_map(&flags, &path, &capture, false, &mut storage, &command)
                 .unwrap_err()
                 .exit_code()
         });

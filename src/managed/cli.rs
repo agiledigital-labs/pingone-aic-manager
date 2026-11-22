@@ -1180,15 +1180,19 @@ async fn relationship(command: RelationshipCommand) -> Result<()> {
             .await?;
             confirmation(&format!("relationship {source_object}.{key} set"));
             if let Some((mapping, Some(storage))) = &mapped
-                && storage.interrupted
+                && let Some(error) = storage.stop_error()
             {
                 let mut body = serde_json::json!({
                     "changed": changed_objects(&doc, &updated)?,
                     "mapping_verification": mapping,
                 });
+                activation::report_confirmed_writes(
+                    &mut body,
+                    &["config/managed", "config/repo.ds"],
+                );
                 activation::attach(&mut body, Some(storage))?;
                 output(json, &body)?;
-                return Err(activation::command_interrupted());
+                return Err(error);
             }
             let remaining = command
                 .run(async {
@@ -2276,7 +2280,11 @@ async fn map_created_pair(
         .await?
     };
     // Return directly to rendering recovery evidence after bounded cleanup.
-    if storage_activation.as_ref().is_some_and(|a| a.interrupted) {
+    if storage_activation
+        .as_ref()
+        .and_then(activation::StorageActivation::stop_error)
+        .is_some()
+    {
         return Ok((None, storage_activation));
     }
     let Some(verification) = command

@@ -257,3 +257,135 @@ fn managed_put_guard_refuses_an_edit_after_the_prewrite_survey() {
     assert!(tenant.writes().is_empty(), "{:?}", tenant.writes());
     assert_eq!(tenant.managed["objects"][0]["onCreate"]["source"], "edited");
 }
+
+fn reported_writes(set: bool) -> Value {
+    if set {
+        json!(["config/managed", "config/repo.ds"])
+    } else {
+        json!(["config/repo.ds"])
+    }
+}
+
+fn stopped_report(output: &Output, set: bool, capture: &Path) -> Value {
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(1), "{stderr}");
+    let body: Value = serde_json::from_slice(&output.stdout)
+        .unwrap_or_else(|error| panic!("missing progress JSON: {error}; {stderr}"));
+    assert_eq!(body["confirmed_writes"], reported_writes(set), "{body}");
+    assert!(stderr.contains("config/repo.ds"), "{stderr}");
+    if set {
+        assert!(stderr.contains("config/managed"), "{stderr}");
+        assert_eq!(body["changed"].as_array().unwrap().len(), 2, "{body}");
+    } else {
+        assert_eq!(body["complete"], false, "{body}");
+        assert_eq!(body["capture"], capture.to_str().unwrap(), "{body}");
+        assert_eq!(body["restored"], json!([]), "{body}");
+        let journal: Value = serde_json::from_slice(&std::fs::read(capture).unwrap()).unwrap();
+        assert_eq!(journal[0]["state"], "switching", "{journal}");
+    }
+    body
+}
+
+#[test]
+fn stale_consent_after_config_writes_reports_and_refuses_before_first_create() {
+    for set in [true, false] {
+        let project = Project::new();
+        let capture = project.0.join("capture.json");
+        let mut args = if set {
+            set_args().to_vec()
+        } else {
+            map_args(&capture).to_vec()
+        };
+        args.push("--force");
+        let (output, tenant) = run(&project, &args, Tenant::new(!set), |tenant, request, _| {
+            if request["method"] == "PUT" && request["path"].as_str().unwrap().starts_with(REPO) {
+                tenant.managed["objects"][0]["onCreate"]["source"] = json!("edited");
+            }
+            None
+        });
+        let body = stopped_report(&output, set, &capture);
+        let activation = &body["storage_activation"];
+        assert_eq!(activation["outcome"], "refused", "{body}");
+        assert_eq!(activation["objects"].as_array().unwrap().len(), 2);
+        assert!(
+            activation["objects"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|object| object["outcome"] == "refused")
+        );
+        assert!(tenant.writes().iter().all(|(method, _)| *method == "PUT"));
+    }
+}
+
+#[test]
+fn later_probe_refuses_drift_on_its_mapping_target_and_preserves_earlier_id() {
+    for set in [true, false] {
+        let project = Project::new();
+        let capture = project.0.join("capture.json");
+        let mut args = if set {
+            set_args().to_vec()
+        } else {
+            map_args(&capture).to_vec()
+        };
+        args.push("--force");
+        args.extend(["--probe-prefix", "fixture-"]);
+        let mut id = String::new();
+        let mut fixture = Tenant::new(!set);
+        fixture.managed["objects"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({
+                "name":"observer","schema":{"type":"object","properties":{}},
+                "onCreate":{"type":"text/javascript","source":"original"}
+            }));
+        fixture.sync = json!({"mappings":[
+            {"name":"watchWidgets","source":"managed/widget","target":"managed/observer"}
+        ]});
+        let (output, tenant) = run(&project, &args, fixture, |tenant, request, _| {
+            let method = request["method"].as_str().unwrap();
+            let path = request["path"].as_str().unwrap();
+            if method == "POST" && path == "/openidm/managed/holder?_action=create" {
+                id = request["body"]["_id"].as_str().unwrap().to_owned();
+                tenant.calls.push((method.into(), path.into()));
+                return Some(json_reply(json!({"_id":id})));
+            }
+            if method == "GET"
+                && !id.is_empty()
+                && path == format!("/openidm/managed/holder/{id}?_fields=_id")
+            {
+                return Some(json_reply(json!({"_id":id})));
+            }
+            if method == "DELETE"
+                && !id.is_empty()
+                && path == format!("/openidm/managed/holder/{id}")
+            {
+                tenant.calls.push((method.into(), path.into()));
+                tenant.managed["objects"][2]["onCreate"]["source"] = json!("edited");
+                return Some(
+                    json!({"type":"api_error","status":403,"body":"fixture: keep recovery evidence"}),
+                );
+            }
+            None
+        });
+        assert!(id.starts_with("fixture-"));
+        let body = stopped_report(&output, set, &capture);
+        let activation = &body["storage_activation"];
+        assert_eq!(activation["outcome"], "refused", "{body}");
+        assert_eq!(
+            activation["objects"][0]["outcome"], "not_confirmed",
+            "{body}"
+        );
+        assert_eq!(activation["objects"][0]["id"], id, "{body}");
+        assert_eq!(activation["objects"][1]["outcome"], "refused", "{body}");
+        assert_eq!(
+            tenant
+                .writes()
+                .iter()
+                .filter(|(method, _)| *method == "POST")
+                .count(),
+            1
+        );
+        assert!(String::from_utf8_lossy(&output.stderr).contains(&id));
+    }
+}

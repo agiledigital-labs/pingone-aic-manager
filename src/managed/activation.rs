@@ -56,7 +56,7 @@ re-read before each probe; changed hooks or mapping contents refuse the probe ev
 with --force. Configuration writes already landed at that point; verify the relationship \
 before creating records. A probe only runs when adding a per-type entry.
 
---json adds storage_activation with outcome readable, not_confirmed, or not_needed, \
+--json adds storage_activation with outcome readable, not_confirmed, refused, or not_needed, \
 and interrupted. Recovery ids are retained unless readable. The JSON report is rendered before \
 an interrupted command exits non-zero. This is separate from activation, the relationship-end \
 liveness wait. --dry-run writes no probe. A type rejecting the empty content plus _id (required \
@@ -536,7 +536,9 @@ pub(crate) fn from_objects(
     seconds: f64,
     objects: Vec<ObjectProbe>,
 ) -> StorageActivation {
-    let outcome = if objects.iter().all(|object| object.outcome == "readable") {
+    let outcome = if objects.iter().any(|object| object.outcome == "refused") {
+        "refused"
+    } else if objects.iter().all(|object| object.outcome == "readable") {
         "readable"
     } else {
         "not_confirmed"
@@ -550,8 +552,13 @@ pub(crate) fn from_objects(
         outcome,
         seconds: Some(seconds),
         timeout_seconds: Some(timeout.as_secs()),
-        detail: (outcome != "readable")
-            .then(|| format!("{failed} of {} not confirmed", objects.len())),
+        detail: match outcome {
+            "readable" => None,
+            "refused" => {
+                Some("probe consent could no longer be verified; see per-type outcomes".into())
+            }
+            _ => Some(format!("{failed} of {} not confirmed", objects.len())),
+        },
         objects,
     }
 }
@@ -695,9 +702,8 @@ async fn prepare_with(
 }
 
 /// Carry out [`prepare`]'s decision after the per-type entry is confirmed.
-/// A declined probe and an unconfirmed one both return `Ok`: the mapping has
-/// already landed. The `Err` from [`prepare`] is the refusal that happens
-/// before that write.
+/// Return a report even on a refusal after the mapping landed so callers
+/// can attach completed work and recovery evidence before exiting.
 pub(crate) async fn finish(
     tenant: &str,
     confirmed_prod: bool,
@@ -740,14 +746,14 @@ async fn finish_with(
             effects,
             records,
         }) => {
-            let current = load_effects_with(io.as_ref(), added).await;
-            require_inventory(&current).map_err(|error| {
-                Error::Config(format!(
-                    "{error}; configuration writes already landed; no probe record created"
-                ))
-            })?;
-            if current != effects {
-                return Err(Error::Config("probe refused: hooks or sync mappings changed since consent; configuration writes already landed; no probe record created. Verify the relationship and re-read the inventories before creating records. Re-running map on the installed mappings will not repeat the probe".into()));
+            if let Err(reason) = check_inventory(io.as_ref(), added, &effects).await {
+                let activation = from_objects(
+                    timeout,
+                    0.0,
+                    skipped_records(&records, "refused", &reason.to_string()).collect(),
+                );
+                announce(added, &activation);
+                return Ok(Some(activation));
             }
             command
                 .interrupt
@@ -760,7 +766,7 @@ async fn finish_with(
                 timeout,
                 LIMITS,
                 command.interrupt.clone(),
-                Some(&effects),
+                Some((added, &effects)),
             )
             .await;
             command.interrupt.cleanup_done.store(true, Ordering::SeqCst);
@@ -795,20 +801,46 @@ fn announce(added: &[String], activation: &StorageActivation) {
                 eprintln!("{warning}");
             }
             for object in &activation.objects {
-                if object.outcome != "readable" {
+                if object.outcome != "readable" || activation.outcome == "refused" {
                     let detail = object
                         .detail
                         .as_deref()
                         .map(|detail| format!(": {detail}"))
                         .unwrap_or_default();
                     eprintln!(
-                        "warning: managed/{} storage activation not confirmed{detail}",
-                        object.object
+                        "managed/{} storage activation {}{detail}",
+                        object.object,
+                        object.outcome.replace('_', " ")
                     );
                 }
             }
         }
     }
+}
+
+/// Implicit sync can write managed targets. Include those types in the
+/// consent inventory, following managed-to-managed mappings to closure.
+fn affected_types(added: &[String], sync: Option<&Value>) -> Vec<String> {
+    let mut types = added.to_vec();
+    let mut seen: std::collections::BTreeSet<_> = added.iter().cloned().collect();
+    if let Some(items) = sync.and_then(|doc| doc["mappings"].as_array()) {
+        let mut next = 0;
+        while next < types.len() {
+            let source = format!("managed/{}", types[next]);
+            next += 1;
+            for item in items {
+                if item["source"].as_str() == Some(&source)
+                    && let Some(target) = item["target"]
+                        .as_str()
+                        .and_then(|path| path.strip_prefix("managed/"))
+                    && seen.insert(target.to_owned())
+                {
+                    types.push(target.to_owned());
+                }
+            }
+        }
+    }
+    types
 }
 
 async fn load_effects_with(io: &impl ProbeIo, added: &[String]) -> Vec<SideEffects> {
@@ -817,7 +849,7 @@ async fn load_effects_with(io: &impl ProbeIo, added: &[String]) -> Vec<SideEffec
         .await
         .ok();
     let sync = io.request("GET", SYNC_PATH.into(), None).await.ok();
-    added
+    affected_types(added, sync.as_ref())
         .iter()
         .map(|name| {
             let object = managed
@@ -828,12 +860,25 @@ async fn load_effects_with(io: &impl ProbeIo, added: &[String]) -> Vec<SideEffec
         .collect()
 }
 
-/// Called after rendering JSON, so interruption never hides recovery ids.
-pub(crate) fn check_interrupted(activation: Option<&StorageActivation>) -> Result<()> {
-    if activation.is_some_and(|a| a.interrupted) {
-        return Err(Error::Config("interrupted; probe cleanup attempted; inspect storage_activation and stderr for recovery ids".into()));
+impl StorageActivation {
+    pub(crate) fn stop_error(&self) -> Option<Error> {
+        if self.interrupted {
+            Some(command_interrupted())
+        } else if self.outcome == "refused" {
+            Some(Error::Config(
+                "probe refused: consent inventory changed or could not be re-read. Verify the relationship and review the inventories before creating records. An installed mapping will not be probed again by map".into(),
+            ))
+        } else {
+            None
+        }
     }
-    Ok(())
+}
+
+pub(crate) fn report_confirmed_writes(body: &mut Value, documents: &[&str]) {
+    if !documents.is_empty() {
+        eprintln!("Confirmed configuration writes: {}", documents.join(", "));
+        body["confirmed_writes"] = json!(documents);
+    }
 }
 
 /// Own the listener through command completion, including post-probe awaits.
@@ -976,36 +1021,30 @@ async fn probe_types_with(
     timeout: Duration,
     limits: ProbeLimits,
     interrupt: Arc<Interrupt>,
-    effects: Option<&[SideEffects]>,
+    inventory: Option<(&[String], &[SideEffects])>,
 ) -> StorageActivation {
     let started = Instant::now();
     let deadline = started + timeout;
     let mut objects = Vec::with_capacity(records.len());
     for (index, record) in records.iter().enumerate() {
-        // finish_with checked the whole plan before the first create. A
-        // prior record may spend seconds in cleanup, so check each later
-        // type again before it can create a record.
+        // A prior record may spend seconds in cleanup. Recheck the full
+        // consent inventory, including hooks on managed sync targets.
         if index > 0
             && Instant::now() < deadline
             && !interrupt.is_set()
-            && let Some(effects) = effects
+            && let Some((added, effects)) = inventory
         {
-            let name = std::slice::from_ref(&record.object);
-            let surveyed = tokio::select! {
+            let checked = tokio::select! {
                 _ = interrupt.cancelled() => None,
-                checked = tokio::time::timeout_at(deadline.into(), load_effects_with(io.as_ref(), name)) => checked.ok(),
+                result = tokio::time::timeout_at(deadline.into(), check_inventory(io.as_ref(), added, effects)) => result.ok(),
             };
-            if let Some(current) = surveyed
-                && current.as_slice() != &effects[index..=index]
-            {
-                objects.push(ObjectProbe {
-                    object: record.object.clone(),
-                    outcome: "not_confirmed",
-                    seconds: None,
-                    id: None,
-                    detail: Some("probe refused: hook or sync mapping inventory changed or could not be re-read. Configuration writes already landed. No record was created for this type".into()),
-                });
-                continue;
+            if let Some(Err(reason)) = checked {
+                objects.extend(skipped_records(
+                    &records[index..],
+                    "refused",
+                    &reason.to_string(),
+                ));
+                break;
             }
         }
         objects.push(probe_run(io.clone(), record, deadline, limits, interrupt.clone()).await);
@@ -1020,6 +1059,20 @@ async fn probe_types_with(
         );
     }
     activation
+}
+
+fn skipped_records<'a>(
+    records: &'a [ProbeRecord],
+    outcome: &'static str,
+    reason: &'a str,
+) -> impl Iterator<Item = ObjectProbe> + 'a {
+    records.iter().map(move |record| ObjectProbe {
+        object: record.object.clone(),
+        outcome,
+        seconds: None,
+        id: None,
+        detail: Some(format!("{reason}. No probe record created")),
+    })
 }
 
 #[derive(Clone, Copy)]
@@ -1683,12 +1736,18 @@ pub(super) mod lifecycle_tests {
                     json!("new");
             }
             let io = Arc::new(io);
-            let error = finish_with(io.clone(), &added, pending, &CommandInterrupt::new())
+            let report = finish_with(io.clone(), &added, pending, &CommandInterrupt::new())
                 .await
-                .unwrap_err()
-                .to_string();
-            assert!(error.contains("changed since consent"), "{error}");
-            assert!(error.contains("writes already landed"), "{error}");
+                .unwrap()
+                .unwrap();
+            assert_eq!(report.outcome, "refused");
+            assert!(
+                report.objects[0]
+                    .detail
+                    .as_ref()
+                    .unwrap()
+                    .contains("changed since consent")
+            );
             assert!(io.calls.lock().unwrap().iter().all(|call| call.0 == "GET"));
         }
     }
@@ -1767,7 +1826,8 @@ pub(super) mod lifecycle_tests {
             .unwrap()
             .unwrap();
         assert_eq!(result.objects[0].outcome, "readable");
-        assert_eq!(result.objects[1].outcome, "not_confirmed");
+        assert_eq!(result.outcome, "refused");
+        assert_eq!(result.objects[1].outcome, "refused");
         assert!(
             result.objects[1]
                 .detail
@@ -2048,9 +2108,7 @@ pub(super) mod lifecycle_tests {
             let mut body = json!({});
             attach(&mut body, Some(&activation)).unwrap();
             println!("{body}");
-            check_interrupted(Some(&activation))
-                .unwrap_err()
-                .exit_code()
+            activation.stop_error().unwrap().exit_code()
         });
         std::process::exit(exit_code);
     }
