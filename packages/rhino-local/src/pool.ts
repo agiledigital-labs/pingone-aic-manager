@@ -79,6 +79,13 @@ interface Hello {
   env: Partial<Record<(typeof LAUNCH_ENV)[number], string>>;
 }
 
+interface DiscardRequest {
+  type: "discard";
+  token: string;
+  borrowId: string;
+  reason: string;
+}
+
 interface Status {
   type: typeof STATUS_OP;
   id: string;
@@ -388,6 +395,8 @@ export class JvmPool {
   readonly #dir: string;
   readonly #idle = new Map<string, PooledJvm[]>();
   readonly #all = new Set<PooledJvm>();
+  /** Only the live loan can discard the JVM it holds. */
+  readonly #loans = new Map<string, (reason: string) => void>();
   #stopped = false;
   #started = 0;
   /** Concurrent worker slots must launch the same cold build, not competing copies. */
@@ -451,6 +460,7 @@ export class JvmPool {
     let buffer = "";
     let state: "hello" | "lending" | "attached" | "closed" = "hello";
     let jvm: PooledJvm | undefined;
+    let borrowId: string | undefined;
     const queued: string[] = [];
     const fail = (reason: string): void => {
       if (state === "closed") return;
@@ -460,15 +470,14 @@ export class JvmPool {
     };
     const forward = (held: PooledJvm, line: string): void => {
       if (line.startsWith(CONTROL)) {
-        // A client sends two controls: kill the JVM it holds, or (on release)
-        // the source hashes it shipped to it.
-        let frame: { kill?: unknown; known?: unknown } = {};
-        try { frame = JSON.parse(line) as typeof frame; } catch { /* treated as kill below */ }
-        if (frame.kill === undefined && Array.isArray(frame.known)) {
+        // The only data-socket control is the client's source hashes on release.
+        let frame: { known?: unknown } | null = null;
+        try { frame = JSON.parse(line) as { known?: unknown } | null; } catch { /* refused below */ }
+        if (Array.isArray(frame?.known)) {
           for (const hash of frame.known) if (typeof hash === "string" && SOURCE_HASH.test(hash)) held.known.add(hash);
           return;
         }
-        held.kill(typeof frame.kill === "string" ? frame.kill : "JVM discarded by its borrower");
+        held.kill("invalid JVM pool release frame");
         return;
       }
       if (!held.write(line)) {
@@ -486,13 +495,29 @@ export class JvmPool {
         } else if (state === "lending") {
           queued.push(line);
         } else if (state === "hello") {
-          const hello = parseHello(line, this.address.token);
-          if (hello === undefined) {
+          const request = parseRequest(line, this.address.token);
+          if (request === undefined) {
             fail("JVM pool handshake refused");
             return;
           }
+          if (request.type === "discard") {
+            state = "closed";
+            this.#loans.get(request.borrowId)?.(request.reason);
+            socket.end();
+            return;
+          }
           state = "lending";
-          this.#lend(hello, () => state === "closed").then(
+          borrowId = randomUUID();
+          this.#loans.set(borrowId, (reason) => {
+            if (state === "closed") return;
+            jvm?.kill(reason);
+            // End the loan at the pool, which owns both the JVM and its
+            // possibly paused socket. This also works if SIGKILL takes time.
+            release();
+            socket.destroy();
+          });
+          socket.write(`${JSON.stringify({ type: "rhino-local-pool", borrowId })}\n`);
+          this.#lend(request, () => state === "closed").then(
             (lent) => {
               if (lent === undefined) return;
               if (state === "closed") {
@@ -511,6 +536,7 @@ export class JvmPool {
     });
     const release = (): void => {
       state = "closed";
+      if (borrowId !== undefined) this.#loans.delete(borrowId);
       // A partial line from a client that went away is dropped, never forwarded.
       buffer = "";
       if (jvm !== undefined) {
@@ -618,21 +644,26 @@ function buildIdentity(classes: string): string {
   return `${classes}\0${manifest}`;
 }
 
-function parseHello(line: string, token: string): Hello | undefined {
+function parseRequest(line: string, token: string): Hello | DiscardRequest | undefined {
   try {
-    const hello = JSON.parse(line) as Partial<Hello>;
+    const request = JSON.parse(line) as Partial<Hello> | Partial<DiscardRequest>;
+    if (request.token !== token) return undefined;
+    if (request.type === "discard") {
+      return typeof request.borrowId === "string" && typeof request.reason === "string"
+        ? request as DiscardRequest
+        : undefined;
+    }
     if (
-      hello.type !== "hello" ||
-      hello.token !== token ||
-      (hello.kind !== "host" && hello.kind !== "container") ||
-      typeof hello.cache !== "string" ||
-      typeof hello.slot !== "string" ||
-      typeof hello.env !== "object" ||
-      hello.env === null
+      request.type !== "hello" ||
+      (request.kind !== "host" && request.kind !== "container") ||
+      typeof request.cache !== "string" ||
+      typeof request.slot !== "string" ||
+      typeof request.env !== "object" ||
+      request.env === null
     ) {
       return undefined;
     }
-    return hello as Hello;
+    return request as Hello;
   } catch {
     return undefined;
   }
@@ -653,7 +684,9 @@ export class PooledChild extends EventEmitter {
   readonly stdout = new PassThrough();
   readonly stderr = new PassThrough();
   readonly stdin: Writable;
+  readonly #address: PoolAddress;
   readonly #socket: Socket;
+  #borrowId: string | undefined;
   #buffer = "";
   #exited = false;
   #connectionError: string | undefined;
@@ -662,6 +695,7 @@ export class PooledChild extends EventEmitter {
 
   constructor(address: PoolAddress, kind: "host" | "container", slot: string, cache: string = cacheDir()) {
     super();
+    this.#address = address;
     const env: Hello["env"] = {};
     for (const name of LAUNCH_ENV) {
       const value = process.env[name];
@@ -676,7 +710,7 @@ export class PooledChild extends EventEmitter {
     this.stdin = new Writable({
       decodeStrings: false,
       write: (chunk: string, _encoding, callback): void => {
-        if (socket.destroyed) {
+        if (this.#released || socket.destroyed) {
           callback(new Error("rhino-local: JVM pool connection is closed"));
           return;
         }
@@ -702,6 +736,7 @@ export class PooledChild extends EventEmitter {
 
   /** Return the JVM to the pool, telling it which source hashes this lease shipped. */
   release(shipped: Iterable<string> = []): void {
+    if (this.#released) return;
     this.#released = true;
     const known = [...shipped];
     if (known.length === 0) this.#socket.end();
@@ -715,12 +750,33 @@ export class PooledChild extends EventEmitter {
   }
 
   discard(reason: string): void {
-    if (this.#released) return;
-    // The socket's FIN may arrive before the JVM exits and the pool sends
-    // its exit frame. Keep the reason even when only the socket closes.
-    this.#discardReason = reason;
+    if (this.#exited) return;
+    this.#discardReason ??= reason;
+    this.exitReason = this.#discardReason;
     this.#released = true;
-    this.#socket.end(`${JSON.stringify({ type: "rhino-local-pool", kill: reason })}\n`);
+    this.#requestDiscard();
+  }
+
+  /** The worker's last resort if even the pool control request times out. */
+  disconnect(): void {
+    this.#socket.destroy();
+  }
+
+  #requestDiscard(): void {
+    if (this.#borrowId === undefined || this.#discardReason === undefined) return;
+    const request: DiscardRequest = {
+      type: "discard",
+      token: this.#address.token,
+      borrowId: this.#borrowId,
+      reason: this.#discardReason,
+    };
+    // The pool may have paused the data socket behind JVM stdin. Use a
+    // separate connection that can still reach the pool in that state.
+    const control = createConnection(this.#address.path);
+    control.on("error", () => { /* the data connection's exit deadline bounds this */ });
+    control.unref();
+    control.resume();
+    control.end(`${JSON.stringify(request)}\n`);
   }
 
   #onData(chunk: string): void {
@@ -734,7 +790,11 @@ export class PooledChild extends EventEmitter {
         this.stdout.write(line);
         continue;
       }
-      const frame = JSON.parse(line) as { jvm?: unknown; known?: unknown; stderr?: string; exit?: PoolExit };
+      const frame = JSON.parse(line) as { borrowId?: unknown; jvm?: unknown; known?: unknown; stderr?: string; exit?: PoolExit };
+      if (typeof frame.borrowId === "string" && this.#borrowId === undefined) {
+        this.#borrowId = frame.borrowId;
+        this.#requestDiscard();
+      }
       if (typeof frame.jvm === "string") this.jvmId = frame.jvm;
       if (Array.isArray(frame.known)) this.knownSources = frame.known.filter((h): h is string => typeof h === "string");
       if (frame.stderr !== undefined) this.stderr.write(frame.stderr);

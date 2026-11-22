@@ -1,5 +1,6 @@
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { setTimeout as sleep } from "node:timers/promises";
 import { join } from "node:path";
 import { expect, it, vi } from "vitest";
 import { JvmPool } from "../../src/pool.ts";
@@ -64,6 +65,48 @@ it.skipIf(process.platform === "win32")("a lease arriving during the last cancel
   } finally {
     if (stopped) resumeStopped(pid);
     await Promise.all(borrowers.map((runner) => runner.close()));
+    await pool.stop();
+    vi.unstubAllEnvs();
+    rmSync(directory, { recursive: true, force: true });
+  }
+}, 30_000);
+
+it.skipIf(process.platform === "win32")("final close discards a stopped JVM with a 1 MiB eval queued", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "rhino-pool-backpressure-"));
+  const timing = join(directory, "timings.jsonl");
+  vi.stubEnv(TIMING_ENV, timing);
+  const pool = await JvmPool.start();
+  const owner = await RhinoRunner.borrow(pool.address, { lane: "host", shared: true, shutdownWaitMs: 100 });
+  const idle = await RhinoRunner.borrow(pool.address, { lane: "host", shared: true });
+  let pid = 0;
+  let stopped = false;
+  try {
+    pid = Number((await owner.eval(PID_PROBE)).value);
+    expect(pid).toBeGreaterThan(0);
+    process.kill(pid, "SIGSTOP");
+    stopped = true;
+    expectEmulationFailure("Error: rhino-local: lease closed with 1 job(s) still pending; its jobs cancelled");
+    const work = owner.eval({ source: "42", globals: { padding: "x".repeat(1024 * 1024) }, classAllowList: [] })
+      .catch((error: unknown) => error);
+    await owner.close();
+    expect(await work).toMatchObject({ message: expect.stringContaining("its jobs cancelled") });
+    const finalClose = idle.close();
+    const first = await Promise.race([finalClose.then(() => "closed"), sleep(11_000, "watchdog", { ref: false })]);
+    expect(first, `starts=${pool.started}, discards=${discards(timing).length}`).toBe("closed");
+    const next = await RhinoRunner.borrow(pool.address, { lane: "host", shared: true });
+    try {
+      expect(pool.started).toBe(2);
+      expect((await next.eval(PID_PROBE)).value).not.toBe(pid);
+      expect(discards(timing)).toEqual([expect.objectContaining({
+        reason: expect.stringContaining("did not acknowledge cancellation within 2000ms"),
+      })]);
+    } finally {
+      await next.close();
+    }
+  } finally {
+    // Resume only for cleanup if the regression fails and leaves the old JVM stopped.
+    if (stopped) resumeStopped(pid);
+    await Promise.all([owner.close(), idle.close()]);
     await pool.stop();
     vi.unstubAllEnvs();
     rmSync(directory, { recursive: true, force: true });

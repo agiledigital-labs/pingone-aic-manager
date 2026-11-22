@@ -93,6 +93,7 @@ const execFileAsync = promisify(execFile);
 const READY = "rhino-local-runner ready";
 export const DEFAULT_SPAWN_TIMEOUT_MS = 60_000;
 const CANCELLATION_ACK_TIMEOUT_MS = 2_000;
+const KILL_EXIT_TIMEOUT_MS = 2_000;
 
 export class RhinoRunnerExitError extends Error {
   readonly exitCode: number | null;
@@ -202,7 +203,7 @@ class JvmProcess {
    */
   #sources = new ShippedSources();
   #exit: { code: number | null; signal: NodeJS.Signals | null } | null = null;
-  #exitWaiters: Array<() => void> = [];
+  readonly #exitWaiters = new Set<() => void>();
   /** JVM phase timing by job id, taken off the response line before it is parsed. */
   readonly #timings = new Map<string, unknown>();
   readonly #startedAt = performance.now();
@@ -241,16 +242,9 @@ class JvmProcess {
     });
     child.on("exit", (code, signal) => {
       this.#exit = { code, signal };
-      const error = this.#exitError(code, signal);
-      for (const [id, pending] of this.#pending) {
-        this.#pending.delete(id);
-        pending.reject(error);
-      }
+      this.#rejectPending(this.#exitError(code, signal));
       this.#cancellationAcks?.finish(true);
-      for (const waiter of this.#exitWaiters) {
-        waiter();
-      }
-      this.#exitWaiters = [];
+      for (const waiter of this.#exitWaiters) waiter();
       this.#wake();
     });
   }
@@ -467,77 +461,72 @@ class JvmProcess {
   }
 
   async close(cancellationTimedOut = false): Promise<void> {
-    if (this.#exit) {
-      await this.#removeContainer();
-      return;
-    }
-    if (this.#closed) {
-      await this.#waitForExit();
-      await this.#removeContainer();
-      return;
-    }
-    this.#closed = true;
-    if (this.#pooled !== undefined) {
-      if (this.#pending.size > 0) {
-        // A job still running would keep running in whichever file borrowed
-        // this JVM next. The unpooled path shuts the JVM down, which bounds it;
-        // here the JVM is discarded instead, and the pool starts a fresh one.
-        const error = new Error(
-          cancellationTimedOut
-            ? `rhino-local: JVM did not acknowledge cancellation within ${CANCELLATION_ACK_TIMEOUT_MS}ms; JVM discarded`
-            : `rhino-local: lease closed with ${this.#pending.size} job(s) still pending; JVM discarded`
-        );
-        for (const [id, pending] of this.#pending) {
-          this.#pending.delete(id);
-          pending.reject(error);
+    try {
+      if (this.#exit) return;
+      if (this.#closed) {
+        if (!(await this.#waitForExit(KILL_EXIT_TIMEOUT_MS))) await this.#forceExit();
+        return;
+      }
+      this.#closed = true;
+      if (this.#pooled !== undefined) {
+        if (this.#pending.size > 0) {
+          // An unfinished job must never reach the next worker. Ask the
+          // pool to kill this JVM on its separate control connection.
+          const error = new Error(
+            cancellationTimedOut
+              ? `rhino-local: JVM did not acknowledge cancellation within ${CANCELLATION_ACK_TIMEOUT_MS}ms; JVM discarded`
+              : `rhino-local: lease closed with ${this.#pending.size} job(s) still pending; JVM discarded`
+          );
+          this.#rejectPending(error);
+          this.#pooled.discard(error.message);
+        } else {
+          this.#pooled.release(this.#sources.hashes());
         }
-        this.#pooled.discard(error.message);
       } else {
-        this.#pooled.release(this.#sources.hashes());
+        try {
+          this.#child.stdin.write(`${JSON.stringify({ id: randomUUID(), op: "shutdown" })}\n`);
+        } catch {
+          // already closed
+        }
       }
-    } else {
-      try {
-        this.#child.stdin.write(`${JSON.stringify({ id: randomUUID(), op: "shutdown" })}\n`);
-      } catch {
-        // already closed
+      if (!(await this.#waitForExit(this.#shutdownWaitMs + 1_000))) {
+        this.#child.kill("SIGTERM");
+        if (!(await this.#waitForExit(2_000))) await this.#forceExit();
       }
+      this.#rejectPending(new Error("rhino-local: runner closed with job still pending"));
+    } finally {
+      await this.#removeContainer();
     }
-    const exited = await Promise.race([
-      this.#waitForExit().then(() => true),
-      sleep(this.#shutdownWaitMs + 1_000).then(() => false),
-    ]);
-    if (!exited) {
-      this.#child.kill("SIGTERM");
-      const exitedAfterTerm = await Promise.race([
-        this.#waitForExit().then(() => true),
-        sleep(2_000).then(() => false),
-      ]);
-      if (!exitedAfterTerm) {
-        this.#child.kill("SIGKILL");
-        await this.#waitForExit();
-      }
-    }
-    for (const [id, pending] of this.#pending) {
-      this.#pending.delete(id);
-      pending.reject(new Error("rhino-local: runner closed with job still pending"));
-    }
-    await this.#removeContainer();
   }
 
   async kill(reason?: string): Promise<void> {
     this.#closed = true;
-    if (this.#spawnError) {
+    try {
+      if (!this.#spawnError && this.#exit === null) await this.#forceExit(reason);
+    } finally {
       await this.#removeContainer();
-      return;
     }
-    if (this.#exit !== null) {
-      await this.#removeContainer();
-      return;
-    }
-    if (this.#pooled !== undefined && reason !== undefined) this.#pooled.discard(reason);
+  }
+
+  async #forceExit(reason?: string): Promise<void> {
+    if (this.#pooled !== undefined) this.#pooled.discard(reason ?? "JVM discarded by its borrower");
     else this.#child.kill("SIGKILL");
-    await Promise.race([this.#waitForExit(), sleep(2_000)]);
-    await this.#removeContainer();
+    if (await this.#waitForExit(KILL_EXIT_TIMEOUT_MS)) return;
+    const detail = this.#pooled?.exitReason ?? reason;
+    const error = new Error(
+      `rhino-local: ${this.lane} JVM runner did not exit within ${KILL_EXIT_TIMEOUT_MS}ms after SIGKILL` +
+        (detail === undefined ? "" : `; ${detail}`)
+    );
+    this.#rejectPending(error);
+    this.#pooled?.disconnect();
+    throw error;
+  }
+
+  #rejectPending(error: Error): void {
+    for (const [id, pending] of this.#pending) {
+      this.#pending.delete(id);
+      pending.reject(error);
+    }
   }
 
   #onStdout(chunk: string): void {
@@ -628,12 +617,17 @@ class JvmProcess {
     }
   }
 
-  #waitForExit(): Promise<void> {
-    if (this.#exit) {
-      return Promise.resolve();
-    }
+  #waitForExit(timeoutMs: number): Promise<boolean> {
+    if (this.#exit) return Promise.resolve(true);
     return new Promise((resolve) => {
-      this.#exitWaiters.push(resolve);
+      const exited = (): void => finish(true);
+      const timer = setTimeout(() => finish(false), timeoutMs);
+      const finish = (didExit: boolean): void => {
+        clearTimeout(timer);
+        this.#exitWaiters.delete(exited);
+        resolve(didExit);
+      };
+      this.#exitWaiters.add(exited);
     });
   }
 
