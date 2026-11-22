@@ -881,7 +881,12 @@ the probe prompt. `--yes` authorizes production writes. On map, one
 
 Declining consent or running without a terminal or `--force` refuses before
 any tenant write. The command rechecks the inventory before writing and before
-each probe. Changes or unreadable inventory after writing produce
+each probe. For a consented probe, `set` also checks `config/managed` for drift
+immediately before the PUT. That check narrows the window for overwriting a
+concurrent edit but cannot close it because the document has no conditional
+write. Pause other managed-schema writers through the write.
+
+Changes or unreadable inventory after writing produce
 `storage_activation.outcome: "refused"`, a nonzero exit and a report with
 `confirmed_writes` and per-type results, including any earlier recovery id.
 Map retains its capture and stops before restoring links. Verify the

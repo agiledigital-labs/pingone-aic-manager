@@ -970,8 +970,14 @@ the command refuses even with `--force`.
 A refusal of consent, including a non-interactive invocation without
 `--force`, leaves tenant configuration untouched. The command re-reads the
 inventory after consent, before recording undo or saving the capture and
-sending the configuration writes. It checks the inventory again before each
-probe. If the inventory changed or cannot be re-read after configuration
+sending the configuration writes. For a consented probe, `set` also checks
+`config/managed` for drift immediately before the PUT. The check narrows the
+window for overwriting a concurrent edit but cannot close it because this
+revisionless document has no conditional write. Pause other managed-schema
+writers through the write.
+
+The command checks the inventory again before each probe. If the inventory
+changed or cannot be re-read after configuration
 landed, the command reports the confirmed writes and per-type outcomes, exits
 non-zero, and preserves any recovery ids from earlier probes. Map retains its
 capture without starting link restoration after that refusal. Verify the

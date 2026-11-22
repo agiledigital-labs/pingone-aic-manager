@@ -53,7 +53,10 @@ either config/managed or config/sync cannot be inventoried. Otherwise it lists h
 mappings and asks before writing. --force skips the probe prompt; --yes is only the production gate. On map, --force approves both conversion and probe. \
 A refusal without --force happens before any tenant write on set and map. The command \
 rechecks inventories after consent and before each probe, including hooks on managed sync \
-targets. Changes or unreadable inventory after writing report confirmed_writes and per-type \
+targets. Set checks config/managed for drift immediately before writing. This narrows the \
+window for overwriting a concurrent edit but cannot close it: the document has no conditional \
+write. Pause other managed-schema writers through the write. Changes or unreadable inventory \
+after writing report confirmed_writes and per-type \
 results, then exit non-zero. Map retains its capture and stops before restoring links. \
 Ctrl-C during a post-write survey also reports confirmed writes. A probe only runs when \
 adding a per-type entry.
