@@ -372,6 +372,9 @@ export class JvmPool {
   readonly #idle = new Map<string, PooledJvm[]>();
   readonly #all = new Set<PooledJvm>();
   #stopped = false;
+  #started = 0;
+  /** Concurrent worker slots must launch the same cold build, not competing copies. */
+  readonly #preparing = new Map<string, Promise<{ jar: string; classes: string }>>();
   /** Status checks in progress, per key: a lend waits for them rather than spawning beside them. */
   readonly #returning = new Map<string, Set<Promise<void>>>();
   readonly #onExit = (): void => {
@@ -411,7 +414,7 @@ export class JvmPool {
 
   /** How many JVMs this pool has started; for tests and the benchmark. */
   get started(): number {
-    return this.#all.size;
+    return this.#started;
   }
 
   async stop(): Promise<void> {
@@ -513,8 +516,18 @@ export class JvmPool {
     }
     // Content-addressed and cheap once built; asked on every lend so an edited
     // runner is never served by a JVM started from the previous build.
-    const jar = await ensureRhinoJar(hello.cache, undefined, env);
-    const classes = await this.#classes(jar, hello.cache);
+    const preparingKey = JSON.stringify([hello.cache, hello.env]);
+    let preparing = this.#preparing.get(preparingKey);
+    if (preparing === undefined) {
+      preparing = (async () => {
+        const jar = await ensureRhinoJar(hello.cache, undefined, env);
+        return { jar, classes: await this.#classes(jar, hello.cache) };
+      })();
+      this.#preparing.set(preparingKey, preparing);
+    }
+    let jar: string, classes: string;
+    try { ({ jar, classes } = await preparing); }
+    finally { if (this.#preparing.get(preparingKey) === preparing) this.#preparing.delete(preparingKey); }
     const build = buildIdentity(classes);
     const idle = this.#idle.get(key) ?? [];
     while (idle.length > 0) {
@@ -525,6 +538,7 @@ export class JvmPool {
     const launch = hello.kind === "host" ? hostLaunch(classes, jar, env) : containerLaunch(classes, jar, env);
     const jvm = new PooledJvm(key, build, launch);
     this.#all.add(jvm);
+    this.#started += 1;
     return jvm;
   }
 
