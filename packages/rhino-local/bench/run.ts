@@ -14,7 +14,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { loadavg, tmpdir } from "node:os";
 import { join } from "node:path";
-import { buildIdentity } from "../src/paths.ts";
+import { buildIdentity, packageVersion } from "../src/paths.ts";
 import { summarizeTiming } from "../src/timing.ts";
 import { watchRunnerJvms } from "../test/harness/runner-jvms.ts";
 
@@ -41,7 +41,7 @@ function checkoutIdentity(): string | undefined {
     const dirty = execFileSync("git", ["status", "--porcelain", "--untracked-files=normal", "--", "."], {
       cwd: new URL("..", import.meta.url), encoding: "utf8",
     }).trim() !== "";
-    return `${commit}${dirty ? "-dirty" : ""} (checkout)`;
+    return `${packageVersion} (${commit}${dirty ? "-dirty" : ""} checkout)`;
   } catch {
     return undefined;
   }
