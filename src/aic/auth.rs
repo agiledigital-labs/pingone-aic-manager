@@ -13,9 +13,7 @@ use crate::config::tenant::Tenant;
 use crate::http::RequestBuilderExt;
 use crate::{Error, Result};
 
-/// What AIC issues, when it does not say otherwise (`docs/api/00-auth.md`).
-/// It is a ceiling on every TTL floor below: no caller can ask for more life
-/// than the tenant hands out.
+/// Nominal issued lifetime, used only for proactive refresh heuristics.
 pub const ISSUED_TOKEN_TTL: i64 = 898;
 
 /// Enough life for a request we are about to make ourselves. `bearer()`'s
@@ -153,7 +151,19 @@ pub(crate) fn jwk_to_encoding_key(jwk: &serde_json::Value) -> Result<EncodingKey
 pub struct MintedToken {
     pub access_token: String,
     pub expires_at: i64,
+    pub expires_in: i64,
     pub scopes: Vec<String>,
+}
+
+/// Refuse a floor the freshly minted token cannot meet, using the lifetime
+/// reported by the tenant rather than a nominal default.
+pub fn check_minted_min_ttl(expires_in: i64, min_ttl: i64) -> Result<()> {
+    if expires_in < min_ttl {
+        return Err(Error::Auth(format!(
+            "fresh token lifetime is {expires_in}s, below requested --min-ttl {min_ttl}s"
+        )));
+    }
+    Ok(())
 }
 
 /// Mint a service-account access token using RS256 JWT assertion.
@@ -222,13 +232,16 @@ pub async fn mint_token(
         .as_str()
         .ok_or_else(|| Error::Auth("no access_token in response".into()))?
         .to_string();
-    let expires_in = json["expires_in"].as_i64().unwrap_or(ISSUED_TOKEN_TTL);
+    let expires_in = json["expires_in"]
+        .as_i64()
+        .ok_or_else(|| Error::Auth("no expires_in in token response".into()))?;
     let expires_at = now + expires_in;
     let scopes = parse_issued_scopes(&json)?;
 
     Ok(MintedToken {
         access_token,
         expires_at,
+        expires_in,
         scopes,
     })
 }
@@ -312,6 +325,13 @@ pub fn public_jwk(private_jwk: &serde_json::Value) -> serde_json::Value {
 #[cfg(test)]
 mod tests {
     use super::{MIN_TTL_FOR_OUR_OWN_REQUEST, TokenCache, unix_now};
+
+    #[test]
+    fn minted_lifetime_is_the_min_ttl_ceiling() {
+        assert!(super::check_minted_min_ttl(899, 899).is_ok());
+        let error = super::check_minted_min_ttl(899, 900).unwrap_err();
+        assert!(error.to_string().contains("lifetime is 899s"));
+    }
 
     /// The floor is the caller's. A token with ~8 minutes left is fine for a
     /// request we are about to send and NOT fine for one we hand to a script

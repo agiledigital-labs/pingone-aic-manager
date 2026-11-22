@@ -14,7 +14,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { loadavg, tmpdir } from "node:os";
 import { join } from "node:path";
-import { buildIdentity } from "../src/paths.ts";
+import { buildIdentity, packageVersion } from "../src/paths.ts";
 import { summarizeTiming } from "../src/timing.ts";
 import { watchRunnerJvms } from "../test/harness/runner-jvms.ts";
 
@@ -27,6 +27,23 @@ function count(args: readonly string[]): number {
     return out.split("\n").filter((line) => line.trim() !== "").length;
   } catch {
     return 0;
+  }
+}
+
+function checkoutIdentity(): string | undefined {
+  try {
+    execFileSync("git", ["ls-files", "--error-unmatch", "--", "package.json"], {
+      cwd: new URL("..", import.meta.url), stdio: "ignore",
+    });
+    const commit = execFileSync("git", ["rev-parse", "--short=12", "HEAD"], {
+      cwd: new URL("..", import.meta.url), encoding: "utf8",
+    }).trim();
+    const dirty = execFileSync("git", ["status", "--porcelain", "--untracked-files=normal", "--", "."], {
+      cwd: new URL("..", import.meta.url), encoding: "utf8",
+    }).trim() !== "";
+    return `${packageVersion} (${commit}${dirty ? "-dirty" : ""} checkout)`;
+  } catch {
+    return undefined;
   }
 }
 
@@ -59,6 +76,7 @@ const census = watchRunnerJvms(child.pid as number);
 const code: number = await new Promise((resolve) => child.on("exit", (c) => resolve(c ?? 1)));
 const javas = census.stop();
 const wallMs = performance.now() - started;
+const harnessIdentity = checkoutIdentity() ?? buildIdentity;
 
 const summary = summarizeTiming(readFileSync(timing, "utf8"));
 const sum = (field: string): number => summary.fields.find((row) => row.field === field)?.sum ?? 0;
@@ -69,7 +87,7 @@ const line = (label: string, value: number): void => {
 };
 
 console.log(`\nbench: ${JSON.stringify({
-  harness: buildIdentity,
+  harness: harnessIdentity,
   exit: code,
   wallMs: Math.round(wallMs),
   jvms: javas === undefined ? "unavailable (no /proc)" : javas.size,

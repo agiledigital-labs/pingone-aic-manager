@@ -160,8 +160,8 @@ pub enum Command {
             help = "Return the cached token only when it has at least this many \
                     seconds left; otherwise the agent mints a new one, still kept \
                     in memory. Replaces the 840s floor --token uses on its own, \
-                    including a smaller floor. Refused at or above the issued \
-                    life (898s), which a token is already below the instant it exists"
+                    including a smaller floor. The CLI checks the reply expiry \
+                    too, and refuses a short result without printing its token"
         )]
         min_ttl: Option<u32>,
         #[arg(
@@ -1679,14 +1679,6 @@ fn token_floor(token_only: bool, min_ttl: Option<u32>) -> Result<Option<u32>> {
     let Some(secs) = min_ttl else {
         return Ok(token_only.then_some(SCRIPTED_TOKEN_MIN_TTL));
     };
-    if i64::from(secs) >= crate::aic::auth::ISSUED_TOKEN_TTL {
-        return Err(Error::Config(format!(
-            "--min-ttl {secs} is at or above the issued token life ({}s); a token \
-             is already below that the instant it exists, so the agent would mint \
-             on every call and still return less life",
-            crate::aic::auth::ISSUED_TOKEN_TTL
-        )));
-    }
     Ok(Some(secs))
 }
 
@@ -1961,6 +1953,19 @@ async fn whoami(
             scopes: issued,
         } => {
             let now = chrono::Utc::now().timestamp();
+            if let Some(floor) = min_ttl_secs {
+                let remaining = remaining_secs(expires_at, now);
+                if remaining < i64::from(floor) {
+                    return Err(Error::Auth(format!(
+                        "agent returned a token with {remaining}s remaining for the \
+                         requested {floor}s floor. A floor at the token's full \
+                         issued lifetime can fall short by the time the CLI checks \
+                         it; choose a slightly lower floor to accommodate elapsed \
+                         time. If the agent predates this check, run `aic session \
+                         stop` and retry"
+                    )));
+                }
+            }
             // The service account is worth printing even though it's local
             // config: it's the `iss`/`sub` of the assertion that minted this
             // token, so it names which of several same-titled accounts in the
@@ -2390,7 +2395,7 @@ mod tests {
     }
 
     #[test]
-    fn min_ttl_replaces_the_scripted_floor_and_refuses_the_issue_ttl() {
+    fn min_ttl_replaces_the_scripted_floor_and_is_checked_after_mint() {
         assert_eq!(super::token_floor(false, None).unwrap(), None);
         assert_eq!(
             super::token_floor(true, None).unwrap(),
@@ -2399,10 +2404,7 @@ mod tests {
         // A caller may ask for less than 840s; the flag replaces the floor.
         assert_eq!(super::token_floor(true, Some(30)).unwrap(), Some(30));
         assert_eq!(super::token_floor(false, Some(30)).unwrap(), Some(30));
-        let issued = u32::try_from(crate::aic::auth::ISSUED_TOKEN_TTL).unwrap();
-        let err = super::token_floor(true, Some(issued)).unwrap_err();
-        assert!(err.to_string().contains(&issued.to_string()));
-        assert!(super::token_floor(true, Some(issued - 1)).is_ok());
+        assert_eq!(super::token_floor(true, Some(899)).unwrap(), Some(899));
     }
 
     #[test]
