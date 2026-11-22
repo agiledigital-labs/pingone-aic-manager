@@ -519,14 +519,16 @@ mod tests {
 
     #[tokio::test]
     async fn bearer_min_ttl_uses_endpoint_lifetime_and_fails_closed_without_it() {
-        let response = || {
-            r#"{"access_token":"narrow-token","expires_in":899,"scope":"fr:am:*"}"#.to_string()
-        };
+        let response =
+            || r#"{"access_token":"narrow-token","expires_in":899,"scope":"fr:am:*"}"#.to_string();
         let mut configured = tenant(token_endpoint_body(response()).await);
         configured.sa_id = Some("sa".into());
         configured.scopes = vec!["fr:am:*".into()];
         let accepted = AicClient::new(configured, synthetic_signing_key());
-        assert_eq!(accepted.bearer_with_min_ttl(899).await.unwrap(), "narrow-token");
+        assert_eq!(
+            accepted.bearer_with_min_ttl(899).await.unwrap(),
+            "narrow-token"
+        );
 
         let mut configured = tenant(token_endpoint_body(response()).await);
         configured.sa_id = Some("sa".into());
