@@ -63,7 +63,8 @@ if (typeof id.commit !== "string" || !/^[0-9a-f]{7,}$/.test(id.commit) || typeof
 }
 ' "$identity" || fail "build identity must be {commit, dirty}"
 short="$(git -C "$ROOT" rev-parse --short=12 HEAD)"
-dirty="$(git -C "$ROOT" status --porcelain)"
+# Same scope as the writer: only the package's own files decide "dirty".
+dirty="$(git -C "$PKG" status --porcelain --untracked-files=normal -- .)"
 node -e '
 const id = JSON.parse(process.argv[1]);
 if (id.commit !== process.argv[2]) process.exit(1);
