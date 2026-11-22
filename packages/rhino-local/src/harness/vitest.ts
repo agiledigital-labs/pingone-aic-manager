@@ -16,7 +16,7 @@ import type { AicIo } from "../aic/tenant.ts";
 import type { TenantProvider } from "../aic/provider.ts";
 import { clearAicTrace, takeAicTrace } from "../aic/trace.ts";
 import { projectRoot } from "../project.ts";
-import { RhinoRunner } from "../runner.ts";
+import { DEFAULT_SPAWN_TIMEOUT_MS, RhinoRunner } from "../runner.ts";
 import { recordFailureIfAny } from "./failures.ts";
 import {
   Lease,
@@ -142,6 +142,9 @@ export function useLease<TSchema extends z.ZodType>(
     testName: () => expect.getState().currentTestName ?? suite.spec.name,
   } as LeaseOptions);
 
+  const spawnTimeoutMs = options.spawnTimeoutMs ?? DEFAULT_SPAWN_TIMEOUT_MS;
+  // Allow the readiness error and JVM cleanup to reach Vitest before its hook times out.
+  const startupHookTimeoutMs = spawnTimeoutMs + 3_000;
   // Vitest 5 requires fixture destructuring before the suite argument.
   // eslint-disable-next-line no-empty-pattern
   beforeAll(async ({}, scope) => {
@@ -152,8 +155,8 @@ export function useLease<TSchema extends z.ZodType>(
     const pool = inject(JVM_POOL_CONTEXT);
     runner =
       pool === undefined || process.env.VITEST_POOL_ID === undefined
-        ? await RhinoRunner.spawn()
-        : await RhinoRunner.borrow(pool);
+        ? await RhinoRunner.spawn({ spawnTimeoutMs })
+        : await RhinoRunner.borrow(pool, { shared: true, spawnTimeoutMs });
     lease.open();
     if (options.aic !== undefined) {
       claimAicLeaseForFile(vitestFilePath(scope), options.aic.id);
@@ -183,7 +186,7 @@ export function useLease<TSchema extends z.ZodType>(
       await aicLease.open();
       tenantCookieName = await aicLease.cookieName();
     }
-  }, options.spawnTimeoutMs ?? 60_000);
+  }, startupHookTimeoutMs);
 
   beforeEach((context) => {
     clearAicTrace();

@@ -19,7 +19,7 @@ import {
   type Launch,
   type RunnerEnvironment,
 } from "./jvm.ts";
-import { PooledChild, type PoolAddress } from "./pool.ts";
+import { LAUNCH_ENV, PooledChild, type PoolAddress } from "./pool.ts";
 import type { Readable } from "node:stream";
 import {
   parseHostCall,
@@ -91,15 +91,19 @@ function hostError(error: unknown): HostError {
 const execFileAsync = promisify(execFile);
 
 const READY = "rhino-local-runner ready";
+export const DEFAULT_SPAWN_TIMEOUT_MS = 60_000;
+const CANCELLATION_ACK_TIMEOUT_MS = 2_000;
+const KILL_EXIT_TIMEOUT_MS = 2_000;
 
 export class RhinoRunnerExitError extends Error {
   readonly exitCode: number | null;
   readonly signal: NodeJS.Signals | null;
   readonly stderr: string;
 
-  constructor(exitCode: number | null, signal: NodeJS.Signals | null, stderr: string) {
+  constructor(exitCode: number | null, signal: NodeJS.Signals | null, stderr: string, reason?: string) {
     super(
       `rhino-local: JVM runner exited (code=${exitCode}, signal=${signal})` +
+        (reason === undefined ? "" : `: ${reason}`) +
         (stderr.trim() ? `: ${stderr.trim()}` : "")
     );
     this.name = "RhinoRunnerExitError";
@@ -154,6 +158,8 @@ type Pending = {
   resolve: (response: JobResponse) => void;
   reject: (error: Error) => void;
   onCall: ((call: HostCall) => Promise<HostReply>) | undefined;
+  owner: AbortSignal | undefined;
+  cancelled?: true;
 };
 
 /** What {@link JvmProcess} needs of a child: a spawned JVM, or a pooled one ({@link PooledChild}). */
@@ -182,11 +188,13 @@ class JvmProcess {
   /** Borrowed from the pool: closing returns it there instead of shutting it down. */
   readonly #pooled: PooledChild | undefined;
   #pending = new Map<string, Pending>();
+  #cancellationAcks: { done: Promise<boolean>; finish: (acknowledged: boolean) => void } | undefined;
   #stdoutBuf = "";
   #stderrBuf = "";
   #closed = false;
   readonly #shutdownWaitMs: number;
   #spawnError: Error | undefined;
+  #readinessError: Error | undefined;
   /**
    * What this JVM has been sent; a separate set per process, so each lane gets
    * every text once. A pooled JVM's set outlives the lease: the pool hands the
@@ -195,7 +203,7 @@ class JvmProcess {
    */
   #sources = new ShippedSources();
   #exit: { code: number | null; signal: NodeJS.Signals | null } | null = null;
-  #exitWaiters: Array<() => void> = [];
+  readonly #exitWaiters = new Set<() => void>();
   /** JVM phase timing by job id, taken off the response line before it is parsed. */
   readonly #timings = new Map<string, unknown>();
   readonly #startedAt = performance.now();
@@ -234,15 +242,9 @@ class JvmProcess {
     });
     child.on("exit", (code, signal) => {
       this.#exit = { code, signal };
-      const error = new RhinoRunnerExitError(code, signal, this.#stderrBuf);
-      for (const [id, pending] of this.#pending) {
-        this.#pending.delete(id);
-        pending.reject(error);
-      }
-      for (const waiter of this.#exitWaiters) {
-        waiter();
-      }
-      this.#exitWaiters = [];
+      this.#rejectPending(this.#exitError(code, signal));
+      this.#cancellationAcks?.finish(true);
+      for (const waiter of this.#exitWaiters) waiter();
       this.#wake();
     });
   }
@@ -257,15 +259,61 @@ class JvmProcess {
     return this.#stderrBuf;
   }
 
-  async waitUntilReady(timeoutMs: number): Promise<void> {
+  get available(): boolean {
+    return !this.#closed && this.#exit === null && this.#spawnError === undefined;
+  }
+
+  addOwnedJobIds(owner: AbortSignal, ids: Set<string>): void {
+    for (const [id, pending] of this.#pending) {
+      if (pending.owner === owner) ids.add(id);
+    }
+  }
+
+  cancelOwned(owner: AbortSignal): void {
+    for (const [id, pending] of this.#pending) {
+      if (pending.owner !== owner || pending.cancelled) continue;
+      // Keep the wire ID occupied until the JVM acknowledges that work ended.
+      pending.cancelled = true;
+      pending.onCall = undefined;
+      this.#child.stdin.write(`${JSON.stringify({ id, op: "cancel" })}\n`);
+      pending.reject(owner.reason as Error);
+    }
+  }
+
+  waitForCancellationAcks(): Promise<boolean> | undefined {
+    if (this.#pending.size === 0 || [...this.#pending.values()].some((job) => !job.cancelled)) return undefined;
+    if (this.#cancellationAcks !== undefined) return this.#cancellationAcks.done;
+
+    let finish!: (acknowledged: boolean) => void;
+    const done = new Promise<boolean>((resolve) => {
+      const timer = setTimeout(() => finish(false), CANCELLATION_ACK_TIMEOUT_MS);
+      finish = (acknowledged) => {
+        clearTimeout(timer);
+        this.#cancellationAcks = undefined;
+        resolve(acknowledged);
+      };
+    });
+    this.#cancellationAcks = { done, finish };
+    return done;
+  }
+
+  async waitUntilReady(timeoutMs: number, owner = true): Promise<void> {
     const started = Date.now();
     for (;;) {
+      if (this.#readinessError !== undefined) throw this.#readinessError;
+      if (this.#exit !== null) throw this.#exitError(this.#exit.code, this.#exit.signal);
+      if (this.environment !== undefined) return;
       const at = this.#stderrBuf.indexOf(READY);
       const end = at === -1 ? -1 : this.#stderrBuf.indexOf("\n", at);
       if (end !== -1) {
-        const env = parseEnvironment(this.#stderrBuf.slice(at, end));
-        checkEnvironment(env, this.lane);
-        this.environment = env;
+        try {
+          const env = parseEnvironment(this.#stderrBuf.slice(at, end));
+          checkEnvironment(env, this.lane);
+          this.environment = env;
+        } catch (error) {
+          const failure = error instanceof Error ? error : new Error(String(error));
+          return this.#failReadiness(failure, `invalid ${this.lane} runner readiness: ${failure.message}`);
+        }
         if (this.#pooled !== undefined) this.#sources = new ShippedSources(this.#pooled.knownSources);
         recordTiming(this.#pooled === undefined
           ? { type: "spawn", lane: this.lane, pooled: false, spawnToReadyMs: since(this.#startedAt) }
@@ -283,14 +331,12 @@ class JvmProcess {
           { cause: this.#spawnError }
         );
       }
-      if (this.#exit) {
-        throw new RhinoRunnerExitError(this.#exit.code, this.#exit.signal, this.#stderrBuf);
-      }
-      if (Date.now() - started > timeoutMs) {
-        await this.kill();
-        throw new Error(
-          `rhino-local: ${this.lane} runner did not become ready within ${timeoutMs}ms: ${this.#stderrBuf}`
-        );
+      if (Date.now() - started >= timeoutMs) {
+        const reason = `${this.lane} runner did not become ready within ${timeoutMs}ms`;
+        const error = new Error(`rhino-local: ${reason}` +
+          (this.#stderrBuf.trim() ? `: ${this.#stderrBuf.trim()}` : ""));
+        if (owner) return this.#failReadiness(error, reason);
+        throw error;
       }
       // Event-driven: a warm pooled JVM's ready line arrives within a
       // millisecond, and a fixed poll made every lease wait for the tick.
@@ -306,15 +352,28 @@ class JvmProcess {
     }
   }
 
+  async #failReadiness(error: Error, reason: string): Promise<never> {
+    this.#readinessError = error;
+    this.#wake();
+    await this.kill(reason);
+    throw error;
+  }
+
+  #exitError(code: number | null, signal: NodeJS.Signals | null): RhinoRunnerExitError {
+    return new RhinoRunnerExitError(code, signal, this.#stderrBuf, this.#pooled?.exitReason);
+  }
+
   send(
     id: string,
     payload: Record<string, unknown>,
-    onCall?: Pending["onCall"]
+    onCall?: Pending["onCall"],
+    owner?: AbortSignal
   ): Promise<JobResponse> {
+    if (owner?.aborted) return Promise.reject(owner.reason);
     if (this.#closed || this.#exit) {
       return Promise.reject(
         this.#exit
-          ? new RhinoRunnerExitError(this.#exit.code, this.#exit.signal, this.#stderrBuf)
+          ? this.#exitError(this.#exit.code, this.#exit.signal)
           : new Error("rhino-local: runner is closed")
       );
     }
@@ -343,19 +402,9 @@ class JvmProcess {
             sentAt: performance.now(),
           };
         }
-        const ok = this.#child.stdin.write(line);
-        if (!ok) {
-          const onError = (error: Error): void => {
-            this.#child.stdin.off("drain", onDrain);
-            this.#pending.delete(id);
-            reject(error);
-          };
-          const onDrain = (): void => {
-            this.#child.stdin.off("error", onError);
-          };
-          this.#child.stdin.once("error", onError);
-          this.#child.stdin.once("drain", onDrain);
-        }
+        // The stream buffers writes. A broken pipe can arrive before the exit
+        // frame with the JVM's code or signal, so let the exit settle this job.
+        this.#child.stdin.write(line);
       };
       let resent = false;
       const settle = (response: JobResponse): void => {
@@ -365,14 +414,14 @@ class JvmProcess {
         if (!resent && unknownSource(response)) {
           resent = true;
           this.#sources.forget();
-          this.#pending.set(id, { resolve: settle, reject, onCall });
+          this.#pending.set(id, { resolve: settle, reject, onCall, owner });
           write();
           return;
         }
         if (timed) this.#recordJob(id, payload, response, measure, resent);
         resolve(response);
       };
-      this.#pending.set(id, { resolve: settle, reject, onCall });
+      this.#pending.set(id, { resolve: settle, reject, onCall, owner });
       write();
     });
   }
@@ -411,71 +460,73 @@ class JvmProcess {
     });
   }
 
-  async close(): Promise<void> {
-    if (this.#exit) {
-      await this.#removeContainer();
-      return;
-    }
-    if (this.#closed) {
-      await this.#waitForExit();
-      await this.#removeContainer();
-      return;
-    }
-    this.#closed = true;
-    if (this.#pooled !== undefined) {
-      if (this.#pending.size > 0) {
-        // A job still running would keep running in whichever file borrowed
-        // this JVM next. The unpooled path shuts the JVM down, which bounds it;
-        // here the JVM is discarded instead, and the pool starts a fresh one.
-        const error = new Error(
-          `rhino-local: lease closed with ${this.#pending.size} job(s) still pending; JVM discarded`
-        );
-        for (const [id, pending] of this.#pending) {
-          this.#pending.delete(id);
-          pending.reject(error);
+  async close(cancellationTimedOut = false): Promise<void> {
+    try {
+      if (this.#exit) return;
+      if (this.#closed) {
+        if (!(await this.#waitForExit(KILL_EXIT_TIMEOUT_MS))) await this.#forceExit();
+        return;
+      }
+      this.#closed = true;
+      if (this.#pooled !== undefined) {
+        if (this.#pending.size > 0) {
+          // An unfinished job must never reach the next worker. Ask the
+          // pool to kill this JVM on its separate control connection.
+          const error = new Error(
+            cancellationTimedOut
+              ? `rhino-local: JVM did not acknowledge cancellation within ${CANCELLATION_ACK_TIMEOUT_MS}ms; JVM discarded`
+              : `rhino-local: lease closed with ${this.#pending.size} job(s) still pending; JVM discarded`
+          );
+          this.#rejectPending(error);
+          this.#pooled.discard(error.message);
+        } else {
+          this.#pooled.release(this.#sources.hashes());
         }
-        this.#pooled.kill();
       } else {
-        this.#pooled.release(this.#sources.hashes());
+        try {
+          this.#child.stdin.write(`${JSON.stringify({ id: randomUUID(), op: "shutdown" })}\n`);
+        } catch {
+          // already closed
+        }
       }
-    } else {
-      try {
-        this.#child.stdin.write(`${JSON.stringify({ id: randomUUID(), op: "shutdown" })}\n`);
-      } catch {
-        // already closed
+      if (!(await this.#waitForExit(this.#shutdownWaitMs + 1_000))) {
+        this.#child.kill("SIGTERM");
+        if (!(await this.#waitForExit(2_000))) await this.#forceExit();
       }
+      this.#rejectPending(new Error("rhino-local: runner closed with job still pending"));
+    } finally {
+      await this.#removeContainer();
     }
-    const exited = await Promise.race([
-      this.#waitForExit().then(() => true),
-      sleep(this.#shutdownWaitMs + 1_000).then(() => false),
-    ]);
-    if (!exited) {
-      this.#child.kill("SIGTERM");
-      const exitedAfterTerm = await Promise.race([
-        this.#waitForExit().then(() => true),
-        sleep(2_000).then(() => false),
-      ]);
-      if (!exitedAfterTerm) {
-        this.#child.kill("SIGKILL");
-        await this.#waitForExit();
-      }
-    }
-    for (const [id, pending] of this.#pending) {
-      this.#pending.delete(id);
-      pending.reject(new Error("rhino-local: runner closed with job still pending"));
-    }
-    await this.#removeContainer();
   }
 
-  async kill(): Promise<void> {
+  async kill(reason?: string): Promise<void> {
     this.#closed = true;
-    if (this.#spawnError) {
+    try {
+      if (!this.#spawnError && this.#exit === null) await this.#forceExit(reason);
+    } finally {
       await this.#removeContainer();
-      return;
     }
-    this.#child.kill("SIGKILL");
-    await Promise.race([this.#waitForExit(), sleep(2_000)]);
-    await this.#removeContainer();
+  }
+
+  async #forceExit(reason?: string): Promise<void> {
+    if (this.#pooled !== undefined) this.#pooled.discard(reason ?? "JVM discarded by its borrower");
+    else this.#child.kill("SIGKILL");
+    if (await this.#waitForExit(KILL_EXIT_TIMEOUT_MS)) return;
+    const detail = this.#pooled?.exitReason ?? reason;
+    const error = new Error(
+      `rhino-local: ${this.lane} JVM runner did not exit within ${KILL_EXIT_TIMEOUT_MS}ms after SIGKILL` +
+        (detail === undefined ? "" : `; ${detail}`)
+    );
+    this.#rejectPending(error);
+    this.#pooled?.disconnect();
+    throw error;
+  }
+
+  #rejectPending(error: Error): void {
+    for (const [id, pending] of this.#pending) {
+      this.#pending.delete(id);
+      pending.reject(error);
+    }
   }
 
   #onStdout(chunk: string): void {
@@ -513,7 +564,9 @@ class JvmProcess {
         return;
       }
       const timing = typeof parsed === "object" && parsed !== null ? (parsed as { id?: unknown; timing?: unknown }) : undefined;
-      if (timing?.timing !== undefined && typeof timing.id === "string") this.#timings.set(timing.id, timing.timing);
+      if (timing?.timing !== undefined && typeof timing.id === "string" && this.#pending.has(timing.id)) {
+        this.#timings.set(timing.id, timing.timing);
+      }
       response = parseJobResponse(parsed, line);
     } catch (error) {
       const first = this.#pending.entries().next().value;
@@ -528,12 +581,19 @@ class JvmProcess {
       return;
     }
     this.#pending.delete(response.id);
-    pending.resolve(response);
+    if (pending.cancelled) {
+      this.#timings.delete(response.id);
+      if (this.#cancellationAcks !== undefined && ![...this.#pending.values()].some((job) => job.cancelled)) {
+        this.#cancellationAcks.finish(true);
+      }
+    } else {
+      pending.resolve(response);
+    }
   }
 
   async #answerCall(call: HostCall): Promise<void> {
     const pending = this.#pending.get(call.id);
-    if (pending === undefined) return;
+    if (pending === undefined || pending.cancelled || pending.owner?.aborted) return;
     let reply: HostReply;
     try {
       if (pending.onCall === undefined)
@@ -541,7 +601,7 @@ class JvmProcess {
       reply = await pending.onCall(call);
       // Validate serializability before writing, so a bad handler cannot strand a worker.
       const line = stringifyProtocol(reply);
-      if (this.#pending.get(call.id) === pending && !this.#exit)
+      if (this.#pending.get(call.id) === pending && !pending.owner?.aborted && !this.#exit)
         this.#child.stdin.write(`${line}\n`);
       return;
     } catch (error) {
@@ -552,17 +612,22 @@ class JvmProcess {
         error: hostError(error),
       };
     }
-    if (this.#pending.get(call.id) === pending && !this.#exit) {
+    if (this.#pending.get(call.id) === pending && !pending.owner?.aborted && !this.#exit) {
       this.#child.stdin.write(`${stringifyProtocol(reply)}\n`);
     }
   }
 
-  #waitForExit(): Promise<void> {
-    if (this.#exit) {
-      return Promise.resolve();
-    }
+  #waitForExit(timeoutMs: number): Promise<boolean> {
+    if (this.#exit) return Promise.resolve(true);
     return new Promise((resolve) => {
-      this.#exitWaiters.push(resolve);
+      const exited = (): void => finish(true);
+      const timer = setTimeout(() => finish(false), timeoutMs);
+      const finish = (didExit: boolean): void => {
+        clearTimeout(timer);
+        this.#exitWaiters.delete(exited);
+        resolve(didExit);
+      };
+      this.#exitWaiters.add(exited);
     });
   }
 
@@ -653,20 +718,47 @@ function sourceHash(text: string): string {
   return hash;
 }
 
+/** Active shared transports in this worker, including across Vitest module graphs. */
+interface SharedBorrow {
+  process: JvmProcess;
+  users: number;
+  spawnTimeoutMs: number;
+}
+const sharedKey = Symbol.for("@agiledigital/pingone-aic-script-tester/shared-jvms-v2");
+const sharedGlobal = process as typeof process & { [sharedKey]?: Map<string, Set<SharedBorrow>> };
+const sharedBorrows = sharedGlobal[sharedKey] ??= new Map<string, Set<SharedBorrow>>();
+
+export interface BorrowRunnerOptions extends Pick<SpawnRunnerOptions, "lane" | "cache" | "spawnTimeoutMs" | "shutdownWaitMs"> {
+  /**
+   * Share this worker's active transport with other shuttered leases. Raw
+   * borrows default to exclusive: unshuttered work can change JVM-wide state.
+   * @internal Used by useLease, whose requests always install a class shutter.
+   */
+  shared?: boolean;
+}
+
 // The logical host-call chain can cross runner instances; independent async
 // chains still have separate stores. A nested runner must mark its caller's scope.
-const callScope = new AsyncLocalStorage<{ failure?: NonNullable<HostError["emulation"]> }>();
+interface CallbackScope {
+  runner: RhinoRunner;
+  active: boolean;
+  failure?: NonNullable<HostError["emulation"]>;
+}
+const callScope = new AsyncLocalStorage<CallbackScope>();
 
 export class RhinoRunner {
   readonly lane: JvmLane;
   readonly #failures = new EmulationFailureJournal();
   #primary: JvmProcess;
   #shadow: JvmProcess | undefined;
-  #closing = false;
+  #state: "open" | "draining" | "closed" = "open";
   #closePromise: Promise<void> | undefined;
   #jobs = new Set<Promise<void>>();
   readonly #shutdownWaitMs: number;
   #activeIds = new Set<string>();
+  #releaseBorrow: ((owner?: AbortSignal) => Promise<void>) | undefined;
+  readonly #cancel = new AbortController();
+  #shared = false;
 
   private constructor(lane: JvmLane, primary: JvmProcess, shadow: JvmProcess | undefined, shutdownWaitMs: number) {
     this.#shutdownWaitMs = shutdownWaitMs;
@@ -680,7 +772,7 @@ export class RhinoRunner {
     const cache = options.cache ?? cacheDir();
     const jar = await ensureRhinoJar(cache);
     const classes = await ensureRunnerClasses(jar, { cache });
-    const spawnTimeoutMs = options.spawnTimeoutMs ?? 60_000;
+    const spawnTimeoutMs = options.spawnTimeoutMs ?? DEFAULT_SPAWN_TIMEOUT_MS;
     const limits: string[] = [];
     for (const [flag, value] of [["max-concurrent-jobs", options.maxConcurrentJobs], ["shutdown-wait-ms", options.shutdownWaitMs]] as const) {
       if (value === undefined) continue;
@@ -712,21 +804,67 @@ export class RhinoRunner {
    * A runner on JVMs borrowed from a {@link JvmPool}; `close()` returns them.
    * @internal Used by `useLease`; the pool's address comes from the package reporter.
    */
-  static async borrow(address: PoolAddress, options: Pick<SpawnRunnerOptions, "lane" | "cache" | "spawnTimeoutMs" | "shutdownWaitMs"> = {}): Promise<RhinoRunner> {
+  static async borrow(address: PoolAddress, options: BorrowRunnerOptions = {}): Promise<RhinoRunner> {
     const lane = options.lane ?? laneFromEnv();
     const cache = options.cache ?? cacheDir();
     const slot = process.env.VITEST_POOL_ID ?? `pid-${process.pid}`;
     const kinds = lane === "both" ? (["host", "container"] as const) : ([lane] as const);
-    const processes = kinds.map((kind) => new JvmProcess(kind, new PooledChild(address, kind, slot, cache)));
+    const spawnTimeoutMs = options.spawnTimeoutMs ?? DEFAULT_SPAWN_TIMEOUT_MS;
+    const held = kinds.map((kind) => {
+      const key = JSON.stringify([address.path, address.token, slot, kind, cache,
+        ...LAUNCH_ENV.map((name) => process.env[name])]);
+      const shared = options.shared ? sharedBorrows.get(key) ?? new Set<SharedBorrow>() : undefined;
+      let active: SharedBorrow | undefined;
+      for (const candidate of shared ?? []) {
+        if (!candidate.process.available) continue;
+        // The startup budget only matters before validation. Prefer a ready
+        // transport even if a matching launch is still in progress.
+        if (candidate.process.environment !== undefined) {
+          active = candidate;
+          break;
+        }
+        if (candidate.spawnTimeoutMs === spawnTimeoutMs) active = candidate;
+      }
+      const borrow = active ?? {
+        process: new JvmProcess(kind, new PooledChild(address, kind, slot, cache)),
+        users: 0,
+        spawnTimeoutMs,
+      };
+      if (shared !== undefined) {
+        shared.add(borrow);
+        sharedBorrows.set(key, shared);
+      }
+      borrow.users += 1;
+      return { key, shared, borrow, reused: active !== undefined };
+    });
+    const release = async (owner?: AbortSignal): Promise<void> => {
+      await Promise.all(held.map(async ({ key, shared, borrow }) => {
+        if (owner?.aborted) borrow.process.cancelOwned(owner);
+        borrow.users -= 1;
+        if (borrow.users > 0) return;
+        // The last holder is returning this transport. A new lease can only
+        // get this JVM through the pool after it has acknowledged cancellation.
+        if (shared !== undefined) {
+          shared.delete(borrow);
+          if (shared.size === 0) sharedBorrows.delete(key);
+        }
+        const acks = borrow.process.waitForCancellationAcks();
+        const cancellationTimedOut = acks !== undefined && !(await acks);
+        await borrow.process.close(cancellationTimedOut);
+      }));
+    };
     try {
-      await Promise.all(processes.map((p) => p.waitUntilReady(options.spawnTimeoutMs ?? 60_000)));
+      await Promise.all(held.map(({ borrow, reused }) => borrow.process.waitUntilReady(spawnTimeoutMs, !reused)));
     } catch (error) {
-      await Promise.all(processes.map((p) => p.close()));
+      await release();
       throw error;
     }
-    const [primary, shadow] = processes;
+    const [primary, shadow] = held.map(({ borrow }) => borrow.process);
     if (primary === undefined) throw new Error("rhino-local: no runner lane selected");
-    return new RhinoRunner(lane, primary, shadow, options.shutdownWaitMs ?? 5000);
+    const runner = new RhinoRunner(lane, primary, shadow, options.shutdownWaitMs ?? 5000);
+    if (options.shared) runner.#releaseBorrow = release;
+    runner.#shared = options.shared === true;
+    return runner;
   }
 
   /** What the (primary) JVM reported at startup. */
@@ -749,16 +887,22 @@ export class RhinoRunner {
 
   async #evaluate(job: JobRequest, options: EvalOptions): Promise<JobResponse> {
     const id = job.id ?? randomUUID();
+    const callback = this.#state === "draining" ? callScope.getStore() : undefined;
+    if (this.#state !== "open" && (callback?.runner !== this || !callback.active)) {
+      const failure = { kind: "protocol" as const, message: "rhino-local: runner is closing" };
+      this.#failures.record(failure, `job ${id}`);
+      throw new EmulationFailure(failure);
+    }
+    if (this.#shared && ((job.engine !== undefined && job.engine !== "am") || !Array.isArray(job.classAllowList))) {
+      const failure = { kind: "protocol" as const, message: "rhino-local: shared JVM borrows require a class shutter; use an exclusive borrow for unshuttered work" };
+      this.#failures.record(failure, `job ${id}`);
+      throw new EmulationFailure(failure);
+    }
     if (this.#activeIds.has(id)) {
       const failure = { kind: "protocol" as const, message: `rhino-local: duplicate active job id: ${id}` };
       this.#failures.record(failure, `job ${id}`);
       const parent = callScope.getStore();
       if (parent) parent.failure ??= failure;
-      throw new EmulationFailure(failure);
-    }
-    if (this.#closing && !callScope.getStore()) {
-      const failure = { kind: "protocol" as const, message: "rhino-local: runner is closing" };
-      this.#failures.record(failure, `job ${id}`);
       throw new EmulationFailure(failure);
     }
     this.#activeIds.add(id);
@@ -792,6 +936,7 @@ export class RhinoRunner {
 
   async #evalJob(job: JobRequest & { id: string }, options: EvalOptions): Promise<JobResponse> {
     const id = job.id;
+    const owner = this.#shared ? this.#cancel.signal : undefined;
     const payload: Record<string, unknown> = { id, source: job.source };
     if (job.engine !== undefined) payload.engine = job.engine;
     if (job.hostCalls !== undefined) payload.hostCalls = job.hostCalls;
@@ -846,11 +991,13 @@ export class RhinoRunner {
       transcript.push(entry);
       let reply: HostReply;
       const provenance: BehaviorEvidence[] = [];
-      const scope: { failure?: NonNullable<HostError["emulation"]> } = {};
+      const scope: CallbackScope = { runner: this, active: true };
       try {
         if (options.onCall === undefined)
           throw new EmulationFailure({ kind: "protocol", message: "rhino-local: no onCall handler for IDM job" });
-        const result = await callScope.run(scope, () => withHostEvidence(provenance, () => options.onCall!(call)));
+        const result = await hostResult(
+          callScope.run(scope, () => withHostEvidence(provenance, () => options.onCall!(call))), owner
+        );
         if (scope.failure) throw new EmulationFailure(scope.failure);
         if (result === undefined)
           throw new EmulationFailure({ kind: "protocol", message: "rhino-local: onCall must return a JSON value (use null)" });
@@ -867,18 +1014,20 @@ export class RhinoRunner {
           seq: entry.call.seq,
           error: hostError(scope.failure ? new EmulationFailure(scope.failure) : error),
         };
+      } finally {
+        scope.active = false;
       }
       if (provenance.length > 0) reply = { ...reply, provenance: structuredClone(provenance) };
-      const fatal = "error" in reply ? emulationFailure(reply.error) : undefined;
+      const fatal = !owner?.aborted && "error" in reply ? emulationFailure(reply.error) : undefined;
       if (fatal) this.#failures.record(fatal, `host callback ${id}#${call.seq}`);
       if (!transcriptFrozen) entry.reply = reply;
       return reply;
     }));
-    if (this.#shadow === undefined) return this.#primary.send(id, payload, primaryCall);
+    if (this.#shadow === undefined) return this.#primary.send(id, payload, primaryCall, owner);
     if (job.engine !== "idm" && !job.hostCalls) {
       const [host, container] = await Promise.all([
-        this.#primary.send(id, payload),
-        this.#shadow.send(id, payload),
+        this.#primary.send(id, payload, undefined, owner),
+        this.#shadow.send(id, payload, undefined, owner),
       ]);
       if (host.outcome === "protocol_error") return host;
       if (container.outcome === "protocol_error") return container;
@@ -888,7 +1037,7 @@ export class RhinoRunner {
       return host;
     }
     // Sequential shadow replay avoids duplicate effects and naturally supports nested evals.
-    const host = await this.#primary.send(id, payload, primaryCall);
+    const host = await this.#primary.send(id, payload, primaryCall, owner);
     transcriptFrozen = true;
     // A harness admission refusal ran no script. Shadow replay must not admit work
     // that the primary refused while its ancestors occupied all workers.
@@ -915,7 +1064,7 @@ export class RhinoRunner {
       // Primary finished without a reply only when its worker timed out waiting.
       // Leave the shadow waiting too, so its own deadline produces the same outcome.
       return !host.unanswered?.includes(call.seq) && recorded.reply ? recorded.reply : new Promise<HostReply>(() => {});
-    });
+    }, owner);
     if (container.outcome === "protocol_error") return container;
     if (divergence !== undefined || at !== replay.length) {
       throw new LaneDivergenceError(
@@ -933,10 +1082,25 @@ export class RhinoRunner {
 
   async close(): Promise<void> {
     this.#closePromise ??= (async () => {
-      this.#closing = true;
-      // Keep both lanes usable until accepted evaluations (including shadow replay) finish.
+      this.#state = "draining";
+      // Only this borrower's live callbacks can submit nested work during the drain.
       await Promise.race([Promise.all([...this.#jobs]), sleep(this.#shutdownWaitMs)]);
-      await Promise.all(this.#processes().map((p) => p.close()));
+      this.#state = "closed";
+      if (this.#releaseBorrow !== undefined) {
+        const owner = this.#cancel.signal;
+        // A failed lane can settle the logical eval before its other lane
+        // sends a response. Collect wire jobs by owner as well as live evals.
+        const pending = new Set(this.#activeIds);
+        for (const process of this.#processes()) process.addOwnedJobIds(owner, pending);
+        if (pending.size > 0) {
+          this.#cancel.abort(new Error(
+            `rhino-local: lease closed with ${pending.size} job(s) still pending; its jobs cancelled`
+          ));
+        }
+        await this.#releaseBorrow(owner);
+      } else {
+        await Promise.all(this.#processes().map((p) => p.close()));
+      }
     })();
     await this.#closePromise;
   }
@@ -955,6 +1119,19 @@ export class RhinoRunner {
   #processes(): JvmProcess[] {
     return this.#shadow === undefined ? [this.#primary] : [this.#primary, this.#shadow];
   }
+}
+
+/** Stop tracking a shared lease's host callback when that lease is cancelled.
+ * The callback's own promise may still finish, but cannot reply to the JVM.
+ */
+async function hostResult<T>(result: T | Promise<T>, owner?: AbortSignal): Promise<T> {
+  if (owner === undefined) return result;
+  return new Promise<T>((resolve, reject) => {
+    const abort = (): void => reject(owner.reason);
+    owner.addEventListener("abort", abort, { once: true });
+    if (owner.aborted) abort();
+    void Promise.resolve(result).then(resolve, reject).finally(() => owner.removeEventListener("abort", abort));
+  });
 }
 
 function sleep(ms: number): Promise<void> {

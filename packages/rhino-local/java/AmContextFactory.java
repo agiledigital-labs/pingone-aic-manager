@@ -36,6 +36,9 @@ final class AmContextFactory extends ContextFactory {
   @Override
   protected void observeInstructionCount(Context cx, int instructionCount) {
     TimedContext observed = (TimedContext) cx;
+    if (observed.activeJob != null && observed.activeJob.cancelled) {
+      throw new Error("Lease job cancelled.");
+    }
     long timeoutMs = observed.timeoutMs;
     if (timeoutMs <= 0) {
       return;
@@ -50,6 +53,7 @@ final class AmContextFactory extends ContextFactory {
     final long startTime;
     long timeoutMs;
     AmHostBridge hostBridge;
+    Runner.ActiveJob activeJob;
 
     TimedContext(ContextFactory factory) {
       super(factory);

@@ -8,8 +8,9 @@
  * reporter starts it) and lends each worker slot a JVM over a local socket:
  * the worker's {@link RhinoRunner} speaks the same line protocol it speaks
  * to a child's stdio, and when the file ends the JVM goes back to that slot
- * rather than exiting. One JVM per worker slot per lane, warm after the first
- * file.
+ * rather than exiting. Overlapping shuttered useLease calls in the same worker
+ * share a connection. Other borrows stay exclusive, because they can run
+ * unshuttered jobs or depend on holding both runners at once.
  *
  * What reuse guarantees. Every job builds a fresh JavaScript scope
  * (`initStandardObjects()` and the whole preamble run again), and what the
@@ -61,7 +62,7 @@ export interface PoolAddress {
 }
 
 /** The environment a worker's launch would have read; part of the pool key. */
-const LAUNCH_ENV = [
+export const LAUNCH_ENV = [
   "PATH",
   "JAVA_HOME",
   "AIC_SCRIPT_TESTER_JAVA_HOME",
@@ -76,6 +77,13 @@ interface Hello {
   cache: string;
   slot: string;
   env: Partial<Record<(typeof LAUNCH_ENV)[number], string>>;
+}
+
+interface DiscardRequest {
+  type: "discard";
+  token: string;
+  borrowId: string;
+  reason: string;
 }
 
 interface Status {
@@ -95,6 +103,12 @@ const RETIRED = "rhino-local-runner retired";
 const STATUS_OP = "pool-status";
 const STATUS = '{"type":"pool-status"';
 const STATUS_TIMEOUT_MS = 2_000;
+
+interface PoolExit {
+  code: number | null;
+  signal: NodeJS.Signals | null;
+  reason?: string;
+}
 
 /**
  * Whether a JVM's stderr has carried the retirement marker, read line by line
@@ -145,11 +159,11 @@ class PooledJvm {
   readonly #containerName: string | undefined;
   #stdout = "";
   #readyLine: string | undefined;
-  #readyWaiters: Array<() => void> = [];
   #stderr = "";
   #client: Socket | undefined;
   retired = false;
-  exit: { code: number | null; signal: NodeJS.Signals | null } | undefined;
+  exit: PoolExit | undefined;
+  #discardReason: string | undefined;
   #exitWaiters: Array<() => void> = [];
   readonly #kind: string;
   readonly #startedAt = performance.now();
@@ -176,11 +190,8 @@ class PooledJvm {
     });
     this.#child.stdout.on("data", (chunk: string) => this.#onStdout(chunk));
     this.#child.stderr.on("data", (chunk: string) => this.#onStderr(chunk));
-    this.#child.on("error", (error) => {
-      this.#onStderr(`\n${error.message}\n`);
-      this.#onExit(null, null);
-    });
-    this.#child.on("exit", (code, signal) => this.#onExit(code, signal));
+    this.#child.on("error", (error) => this.#onExit(null, null, `could not start JVM: ${error.message}`));
+    this.#child.on("exit", (code, signal) => this.#onExit(code, signal, this.#discardReason));
     this.#unref();
   }
 
@@ -193,8 +204,8 @@ class PooledJvm {
    * and never ran a job without a class shutter. No answer within the bound,
    * or an answer missing a field, counts as no.
    */
-  async reusable(): Promise<boolean> {
-    if (!this.usable) return false;
+  async reuseRefusal(): Promise<string | undefined> {
+    if (!this.usable) return this.unavailableReason();
     const id = `${STATUS_OP}-${randomUUID()}`;
     const status = await new Promise<Status | undefined>((resolve) => {
       const timer = setTimeout(() => finish(undefined), STATUS_TIMEOUT_MS);
@@ -204,24 +215,37 @@ class PooledJvm {
         resolve(value);
       };
       this.#status = { id, resolve: finish };
-      this.#exitWaiters.push(() => finish(undefined));
       this.write(JSON.stringify({ id, op: STATUS_OP }));
     });
     if (status?.retired === true) this.retired = true;
-    return lendable(status, this.usable);
+    if (lendable(status, this.usable)) return undefined;
+    if (!this.usable) return this.unavailableReason();
+    if (status === undefined) return `JVM pool status check timed out after ${STATUS_TIMEOUT_MS}ms`;
+    if (status.active > 0) return `JVM returned with ${status.active} active job(s)`;
+    if (status.unshuttered === true) return "JVM ran unshuttered work";
+    return "JVM returned an invalid pool status";
+  }
+
+  unavailableReason(): string {
+    if (this.exit !== undefined) {
+      const { code, signal, reason } = this.exit;
+      return reason ?? `JVM runner exited (code=${code}, signal=${signal})`;
+    }
+    return this.#discardReason ?? "JVM retired after a spawned thread survived cleanup";
   }
 
   attach(client: Socket): void {
     this.#client = client;
     this.#ref();
-    // Only the ready line: a later client must not inherit an earlier one's diagnostics.
-    void this.#whenReady().then(() => {
-      if (this.#client !== client) return;
-      // Before the ready line, so the client knows what this JVM holds once it is ready.
-      this.#send(client, { jvm: this.id, known: [...this.known] });
-      if (this.#readyLine !== undefined) this.#send(client, { stderr: `${this.#readyLine}\n` });
-      if (this.exit !== undefined) this.#send(client, { stderr: this.#stderr, exit: this.exit });
-    });
+    if (this.exit !== undefined) this.#sendExit(client, this.exit);
+    else this.#announceReady();
+  }
+
+  #announceReady(): void {
+    const client = this.#client;
+    if (client === undefined || this.#readyLine === undefined) return;
+    // A later client gets only the ready line, not an earlier one's diagnostics.
+    this.#send(client, { jvm: this.id, known: [...this.known], stderr: `${this.#readyLine}\n` });
   }
 
   detach(client: Socket): void {
@@ -254,14 +278,10 @@ class PooledJvm {
   }
 
   /** Also the synchronous last resort at process exit. */
-  kill(): void {
+  kill(reason = "JVM pool stopped"): void {
+    this.#discardReason ??= reason;
     this.retired = true;
     if (this.exit === undefined) this.#child.kill("SIGKILL");
-  }
-
-  #whenReady(): Promise<void> {
-    if (this.#readyLine !== undefined || this.exit !== undefined) return Promise.resolve();
-    return new Promise((resolve) => this.#readyWaiters.push(resolve));
   }
 
   #exited(ms: number): Promise<boolean> {
@@ -309,27 +329,31 @@ class PooledJvm {
       if (end !== -1) {
         this.#readyLine = this.#stderr.slice(at, end);
         this.#stderr = this.#stderr.slice(end + 1);
-        recordTiming({ type: "spawn", lane: this.#kind, pooled: true, spawnToReadyMs: since(this.#startedAt) });
-        for (const waiter of this.#readyWaiters.splice(0)) waiter();
+        recordTiming({ type: "spawn", lane: this.#kind, jvmId: this.id, pooled: true, spawnToReadyMs: since(this.#startedAt) });
+        if (this.exit === undefined) this.#announceReady();
       }
       return;
     }
     this.#watch.feed(chunk);
     // Kept short: it only feeds the exit message of whoever holds the JVM when it dies.
     this.#stderr = (this.#stderr + chunk).slice(-64_000);
-    if (this.#client !== undefined) this.#send(this.#client, { stderr: chunk });
+    if (this.exit === undefined && this.#client !== undefined) this.#send(this.#client, { stderr: chunk });
   }
 
-  #onExit(code: number | null, signal: NodeJS.Signals | null): void {
+  #onExit(code: number | null, signal: NodeJS.Signals | null, reason?: string): void {
     if (this.exit !== undefined) return;
-    this.exit = { code, signal };
-    for (const waiter of this.#readyWaiters.splice(0)) waiter();
+    this.exit = { code, signal, ...(reason === undefined ? {} : { reason }) };
+    this.#status?.resolve(undefined);
     for (const waiter of this.#exitWaiters.splice(0)) waiter();
-    const client = this.#client;
-    if (client !== undefined && this.#readyLine !== undefined) {
-      this.#send(client, { stderr: this.#stderr, exit: this.exit });
-      client.end();
-    }
+    if (this.#client !== undefined) this.#sendExit(this.#client, this.exit);
+  }
+
+  #sendExit(client: Socket, exit: PoolExit): void {
+    this.#send(client, { stderr: this.#stderr, exit });
+    // stdin can die without a drain. Read the client's FIN even if we had
+    // paused its requests to apply backpressure.
+    client.resume();
+    client.end();
   }
 
   #send(client: Socket, frame: Record<string, unknown>): void {
@@ -371,7 +395,12 @@ export class JvmPool {
   readonly #dir: string;
   readonly #idle = new Map<string, PooledJvm[]>();
   readonly #all = new Set<PooledJvm>();
+  /** Only the live loan can discard the JVM it holds. */
+  readonly #loans = new Map<string, (reason: string) => void>();
   #stopped = false;
+  #started = 0;
+  /** Concurrent worker slots must launch the same cold build, not competing copies. */
+  readonly #preparing = new Map<string, Promise<{ jar: string; classes: string }>>();
   /** Status checks in progress, per key: a lend waits for them rather than spawning beside them. */
   readonly #returning = new Map<string, Set<Promise<void>>>();
   readonly #onExit = (): void => {
@@ -411,7 +440,7 @@ export class JvmPool {
 
   /** How many JVMs this pool has started; for tests and the benchmark. */
   get started(): number {
-    return this.#all.size;
+    return this.#started;
   }
 
   async stop(): Promise<void> {
@@ -431,23 +460,24 @@ export class JvmPool {
     let buffer = "";
     let state: "hello" | "lending" | "attached" | "closed" = "hello";
     let jvm: PooledJvm | undefined;
+    let borrowId: string | undefined;
     const queued: string[] = [];
-    const fail = (message: string): void => {
+    const fail = (reason: string): void => {
+      if (state === "closed") return;
       state = "closed";
-      const frame = { type: "rhino-local-pool", stderr: `rhino-local: ${message}\n`, exit: { code: null, signal: null } };
+      const frame = { type: "rhino-local-pool", exit: { code: null, signal: null, reason } };
       socket.end(`${JSON.stringify(frame)}\n`);
     };
     const forward = (held: PooledJvm, line: string): void => {
       if (line.startsWith(CONTROL)) {
-        // A client sends two controls: kill the JVM it holds, or (on release)
-        // the source hashes it shipped to it.
-        let frame: { kill?: unknown; known?: unknown } = {};
-        try { frame = JSON.parse(line) as typeof frame; } catch { /* treated as kill below */ }
-        if (frame.kill === undefined && Array.isArray(frame.known)) {
+        // The only data-socket control is the client's source hashes on release.
+        let frame: { known?: unknown } | null = null;
+        try { frame = JSON.parse(line) as { known?: unknown } | null; } catch { /* refused below */ }
+        if (Array.isArray(frame?.known)) {
           for (const hash of frame.known) if (typeof hash === "string" && SOURCE_HASH.test(hash)) held.known.add(hash);
           return;
         }
-        held.kill();
+        held.kill("invalid JVM pool release frame");
         return;
       }
       if (!held.write(line)) {
@@ -465,14 +495,31 @@ export class JvmPool {
         } else if (state === "lending") {
           queued.push(line);
         } else if (state === "hello") {
-          const hello = parseHello(line, this.address.token);
-          if (hello === undefined) {
+          const request = parseRequest(line, this.address.token);
+          if (request === undefined) {
             fail("JVM pool handshake refused");
             return;
           }
+          if (request.type === "discard") {
+            state = "closed";
+            this.#loans.get(request.borrowId)?.(request.reason);
+            socket.end();
+            return;
+          }
           state = "lending";
-          this.#lend(hello).then(
+          borrowId = randomUUID();
+          this.#loans.set(borrowId, (reason) => {
+            if (state === "closed") return;
+            jvm?.kill(reason);
+            // End the loan at the pool, which owns both the JVM and its
+            // possibly paused socket. This also works if SIGKILL takes time.
+            release();
+            socket.destroy();
+          });
+          socket.write(`${JSON.stringify({ type: "rhino-local-pool", borrowId })}\n`);
+          this.#lend(request, () => state === "closed").then(
             (lent) => {
+              if (lent === undefined) return;
               if (state === "closed") {
                 this.#return(lent);
                 return;
@@ -487,8 +534,9 @@ export class JvmPool {
         }
       }
     });
-    socket.on("close", () => {
+    const release = (): void => {
       state = "closed";
+      if (borrowId !== undefined) this.#loans.delete(borrowId);
       // A partial line from a client that went away is dropped, never forwarded.
       buffer = "";
       if (jvm !== undefined) {
@@ -496,15 +544,16 @@ export class JvmPool {
         this.#return(jvm);
         jvm = undefined;
       }
-    });
+    };
+    socket.on("end", release);
+    socket.on("close", release);
     socket.on("error", () => {
       // close follows
     });
   }
 
-  async #lend(hello: Hello): Promise<PooledJvm> {
+  async #lend(hello: Hello, cancelled: () => boolean): Promise<PooledJvm | undefined> {
     const key = JSON.stringify([hello.kind, hello.cache, hello.slot, hello.env]);
-    await Promise.all([...(this.#returning.get(key) ?? [])]);
     if (this.#stopped) throw new Error("JVM pool is stopped");
     const env: NodeJS.ProcessEnv = { ...process.env };
     for (const name of LAUNCH_ENV) {
@@ -513,35 +562,55 @@ export class JvmPool {
     }
     // Content-addressed and cheap once built; asked on every lend so an edited
     // runner is never served by a JVM started from the previous build.
-    const jar = await ensureRhinoJar(hello.cache, undefined, env);
-    const classes = await this.#classes(jar, hello.cache);
+    const preparingKey = JSON.stringify([hello.cache, hello.env]);
+    let preparing = this.#preparing.get(preparingKey);
+    if (preparing === undefined) {
+      preparing = (async () => {
+        const jar = await ensureRhinoJar(hello.cache, undefined, env);
+        return { jar, classes: await this.#classes(jar, hello.cache) };
+      })();
+      this.#preparing.set(preparingKey, preparing);
+    }
+    const prepared = await preparing.finally(() => {
+      if (this.#preparing.get(preparingKey) === preparing) this.#preparing.delete(preparingKey);
+    });
+    const { jar, classes } = prepared;
+    // A return can start during build preparation. Check immediately before
+    // the lending decision, including new returns that arrived while waiting.
+    let returning = this.#returning.get(key);
+    while (returning !== undefined) {
+      await Promise.all(returning);
+      returning = this.#returning.get(key);
+    }
+    if (cancelled()) return undefined;
+    if (this.#stopped) throw new Error("JVM pool is stopped");
     const build = buildIdentity(classes);
     const idle = this.#idle.get(key) ?? [];
     while (idle.length > 0) {
       const jvm = idle.pop() as PooledJvm;
       if (jvm.usable && jvm.build === build) return jvm;
-      this.#discard(jvm);
+      this.#discard(jvm, jvm.usable ? "runner build changed" : jvm.unavailableReason());
     }
     const launch = hello.kind === "host" ? hostLaunch(classes, jar, env) : containerLaunch(classes, jar, env);
     const jvm = new PooledJvm(key, build, launch);
     this.#all.add(jvm);
+    this.#started += 1;
     return jvm;
   }
 
   #return(jvm: PooledJvm): void {
     if (this.#stopped || !jvm.usable) {
-      this.#discard(jvm);
+      this.#discard(jvm, this.#stopped ? "JVM pool stopped" : jvm.unavailableReason());
       return;
     }
     const checks = this.#returning.get(jvm.key) ?? new Set<Promise<void>>();
     this.#returning.set(jvm.key, checks);
-    const check = jvm.reusable().then((reusable) => {
+    const check = jvm.reuseRefusal().then((reason) => {
       checks.delete(check);
       if (checks.size === 0) this.#returning.delete(jvm.key);
-      if (this.#stopped || !reusable) {
-        // Still running a job, retired, or it ran unshuttered: never lend it again.
-        jvm.kill();
-        this.#discard(jvm);
+      if (this.#stopped || reason !== undefined) {
+        if (reason !== undefined) jvm.kill(reason);
+        this.#discard(jvm, reason ?? "JVM pool stopped");
         return;
       }
       const idle = this.#idle.get(jvm.key) ?? [];
@@ -551,8 +620,9 @@ export class JvmPool {
     checks.add(check);
   }
 
-  #discard(jvm: PooledJvm): void {
+  #discard(jvm: PooledJvm, reason: string): void {
     this.#all.delete(jvm);
+    recordTiming({ type: "pool-discard", jvmId: jvm.id, reason });
     void jvm.stop();
   }
 }
@@ -574,21 +644,26 @@ function buildIdentity(classes: string): string {
   return `${classes}\0${manifest}`;
 }
 
-function parseHello(line: string, token: string): Hello | undefined {
+function parseRequest(line: string, token: string): Hello | DiscardRequest | undefined {
   try {
-    const hello = JSON.parse(line) as Partial<Hello>;
+    const request = JSON.parse(line) as Partial<Hello> | Partial<DiscardRequest>;
+    if (request.token !== token) return undefined;
+    if (request.type === "discard") {
+      return typeof request.borrowId === "string" && typeof request.reason === "string"
+        ? request as DiscardRequest
+        : undefined;
+    }
     if (
-      hello.type !== "hello" ||
-      hello.token !== token ||
-      (hello.kind !== "host" && hello.kind !== "container") ||
-      typeof hello.cache !== "string" ||
-      typeof hello.slot !== "string" ||
-      typeof hello.env !== "object" ||
-      hello.env === null
+      request.type !== "hello" ||
+      (request.kind !== "host" && request.kind !== "container") ||
+      typeof request.cache !== "string" ||
+      typeof request.slot !== "string" ||
+      typeof request.env !== "object" ||
+      request.env === null
     ) {
       return undefined;
     }
-    return hello as Hello;
+    return request as Hello;
   } catch {
     return undefined;
   }
@@ -609,12 +684,18 @@ export class PooledChild extends EventEmitter {
   readonly stdout = new PassThrough();
   readonly stderr = new PassThrough();
   readonly stdin: Writable;
+  readonly #address: PoolAddress;
   readonly #socket: Socket;
+  #borrowId: string | undefined;
   #buffer = "";
   #exited = false;
+  #connectionError: string | undefined;
+  #discardReason: string | undefined;
+  exitReason: string | undefined;
 
   constructor(address: PoolAddress, kind: "host" | "container", slot: string, cache: string = cacheDir()) {
     super();
+    this.#address = address;
     const env: Hello["env"] = {};
     for (const name of LAUNCH_ENV) {
       const value = process.env[name];
@@ -629,8 +710,8 @@ export class PooledChild extends EventEmitter {
     this.stdin = new Writable({
       decodeStrings: false,
       write: (chunk: string, _encoding, callback): void => {
-        if (socket.destroyed) {
-          callback(new Error("rhino-local: pooled runner connection closed"));
+        if (this.#released || socket.destroyed) {
+          callback(new Error("rhino-local: JVM pool connection is closed"));
           return;
         }
         socket.write(chunk, () => callback());
@@ -638,9 +719,13 @@ export class PooledChild extends EventEmitter {
     });
     socket.on("data", (chunk: string) => this.#onData(chunk));
     socket.on("error", (error) => {
-      this.stderr.write(`rhino-local: JVM pool connection failed: ${error.message}\n`);
+      this.#connectionError = `JVM pool connection failed: ${error.message}`;
     });
-    socket.on("close", () => this.#exit(null, null));
+    socket.on("close", () => this.#exit({
+      code: null,
+      signal: null,
+      ...(this.#released ? {} : { reason: this.#connectionError ?? "JVM pool connection closed before reporting the JVM exit" }),
+    }));
   }
 
   #released = false;
@@ -651,6 +736,7 @@ export class PooledChild extends EventEmitter {
 
   /** Return the JVM to the pool, telling it which source hashes this lease shipped. */
   release(shipped: Iterable<string> = []): void {
+    if (this.#released) return;
     this.#released = true;
     const known = [...shipped];
     if (known.length === 0) this.#socket.end();
@@ -659,10 +745,38 @@ export class PooledChild extends EventEmitter {
 
   /** Destroy the JVM rather than return it: the pool will start a fresh one for the slot. */
   kill(_signal?: NodeJS.Signals): boolean {
-    if (this.#released) return true;
-    this.#released = true;
-    this.#socket.end(`${JSON.stringify({ type: "rhino-local-pool", kill: true })}\n`);
+    this.discard("JVM discarded by its borrower");
     return true;
+  }
+
+  discard(reason: string): void {
+    if (this.#exited) return;
+    this.#discardReason ??= reason;
+    this.exitReason = this.#discardReason;
+    this.#released = true;
+    this.#requestDiscard();
+  }
+
+  /** The worker's last resort if even the pool control request times out. */
+  disconnect(): void {
+    this.#socket.destroy();
+  }
+
+  #requestDiscard(): void {
+    if (this.#borrowId === undefined || this.#discardReason === undefined) return;
+    const request: DiscardRequest = {
+      type: "discard",
+      token: this.#address.token,
+      borrowId: this.#borrowId,
+      reason: this.#discardReason,
+    };
+    // The pool may have paused the data socket behind JVM stdin. Use a
+    // separate connection that can still reach the pool in that state.
+    const control = createConnection(this.#address.path);
+    control.on("error", () => { /* the data connection's exit deadline bounds this */ });
+    control.unref();
+    control.resume();
+    control.end(`${JSON.stringify(request)}\n`);
   }
 
   #onData(chunk: string): void {
@@ -676,18 +790,24 @@ export class PooledChild extends EventEmitter {
         this.stdout.write(line);
         continue;
       }
-      const frame = JSON.parse(line) as { jvm?: unknown; known?: unknown; stderr?: string; exit?: { code: number | null; signal: NodeJS.Signals | null } };
+      const frame = JSON.parse(line) as { borrowId?: unknown; jvm?: unknown; known?: unknown; stderr?: string; exit?: PoolExit };
+      if (typeof frame.borrowId === "string" && this.#borrowId === undefined) {
+        this.#borrowId = frame.borrowId;
+        this.#requestDiscard();
+      }
       if (typeof frame.jvm === "string") this.jvmId = frame.jvm;
       if (Array.isArray(frame.known)) this.knownSources = frame.known.filter((h): h is string => typeof h === "string");
       if (frame.stderr !== undefined) this.stderr.write(frame.stderr);
-      if (frame.exit !== undefined) this.#exit(frame.exit.code, frame.exit.signal);
+      if (frame.exit !== undefined) this.#exit(frame.exit);
     }
   }
 
-  #exit(code: number | null, signal: NodeJS.Signals | null): void {
+  #exit({ code, signal, reason }: PoolExit): void {
     if (this.#exited) return;
     this.#exited = true;
-    // Let buffered stderr reach listeners before the exit handler reads it.
-    setImmediate(() => this.emit("exit", code, signal));
+    this.exitReason = this.#discardReason ?? reason;
+    // Do not let a file boundary overtake the exit frame. The stderr data
+    // listeners run synchronously because JvmProcess consumes a flowing stream.
+    this.emit("exit", code, signal);
   }
 }

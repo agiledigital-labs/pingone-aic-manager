@@ -1684,8 +1684,15 @@ npx aic-script-tester-timing --share timing.jsonl  # names replaced by hashes
 The summary's first line, and `harness` in `--json`, is the same build identity
 the fault tally prints.
 
-Every JVM spawn, pool lease and eval job appends one JSON line. A job row
-carries the bytes written (`lineBytes`), the source text shipped with it
+Timing rows include JVM startups, transport borrows and eval jobs. A
+`borrow` row counts a pooled transport that became ready, one per lane.
+Overlapping `useLease` calls that use an already open transport do not add
+another row. When a later file opens a fresh connection to the same JVM,
+its borrow row has the same `jvmId`. Use that ID to join pooled `spawn`,
+`borrow` and `pool-discard` rows. A launch that fails before the ready
+line can have a discard row without a spawn row.
+
+A job row carries the bytes written (`lineBytes`), the source text shipped with it
 (`sourceBytes`, `sourcesShipped`), `stringifyMs`, `roundTripMs` and
 `transportMs`, and the JVM's own phases under `jvm`: reader decode, setup,
 prelude, preamble (where the seed is parsed) and subject compile and exec,
@@ -1765,11 +1772,42 @@ job rather than hanging. `close()` ends stdin and waits for the process;
 **JVM reuse.** Under the package's Vitest reporter, `useLease` borrows its JVM
 from a pool the reporter keeps in the main Vitest process, so a worker runs
 every file it is given on one JVM rather than starting one per file. The pool
-keeps one JVM per worker, per lane (two with `AIC_SCRIPT_TESTER_JVM=both`) and
-per lease a worker holds at once. A borrowed JVM is returned at `afterAll` and
-lent again only if it is idle: one that crashed, retired itself after a spawned
-thread survived cleanup, or still has a job running (a lease closed while a
-case was still executing) is discarded, and the next file gets a fresh JVM.
+keeps one JVM per worker and per lane (two with `AIC_SCRIPT_TESTER_JVM=both`)
+for compatible `useLease` calls, including overlapping leases in nested or
+concurrent suites. When a lease closes while others still hold the same JVM,
+it lets its jobs finish within the teardown deadline and then cancels any
+that remain. The last lease waits up to two seconds for cancellation
+acknowledgements before returning the JVM and its warm caches to the pool.
+A JVM that crashed, retired itself after a spawned thread survived cleanup,
+or still has work running when it is returned is discarded.
+Lower-level runner borrows stay exclusive by default because they can run
+unshuttered jobs.
+
+Runner readiness has a 60-second deadline. `useLease(suite, { spawnTimeoutMs })`
+can raise it. Different limits affect sharing only while a JVM is starting.
+Once validated, a JVM can be shared by otherwise compatible leases with any
+readiness limit.
+
+Vitest's `test.testTimeout` separately limits the whole test, including every
+eval in a multi-pass journey. Slow machines can hit Vitest's default 5-second
+limit while the JVM is still working, which can also trigger an outstanding-work
+diagnostic. For slow or multi-pass suites, raise the limit in your existing
+Vitest config:
+
+```ts
+import { defineConfig } from "vitest/config";
+
+export default defineConfig({
+  test: {
+    testTimeout: 30_000,
+  },
+});
+```
+
+Pending jobs report the JVM's exit code and signal when it dies. With phase
+timing enabled, `pool-discard` rows record why a JVM was dropped, including
+startup and return-check timeouts, active jobs, unshuttered work, and runner
+build changes.
 
 What reuse guarantees:
 

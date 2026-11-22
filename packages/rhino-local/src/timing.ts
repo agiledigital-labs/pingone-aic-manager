@@ -1,14 +1,15 @@
 /**
- * Opt-in phase timing. Set `AIC_SCRIPT_TESTER_TIMING` to a file path and every
- * JVM spawn, lease and eval job appends one JSON line to it; summarise the file
- * with `aic-script-tester-timing <file>`. Off by default: when the variable is
- * unset no job asks the JVM for timing and nothing is written.
+ * Opt-in phase timing. Set `AIC_SCRIPT_TESTER_TIMING` to a file path to write
+ * JSON lines and run `aic-script-tester-timing <file>` to summarise them.
+ * Off by default: when the variable is unset no job asks the JVM for timing.
  *
+ * Pooled spawn, borrow and discard rows share a JVM's `jvmId`.
  * Rows (`type`):
  * - `spawn`: a JVM process from start to its ready line (`spawnToReadyMs`);
  *   `pooled` says whether the shared pool started it.
- * - `borrow`: a lease connecting to a pooled JVM until it is usable
- *   (`readyMs`). Borrows outnumbering pooled spawns is the pool reusing JVMs.
+ * - `pool-discard`: why the pool removed a JVM from circulation.
+ * - `borrow`: a transport connecting to a pooled JVM until it is usable
+ *   (`readyMs`). Overlapping leases sharing an open transport add no borrow.
  * - `job`: one eval on one lane. Node fields: `lineBytes` (the job line as
  *   written), `sourceBytes` and `sourcesShipped` (prelude and library texts
  *   carried on that line rather than named by hash), `stringifyMs`,
@@ -68,7 +69,7 @@ export function timingPath(): string | undefined {
   return path === undefined || path === "" ? undefined : path;
 }
 
-export function recordTiming(row: { type: "spawn" | "borrow" | "job" | "publish" } & Record<string, unknown>): void {
+export function recordTiming(row: { type: "spawn" | "borrow" | "job" | "publish" | "pool-discard" } & Record<string, unknown>): void {
   const path = timingPath();
   if (path === undefined) return;
   try {
