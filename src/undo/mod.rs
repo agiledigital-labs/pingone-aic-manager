@@ -458,6 +458,12 @@ impl DiskLog {
         &mut self,
         change: impl FnOnce(&mut Vec<UndoEntry>) -> Result<(R, bool)>,
     ) -> Result<R> {
+        // No file means there are no disk entries to change. In particular,
+        // the TUI startup sweep must not create a project marker or sidecars.
+        if !self.path.try_exists()? {
+            self.entries.retain(|entry| !persistable(entry.sensitivity));
+            return change(&mut self.entries).map(|(result, _)| result);
+        }
         let _lock = self.lock_mutations(LockWait::Blocking)?;
         // History views can outlive other writers. Use the current file under
         // the lock, preserving entries this instance never persisted.
