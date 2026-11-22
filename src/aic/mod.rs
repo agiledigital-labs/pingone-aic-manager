@@ -493,6 +493,13 @@ mod tests {
     }
 
     async fn token_endpoint(scope: &'static str) -> String {
+        token_endpoint_body(format!(
+            r#"{{"access_token":"narrow-token","expires_in":898,"scope":"{scope}"}}"#
+        ))
+        .await
+    }
+
+    async fn token_endpoint_body(body: String) -> String {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
@@ -500,8 +507,6 @@ mod tests {
             let (mut stream, _) = listener.accept().await.unwrap();
             let mut request = vec![0; 8192];
             let _ = stream.read(&mut request).await.unwrap();
-            let body =
-                format!(r#"{{"access_token":"narrow-token","expires_in":898,"scope":"{scope}"}}"#);
             let response = format!(
                 "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
                 body.len(),
@@ -510,6 +515,38 @@ mod tests {
             stream.write_all(response.as_bytes()).await.unwrap();
         });
         format!("http://{address}")
+    }
+
+    #[tokio::test]
+    async fn bearer_min_ttl_uses_endpoint_lifetime_and_fails_closed_without_it() {
+        let response = || {
+            r#"{"access_token":"narrow-token","expires_in":899,"scope":"fr:am:*"}"#.to_string()
+        };
+        let mut configured = tenant(token_endpoint_body(response()).await);
+        configured.sa_id = Some("sa".into());
+        configured.scopes = vec!["fr:am:*".into()];
+        let accepted = AicClient::new(configured, synthetic_signing_key());
+        assert_eq!(accepted.bearer_with_min_ttl(899).await.unwrap(), "narrow-token");
+
+        let mut configured = tenant(token_endpoint_body(response()).await);
+        configured.sa_id = Some("sa".into());
+        configured.scopes = vec!["fr:am:*".into()];
+        let refused = AicClient::new(configured, synthetic_signing_key());
+        let error = refused.bearer_with_min_ttl(900).await.unwrap_err();
+        assert!(error.to_string().contains("lifetime is 899s"));
+        let cache = refused.token_cache.lock().unwrap();
+        assert_eq!(cache.expires_at(), 0);
+        assert_eq!(cache.get_with_min_ttl(0), None);
+        drop(cache);
+
+        let missing = r#"{"access_token":"narrow-token","scope":"fr:am:*"}"#.to_string();
+        let mut configured = tenant(token_endpoint_body(missing).await);
+        configured.sa_id = Some("sa".into());
+        configured.scopes = vec!["fr:am:*".into()];
+        let no_lifetime = AicClient::new(configured, synthetic_signing_key());
+        let error = no_lifetime.bearer_with_min_ttl(899).await.unwrap_err();
+        assert!(error.to_string().contains("no expires_in"));
+        assert_eq!(no_lifetime.token_cache.lock().unwrap().expires_at(), 0);
     }
 
     #[tokio::test]
