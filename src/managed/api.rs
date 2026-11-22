@@ -584,19 +584,30 @@ pub async fn replace_managed_confirmed(
     expect: &[ConfigConfirm],
     confirmed_prod: bool,
 ) -> Result<()> {
-    replace_managed_confirmed_mode(tenant, base, doc, expect, confirmed_prod, false).await
+    replace_managed_confirmed_mode(tenant, base, doc, expect, confirmed_prod, None::<fn() -> _>)
+        .await
 }
 
-/// A consented probe depends on the document that was inspected. Refuse to
-/// replace a different base even if its relationship transitions are safe.
+/// A consented probe checks the observed base immediately before writing.
+/// Run the caller's undo persistence only after preflight succeeds and before
+/// the first PUT. The revisionless endpoint cannot make this check atomic.
 pub(super) async fn replace_managed_confirmed_against_base(
     tenant: &str,
     base: &Value,
     doc: Value,
     expect: &[ConfigConfirm],
     confirmed_prod: bool,
+    before_first_put: impl FnOnce() -> Result<()>,
 ) -> Result<()> {
-    replace_managed_confirmed_mode(tenant, base, doc, expect, confirmed_prod, true).await
+    replace_managed_confirmed_mode(
+        tenant,
+        base,
+        doc,
+        expect,
+        confirmed_prod,
+        Some(before_first_put),
+    )
+    .await
 }
 
 async fn replace_managed_confirmed_mode(
@@ -605,10 +616,10 @@ async fn replace_managed_confirmed_mode(
     doc: Value,
     expect: &[ConfigConfirm],
     confirmed_prod: bool,
-    require_base: bool,
+    before_first_put: Option<impl FnOnce() -> Result<()>>,
 ) -> Result<()> {
     replace_managed_confirmed_with(
-        (base, require_base),
+        (base, before_first_put),
         doc,
         expect,
         || get_managed(tenant),
@@ -624,7 +635,7 @@ async fn replace_managed_confirmed_mode(
 /// closures returning futures rather than `AsyncFn`: the TUI spawns these
 /// writes, and an async closure's future cannot be proven `Send` there.
 async fn replace_managed_confirmed_with<G, R, P>(
-    (base, require_base): (&Value, bool),
+    (base, before_first_put): (&Value, Option<impl FnOnce() -> Result<()>>),
     doc: Value,
     expect: &[ConfigConfirm],
     mut get: impl FnMut() -> G,
@@ -642,6 +653,7 @@ where
             "managed config write requires at least one confirmation condition".into(),
         ));
     }
+    let require_base = before_first_put.is_some();
     let check_base = |observed: &Value| {
         if require_base && observed != base {
             Err(Error::Config("config/managed changed since the relationship was planned; refusing to overwrite it. Re-read the configuration and retry".into()))
@@ -659,6 +671,10 @@ where
         if require_base {
             check_base(&get().await?)?;
         }
+    }
+
+    if let Some(persist_undo) = before_first_put {
+        persist_undo()?;
     }
 
     const ATTEMPTS: u32 = 6;
@@ -1143,7 +1159,7 @@ mod tests {
             let puts = std::cell::Cell::new(0);
             let stored = std::cell::RefCell::new(before.clone());
             let result = replace_managed_confirmed_with(
-                (&before, false),
+                (&before, None::<fn() -> _>),
                 after.clone(),
                 &[ConfigConfirm::DocumentEquals(after.clone())],
                 || std::future::ready(Ok(stored.borrow().clone())),
@@ -1178,7 +1194,7 @@ mod tests {
         for (base, refused) in [(&before, true), (&after, false)] {
             let puts = std::cell::Cell::new(0);
             let result = replace_managed_confirmed_with(
-                (base, false),
+                (base, None::<fn() -> _>),
                 after.clone(),
                 &[ConfigConfirm::DocumentEquals(after.clone())],
                 || std::future::ready(Ok(after.clone())),
@@ -1227,7 +1243,7 @@ mod tests {
             let puts = std::cell::Cell::new(0);
             let stored = std::cell::RefCell::new(before.clone());
             let result = replace_managed_confirmed_with(
-                (&before, false),
+                (&before, None::<fn() -> _>),
                 after.clone(),
                 &[ConfigConfirm::DocumentEquals(after.clone())],
                 || std::future::ready(Ok(stored.borrow().clone())),
@@ -1299,7 +1315,7 @@ mod tests {
             let stored = std::cell::RefCell::new(before.clone());
             let error = std::cell::RefCell::new(Some(error));
             let result = replace_managed_confirmed_with(
-                (&before, false),
+                (&before, None::<fn() -> _>),
                 after.clone(),
                 &[ConfigConfirm::ObjectPresent {
                     name: "custom_widget".into(),
@@ -1330,7 +1346,7 @@ mod tests {
         let theirs = json!({"objects": [widget(json!({"y": {}})), other.clone()]});
         let reads = std::cell::RefCell::new(vec![theirs, after.clone()]);
         let result = replace_managed_confirmed_with(
-            (&before, false),
+            (&before, None::<fn() -> _>),
             after.clone(),
             &[ConfigConfirm::ObjectPresent {
                 name: "custom_widget".into(),

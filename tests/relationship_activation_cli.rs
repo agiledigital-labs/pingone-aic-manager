@@ -254,7 +254,7 @@ fn hook_edit_after_consent_inventory_refuses_before_any_write() {
 }
 
 #[test]
-fn managed_put_guard_refuses_an_edit_after_the_prewrite_survey() {
+fn observed_managed_drift_refuses_without_writing_or_recording_undo() {
     let project = Project::new();
     let mut args = set_args().to_vec();
     args.push("--force");
@@ -276,6 +276,10 @@ fn managed_put_guard_refuses_an_edit_after_the_prewrite_survey() {
     );
     assert!(tenant.writes().is_empty(), "{:?}", tenant.writes());
     assert_eq!(tenant.managed["objects"][0]["onCreate"]["source"], "edited");
+    assert!(
+        !project.0.join(".aic/undo.log").exists(),
+        "the refused write left an undo entry"
+    );
 }
 
 fn reported_writes(set: bool) -> Value {

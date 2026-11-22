@@ -1142,12 +1142,14 @@ async fn relationship(command: RelationshipCommand) -> Result<()> {
                     if let Some((added, pending)) = prepared {
                         pending.recheck_before_write(&tenant, added).await?;
                     }
-                    record_config_undo(
-                        &tenant,
-                        &doc,
-                        &updated,
-                        format!("Revert relationship {source_object}.{key}"),
-                    )?;
+                    let persist_undo = || {
+                        record_config_undo(
+                            &tenant,
+                            &doc,
+                            &updated,
+                            format!("Revert relationship {source_object}.{key}"),
+                        )
+                    };
                     if prepared
                         .as_ref()
                         .is_some_and(|(_, pending)| pending.will_probe())
@@ -1158,9 +1160,11 @@ async fn relationship(command: RelationshipCommand) -> Result<()> {
                             updated.clone(),
                             &expect,
                             ok.confirmed_prod,
+                            persist_undo,
                         )
                         .await
                     } else {
+                        persist_undo()?;
                         put_managed(&ok, &doc, updated.clone(), &expect).await
                     }
                 },
