@@ -328,7 +328,7 @@ yet is listed separately, under its cause text. In watch mode with
 cases from earlier runs; read the tally from a plain `vitest run`.
 
 ```json
-{ "version": 1, "harness": "0.4.0-emulator.2 (commit unknown)",
+{ "version": 1, "harness": "0.4.0-emulator.3 (commit unknown)",
   "faults": [{ "id": "script-defect/send-body-js-date", "cases": 2, "failed": 2,
                "files": ["test/a.test.ts", "test/b.test.ts"], "message": "…" }],
   "unidentified": [] }
