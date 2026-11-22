@@ -185,6 +185,8 @@ fn run_command(
         };
         if response["fixture_hold"] == true {
             unanswered.push(stream);
+        } else if let Some(wire) = response["fixture_raw"].as_str() {
+            let _ = stream.write_all(wire.as_bytes());
         } else {
             let _ = writeln!(stream, "{response}");
         }
@@ -556,26 +558,20 @@ fn production_set_observes_probe_consent_undo_and_put_order() {
     }
 }
 
-#[test]
-fn first_managed_put_rejection_retires_undo() {
+fn assert_first_managed_put_refusal_retires_undo(reply: Value, message: &str) {
     let project = Project::new();
     let mut args = set_args().to_vec();
     args.push("--force");
     let (output, tenant) = run(&project, &args, Tenant::new(false), |tenant, request, _| {
         if request["method"] == "PUT" && request["path"] == MANAGED {
             tenant.calls.push(("PUT".into(), MANAGED.into()));
-            return Some(
-                json!({"type":"api_error","status":403,"body":"fixture: config write denied"}),
-            );
+            return Some(reply.clone());
         }
         None
     });
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert_eq!(output.status.code(), Some(1), "{stderr}");
-    assert!(
-        stderr.contains("403 fixture: config write denied"),
-        "{stderr}"
-    );
+    assert!(stderr.contains(message), "{stderr}");
     assert_eq!(tenant.managed, managed(false));
     assert_eq!(tenant.writes(), [("PUT", MANAGED)]);
     let history = DiskLog::load(project.0.join(".aic/undo.log"))
@@ -586,10 +582,34 @@ fn first_managed_put_rejection_retires_undo() {
 }
 
 #[test]
+fn first_managed_put_rejection_retires_undo() {
+    assert_first_managed_put_refusal_retires_undo(
+        json!({"type":"api_error","status":403,"body":"fixture: config write denied"}),
+        "403 fixture: config write denied",
+    );
+}
+
+#[test]
+fn locked_agent_refusal_retires_undo() {
+    assert_first_managed_put_refusal_retires_undo(json!({"type":"locked"}), "agent is locked");
+}
+
+#[test]
+fn production_guard_refusal_retires_undo() {
+    assert_first_managed_put_refusal_retires_undo(
+        json!({"type":"prod_confirm_required"}),
+        "Prod write confirmation required",
+    );
+}
+
+#[test]
 fn uncertain_managed_put_outcomes_keep_undo() {
     for scenario in [
         "applied 500",
         "lost response",
+        "missing agent reply",
+        "malformed agent reply",
+        "untyped lock message",
         "request timeout",
         "rejected retry",
     ] {
@@ -609,6 +629,12 @@ fn uncertain_managed_put_outcomes_keep_undo() {
                     json!({"type":"api_error","status":500,"body":"fixture: write applied but response failed"})
                 }
                 "lost response" => json!({"type":"transport","message":"fixture: lost response"}),
+                "missing agent reply" => {
+                    tenant.managed = request["body"].clone();
+                    json!({"fixture_raw":""})
+                }
+                "malformed agent reply" => json!({"fixture_raw":"not JSON\n"}),
+                "untyped lock message" => json!({"type":"error","message":"agent is locked"}),
                 "request timeout" => {
                     json!({"type":"api_error","status":408,"body":"fixture: request timed out"})
                 }

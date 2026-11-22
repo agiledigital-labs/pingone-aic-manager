@@ -292,9 +292,7 @@ impl<'a> ApiCall<'a> {
         let resp = agent.send(&self.envelope()).await?;
         match resp {
             Response::Json { value } => Ok(value),
-            Response::Locked => Err(Error::Auth(
-                "agent is locked — run `aic session login` (CLI) or unlock the TUI".into(),
-            )),
+            Response::Locked => Err(Error::AgentLocked),
             Response::ProdConfirmRequired => Err(Error::ProdConfirmRequired),
             Response::ApiError { status, body } => Err(Error::Api { status, body }),
             Response::Error { message } => Err(Error::Config(message)),

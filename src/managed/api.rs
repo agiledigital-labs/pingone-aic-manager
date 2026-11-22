@@ -681,11 +681,16 @@ where
     let mut failed = None;
     for attempt in 0..ATTEMPTS {
         if let Err(error) = put(doc.clone()).await {
-            // Only a terminal client error on the first PUT rules out every
-            // attempt landing. Keep undo on timeouts (including HTTP 408),
-            // lost replies, server errors, and any rejection after a retry.
+            // A typed pre-dispatch refusal or an HTTP rejection can only
+            // rule out this attempt. Keep undo if an earlier PUT could have
+            // landed or if this reply does not establish rejection.
+            let refused = match &error {
+                Error::AgentLocked | Error::ProdConfirmRequired => true,
+                Error::Api { status, .. } => (400..500).contains(status) && *status != 408,
+                _ => false,
+            };
             if attempt == 0
-                && matches!(&error, Error::Api { status, .. } if (400..500).contains(status) && *status != 408)
+                && refused
                 && let Some(id) = undo_id
             {
                 if let Err(retire) = DiskLog::load_default()

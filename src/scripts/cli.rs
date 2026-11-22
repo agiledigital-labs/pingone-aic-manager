@@ -36,6 +36,7 @@ fn batch_fatal(e: &Error) -> bool {
             status: 401 | 403 | 429,
             ..
         } | Error::Auth(_)
+            | Error::AgentLocked
             | Error::AuthRequired
             | Error::AgentProtocolMismatch
             | Error::ProdConfirmRequired
@@ -3428,7 +3429,7 @@ impl Stop {
 fn is_fatal_watch_error(error: &Error) -> bool {
     match error {
         Error::Config(message) => message.contains("no JWK on file"),
-        Error::Auth(_) | Error::Api { status: 401, .. } => true,
+        Error::Auth(_) | Error::AgentLocked | Error::Api { status: 401, .. } => true,
         _ => false,
     }
 }
