@@ -1,12 +1,13 @@
 //! The CLI must enforce its requested token lifetime on replies from an
 //! already-running agent, including one built before that check existed.
 
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, ErrorKind, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::mpsc::{self, Sender};
 use std::thread;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 fn bin() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_aic"))
@@ -16,22 +17,41 @@ fn reply(stream: &mut UnixStream, value: serde_json::Value) {
     writeln!(stream, "{value}").expect("write mock agent response");
 }
 
-#[test]
-fn refuses_a_short_token_from_a_mixed_version_agent_without_printing_it() {
-    let root = std::env::temp_dir().join(format!("aic-min-ttl-{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(root.join(".aic")).expect("create project");
-    std::fs::create_dir_all(root.join("data")).expect("create data directory");
-    std::fs::create_dir_all(root.join("state")).expect("create state directory");
-    std::fs::write(
-        root.join(".aic/config.toml"),
-        "project = \"test\"\ndefault_tenant = \"stub\"\n\n[[tenant]]\nname = \"stub\"\nbase_url = \"https://tenant.example.com\"\ntheme = \"sandbox\"\nscopes = []\n",
-    )
-    .expect("write project config");
+#[derive(Debug, PartialEq, Eq)]
+enum MockAgentEnd {
+    Shutdown,
+    TokenRequested,
+    TimedOut,
+}
 
-    let listener = UnixListener::bind(root.join(".aic/agent.sock")).expect("bind mock agent");
+fn temp_root(prefix: &str) -> PathBuf {
+    let root = PathBuf::from("/tmp").join(format!("{prefix}-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&root).expect("create project root");
+    root
+}
+
+fn mock_agent(listener: UnixListener) -> (Sender<()>, thread::JoinHandle<MockAgentEnd>) {
+    listener
+        .set_nonblocking(true)
+        .expect("make mock listener nonblocking");
+    let (shutdown, shutdown_rx) = mpsc::channel();
     let agent = thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(5);
         loop {
-            let (mut stream, _) = listener.accept().expect("accept agent request");
+            if shutdown_rx.try_recv().is_ok() {
+                return MockAgentEnd::Shutdown;
+            }
+            let (mut stream, _) = match listener.accept() {
+                Ok(connection) => connection,
+                Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                    if Instant::now() >= deadline {
+                        return MockAgentEnd::TimedOut;
+                    }
+                    thread::sleep(Duration::from_millis(10));
+                    continue;
+                }
+                Err(error) => panic!("accept agent request: {error}"),
+            };
             let mut line = String::new();
             BufReader::new(stream.try_clone().expect("clone stream"))
                 .read_line(&mut line)
@@ -68,12 +88,29 @@ fn refuses_a_short_token_from_a_mixed_version_agent_without_printing_it() {
                             "scopes": null
                         }),
                     );
-                    break;
+                    return MockAgentEnd::TokenRequested;
                 }
                 other => panic!("unexpected agent operation: {other}"),
             }
         }
     });
+    (shutdown, agent)
+}
+
+#[test]
+fn refuses_a_short_token_from_a_mixed_version_agent_without_printing_it() {
+    let root = temp_root("aic-min-ttl");
+    std::fs::create_dir_all(root.join(".aic")).expect("create project");
+    std::fs::create_dir_all(root.join("data")).expect("create data directory");
+    std::fs::create_dir_all(root.join("state")).expect("create state directory");
+    std::fs::write(
+        root.join(".aic/config.toml"),
+        "project = \"test\"\ndefault_tenant = \"stub\"\n\n[[tenant]]\nname = \"stub\"\nbase_url = \"https://tenant.example.com\"\ntheme = \"sandbox\"\nscopes = []\n",
+    )
+    .expect("write project config");
+
+    let listener = UnixListener::bind(root.join(".aic/agent.sock")).expect("bind mock agent");
+    let (shutdown, agent) = mock_agent(listener);
 
     let output = Command::new(bin())
         .current_dir(&root)
@@ -90,7 +127,11 @@ fn refuses_a_short_token_from_a_mixed_version_agent_without_printing_it() {
         ])
         .output()
         .expect("run aic");
-    agent.join().expect("mock agent thread");
+    let _ = shutdown.send(());
+    assert_eq!(
+        agent.join().expect("mock agent thread"),
+        MockAgentEnd::TokenRequested
+    );
     std::fs::remove_dir_all(&root).expect("cleanup project");
 
     assert!(!output.status.success());
@@ -106,4 +147,36 @@ fn refuses_a_short_token_from_a_mixed_version_agent_without_printing_it() {
     assert!(stderr.contains("slightly lower floor"), "{stderr}");
     assert!(stderr.contains("aic session stop"), "{stderr}");
     assert!(!stderr.contains("synthetic-short-token"), "{stderr}");
+}
+
+#[test]
+fn reports_a_cli_preflight_exit_instead_of_waiting_for_the_mock_agent() {
+    let root = temp_root("aic-preflight");
+    std::fs::create_dir_all(root.join(".aic")).expect("create project");
+    std::fs::create_dir_all(root.join("data")).expect("create data directory");
+    std::fs::create_dir_all(root.join("state")).expect("create state directory");
+    std::fs::write(root.join(".aic/config.toml"), "invalid = [\n").expect("write bad config");
+
+    let listener = UnixListener::bind(root.join(".aic/agent.sock")).expect("bind mock agent");
+    let (shutdown, agent) = mock_agent(listener);
+    let output = Command::new(bin())
+        .current_dir(&root)
+        .env_remove("AIC_PROJECT")
+        .env("XDG_DATA_HOME", root.join("data"))
+        .env("XDG_STATE_HOME", root.join("state"))
+        .args(["--no-prompt", "whoami", "--json", "--min-ttl", "900"])
+        .output()
+        .expect("run aic");
+    let _ = shutdown.send(());
+    assert_eq!(
+        agent.join().expect("mock agent thread"),
+        MockAgentEnd::Shutdown
+    );
+    std::fs::remove_dir_all(&root).expect("cleanup project");
+
+    assert!(!output.status.success());
+    assert!(
+        !output.stderr.is_empty(),
+        "preflight stderr should explain the exit"
+    );
 }
