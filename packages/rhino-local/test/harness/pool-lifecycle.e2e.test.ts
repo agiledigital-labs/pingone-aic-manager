@@ -197,3 +197,27 @@ it("a nested useLease can time out during teardown without closing its outer lea
   );
   expect(output).toContain("its jobs cancelled");
 }, 60_000);
+
+it("pending work retains the reason for a borrower-triggered JVM discard", async () => {
+  const pool = await JvmPool.start();
+  try {
+    const runner = await RhinoRunner.borrow(pool.address, { lane: "host" });
+    try {
+      expectEmulationFailure(/RhinoRunnerExitError: rhino-local: JVM runner exited .*: JVM discarded by its borrower[\s\S]*/);
+      const pending = runner.eval({
+        source: 'java.lang.System.err.println("job running"); for (;;) {}',
+        classAllowList: ["java.lang.System", "java.io.PrintStream"],
+        timeoutMs: 0,
+      }).catch((error: unknown) => error);
+      await expect.poll(() => runner.stderr.includes("job running"), { timeout: 15_000 }).toBe(true);
+      await runner.kill();
+      expect(await pending).toMatchObject({
+        message: expect.stringContaining("JVM discarded by its borrower"),
+      });
+    } finally {
+      await runner.close();
+    }
+  } finally {
+    await pool.stop();
+  }
+}, 60_000);

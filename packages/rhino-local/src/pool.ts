@@ -657,6 +657,7 @@ export class PooledChild extends EventEmitter {
   #buffer = "";
   #exited = false;
   #connectionError: string | undefined;
+  #discardReason: string | undefined;
   exitReason: string | undefined;
 
   constructor(address: PoolAddress, kind: "host" | "container", slot: string, cache: string = cacheDir()) {
@@ -715,6 +716,9 @@ export class PooledChild extends EventEmitter {
 
   discard(reason: string): void {
     if (this.#released) return;
+    // The socket's FIN may arrive before the JVM exits and the pool sends
+    // its exit frame. Keep the reason even when only the socket closes.
+    this.#discardReason = reason;
     this.#released = true;
     this.#socket.end(`${JSON.stringify({ type: "rhino-local-pool", kill: reason })}\n`);
   }
@@ -741,7 +745,7 @@ export class PooledChild extends EventEmitter {
   #exit({ code, signal, reason }: PoolExit): void {
     if (this.#exited) return;
     this.#exited = true;
-    this.exitReason = reason;
+    this.exitReason = this.#discardReason ?? reason;
     // Do not let a file boundary overtake the exit frame. The stderr data
     // listeners run synchronously because JvmProcess consumes a flowing stream.
     this.emit("exit", code, signal);
