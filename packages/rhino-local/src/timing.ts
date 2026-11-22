@@ -7,6 +7,7 @@
  * Rows (`type`):
  * - `spawn`: a JVM process from start to its ready line (`spawnToReadyMs`);
  *   `pooled` says whether the shared pool started it.
+ * - `pool-discard`: why the pool removed a JVM from circulation (by JVM id).
  * - `borrow`: a lease connecting to a pooled JVM until it is usable
  *   (`readyMs`). Borrows outnumbering pooled spawns is the pool reusing JVMs.
  * - `job`: one eval on one lane. Node fields: `lineBytes` (the job line as
@@ -68,7 +69,7 @@ export function timingPath(): string | undefined {
   return path === undefined || path === "" ? undefined : path;
 }
 
-export function recordTiming(row: { type: "spawn" | "borrow" | "job" | "publish" } & Record<string, unknown>): void {
+export function recordTiming(row: { type: "spawn" | "borrow" | "job" | "publish" | "pool-discard" } & Record<string, unknown>): void {
   const path = timingPath();
   if (path === undefined) return;
   try {

@@ -12,5 +12,8 @@ export default defineConfig({
     isolate: false,
     maxWorkers: 4,
     fileParallelism: true,
+    // A journey can span two evals. Let the runner's own per-job deadline
+    // give the verdict when cold compilation is slow on a contended CPU.
+    testTimeout: 30_000,
   },
 });

@@ -19,7 +19,7 @@ import {
   type Launch,
   type RunnerEnvironment,
 } from "./jvm.ts";
-import { PooledChild, type PoolAddress } from "./pool.ts";
+import { LAUNCH_ENV, PooledChild, type PoolAddress } from "./pool.ts";
 import type { Readable } from "node:stream";
 import {
   parseHostCall,
@@ -91,15 +91,17 @@ function hostError(error: unknown): HostError {
 const execFileAsync = promisify(execFile);
 
 const READY = "rhino-local-runner ready";
+export const DEFAULT_SPAWN_TIMEOUT_MS = 60_000;
 
 export class RhinoRunnerExitError extends Error {
   readonly exitCode: number | null;
   readonly signal: NodeJS.Signals | null;
   readonly stderr: string;
 
-  constructor(exitCode: number | null, signal: NodeJS.Signals | null, stderr: string) {
+  constructor(exitCode: number | null, signal: NodeJS.Signals | null, stderr: string, reason?: string) {
     super(
       `rhino-local: JVM runner exited (code=${exitCode}, signal=${signal})` +
+        (reason === undefined ? "" : `: ${reason}`) +
         (stderr.trim() ? `: ${stderr.trim()}` : "")
     );
     this.name = "RhinoRunnerExitError";
@@ -187,6 +189,7 @@ class JvmProcess {
   #closed = false;
   readonly #shutdownWaitMs: number;
   #spawnError: Error | undefined;
+  #readinessError: Error | undefined;
   /**
    * What this JVM has been sent; a separate set per process, so each lane gets
    * every text once. A pooled JVM's set outlives the lease: the pool hands the
@@ -234,7 +237,7 @@ class JvmProcess {
     });
     child.on("exit", (code, signal) => {
       this.#exit = { code, signal };
-      const error = new RhinoRunnerExitError(code, signal, this.#stderrBuf);
+      const error = this.#exitError(code, signal);
       for (const [id, pending] of this.#pending) {
         this.#pending.delete(id);
         pending.reject(error);
@@ -257,9 +260,21 @@ class JvmProcess {
     return this.#stderrBuf;
   }
 
-  async waitUntilReady(timeoutMs: number): Promise<void> {
+  get available(): boolean {
+    return !this.#closed && this.#exit === null && this.#spawnError === undefined;
+  }
+
+  hasPending(ids: ReadonlySet<string>): boolean {
+    for (const id of ids) if (this.#pending.has(id)) return true;
+    return false;
+  }
+
+  async waitUntilReady(timeoutMs: number, owner = true): Promise<void> {
     const started = Date.now();
     for (;;) {
+      if (this.#readinessError !== undefined) throw this.#readinessError;
+      if (this.#exit !== null) throw this.#exitError(this.#exit.code, this.#exit.signal);
+      if (this.environment !== undefined) return;
       const at = this.#stderrBuf.indexOf(READY);
       const end = at === -1 ? -1 : this.#stderrBuf.indexOf("\n", at);
       if (end !== -1) {
@@ -283,14 +298,16 @@ class JvmProcess {
           { cause: this.#spawnError }
         );
       }
-      if (this.#exit) {
-        throw new RhinoRunnerExitError(this.#exit.code, this.#exit.signal, this.#stderrBuf);
-      }
-      if (Date.now() - started > timeoutMs) {
-        await this.kill();
-        throw new Error(
-          `rhino-local: ${this.lane} runner did not become ready within ${timeoutMs}ms: ${this.#stderrBuf}`
-        );
+      if (Date.now() - started >= timeoutMs) {
+        const reason = `${this.lane} runner did not become ready within ${timeoutMs}ms`;
+        const error = new Error(`rhino-local: ${reason}` +
+          (this.#stderrBuf.trim() ? `: ${this.#stderrBuf.trim()}` : ""));
+        if (owner) {
+          this.#readinessError = error;
+          this.#wake();
+          await this.kill(reason);
+        }
+        throw error;
       }
       // Event-driven: a warm pooled JVM's ready line arrives within a
       // millisecond, and a fixed poll made every lease wait for the tick.
@@ -306,6 +323,10 @@ class JvmProcess {
     }
   }
 
+  #exitError(code: number | null, signal: NodeJS.Signals | null): RhinoRunnerExitError {
+    return new RhinoRunnerExitError(code, signal, this.#stderrBuf, this.#pooled?.exitReason);
+  }
+
   send(
     id: string,
     payload: Record<string, unknown>,
@@ -314,7 +335,7 @@ class JvmProcess {
     if (this.#closed || this.#exit) {
       return Promise.reject(
         this.#exit
-          ? new RhinoRunnerExitError(this.#exit.code, this.#exit.signal, this.#stderrBuf)
+          ? this.#exitError(this.#exit.code, this.#exit.signal)
           : new Error("rhino-local: runner is closed")
       );
     }
@@ -343,19 +364,9 @@ class JvmProcess {
             sentAt: performance.now(),
           };
         }
-        const ok = this.#child.stdin.write(line);
-        if (!ok) {
-          const onError = (error: Error): void => {
-            this.#child.stdin.off("drain", onDrain);
-            this.#pending.delete(id);
-            reject(error);
-          };
-          const onDrain = (): void => {
-            this.#child.stdin.off("error", onError);
-          };
-          this.#child.stdin.once("error", onError);
-          this.#child.stdin.once("drain", onDrain);
-        }
+        // The stream buffers writes. A broken pipe can arrive before the exit
+        // frame with the JVM's code or signal, so let the exit settle this job.
+        this.#child.stdin.write(line);
       };
       let resent = false;
       const settle = (response: JobResponse): void => {
@@ -434,7 +445,7 @@ class JvmProcess {
           this.#pending.delete(id);
           pending.reject(error);
         }
-        this.#pooled.kill();
+        this.#pooled.discard(error.message);
       } else {
         this.#pooled.release(this.#sources.hashes());
       }
@@ -467,13 +478,18 @@ class JvmProcess {
     await this.#removeContainer();
   }
 
-  async kill(): Promise<void> {
+  async kill(reason?: string): Promise<void> {
     this.#closed = true;
     if (this.#spawnError) {
       await this.#removeContainer();
       return;
     }
-    this.#child.kill("SIGKILL");
+    if (this.#exit !== null) {
+      await this.#removeContainer();
+      return;
+    }
+    if (this.#pooled !== undefined && reason !== undefined) this.#pooled.discard(reason);
+    else this.#child.kill("SIGKILL");
     await Promise.race([this.#waitForExit(), sleep(2_000)]);
     await this.#removeContainer();
   }
@@ -653,6 +669,24 @@ function sourceHash(text: string): string {
   return hash;
 }
 
+/** Active shared transports in this worker, including across Vitest module graphs. */
+interface SharedBorrow {
+  process: JvmProcess;
+  users: number;
+}
+const sharedKey = Symbol.for("@agiledigital/pingone-aic-script-tester/shared-jvms-v1");
+const sharedGlobal = process as typeof process & { [sharedKey]?: Map<string, SharedBorrow> };
+const sharedBorrows = sharedGlobal[sharedKey] ??= new Map<string, SharedBorrow>();
+
+export interface BorrowRunnerOptions extends Pick<SpawnRunnerOptions, "lane" | "cache" | "spawnTimeoutMs" | "shutdownWaitMs"> {
+  /**
+   * Share this worker's active transport with other shuttered leases. Raw
+   * borrows default to exclusive: unshuttered work can change JVM-wide state.
+   * @internal Used by useLease, whose requests always install a class shutter.
+   */
+  shared?: boolean;
+}
+
 // The logical host-call chain can cross runner instances; independent async
 // chains still have separate stores. A nested runner must mark its caller's scope.
 const callScope = new AsyncLocalStorage<{ failure?: NonNullable<HostError["emulation"]> }>();
@@ -667,6 +701,8 @@ export class RhinoRunner {
   #jobs = new Set<Promise<void>>();
   readonly #shutdownWaitMs: number;
   #activeIds = new Set<string>();
+  #releaseBorrow: (() => Promise<void>) | undefined;
+  #shared = false;
 
   private constructor(lane: JvmLane, primary: JvmProcess, shadow: JvmProcess | undefined, shutdownWaitMs: number) {
     this.#shutdownWaitMs = shutdownWaitMs;
@@ -680,7 +716,7 @@ export class RhinoRunner {
     const cache = options.cache ?? cacheDir();
     const jar = await ensureRhinoJar(cache);
     const classes = await ensureRunnerClasses(jar, { cache });
-    const spawnTimeoutMs = options.spawnTimeoutMs ?? 60_000;
+    const spawnTimeoutMs = options.spawnTimeoutMs ?? DEFAULT_SPAWN_TIMEOUT_MS;
     const limits: string[] = [];
     for (const [flag, value] of [["max-concurrent-jobs", options.maxConcurrentJobs], ["shutdown-wait-ms", options.shutdownWaitMs]] as const) {
       if (value === undefined) continue;
@@ -712,21 +748,46 @@ export class RhinoRunner {
    * A runner on JVMs borrowed from a {@link JvmPool}; `close()` returns them.
    * @internal Used by `useLease`; the pool's address comes from the package reporter.
    */
-  static async borrow(address: PoolAddress, options: Pick<SpawnRunnerOptions, "lane" | "cache" | "spawnTimeoutMs" | "shutdownWaitMs"> = {}): Promise<RhinoRunner> {
+  static async borrow(address: PoolAddress, options: BorrowRunnerOptions = {}): Promise<RhinoRunner> {
     const lane = options.lane ?? laneFromEnv();
     const cache = options.cache ?? cacheDir();
     const slot = process.env.VITEST_POOL_ID ?? `pid-${process.pid}`;
     const kinds = lane === "both" ? (["host", "container"] as const) : ([lane] as const);
-    const processes = kinds.map((kind) => new JvmProcess(kind, new PooledChild(address, kind, slot, cache)));
+    const held = kinds.map((kind) => {
+      const key = JSON.stringify([address.path, address.token, slot, kind, cache,
+        ...LAUNCH_ENV.map((name) => process.env[name])]);
+      const active = options.shared ? sharedBorrows.get(key) : undefined;
+      const reused = active?.process.available === true;
+      const borrow = reused ? active : {
+        process: new JvmProcess(kind, new PooledChild(address, kind, slot, cache)),
+        users: 0,
+      };
+      if (options.shared) sharedBorrows.set(key, borrow);
+      borrow.users += 1;
+      return { key, borrow, reused };
+    });
+    const release = async (): Promise<void> => {
+      await Promise.all(held.map(async ({ key, borrow }) => {
+        borrow.users -= 1;
+        if (borrow.users > 0) return;
+        if (sharedBorrows.get(key) === borrow) sharedBorrows.delete(key);
+        await borrow.process.close();
+      }));
+    };
     try {
-      await Promise.all(processes.map((p) => p.waitUntilReady(options.spawnTimeoutMs ?? 60_000)));
+      await Promise.all(held.map(({ borrow, reused }) => borrow.process.waitUntilReady(
+        options.spawnTimeoutMs ?? DEFAULT_SPAWN_TIMEOUT_MS, !reused
+      )));
     } catch (error) {
-      await Promise.all(processes.map((p) => p.close()));
+      await release();
       throw error;
     }
-    const [primary, shadow] = processes;
+    const [primary, shadow] = held.map(({ borrow }) => borrow.process);
     if (primary === undefined) throw new Error("rhino-local: no runner lane selected");
-    return new RhinoRunner(lane, primary, shadow, options.shutdownWaitMs ?? 5000);
+    const runner = new RhinoRunner(lane, primary, shadow, options.shutdownWaitMs ?? 5000);
+    if (options.shared) runner.#releaseBorrow = release;
+    runner.#shared = options.shared === true;
+    return runner;
   }
 
   /** What the (primary) JVM reported at startup. */
@@ -749,6 +810,11 @@ export class RhinoRunner {
 
   async #evaluate(job: JobRequest, options: EvalOptions): Promise<JobResponse> {
     const id = job.id ?? randomUUID();
+    if (this.#shared && ((job.engine !== undefined && job.engine !== "am") || !Array.isArray(job.classAllowList))) {
+      const failure = { kind: "protocol" as const, message: "rhino-local: shared JVM borrows require a class shutter; use an exclusive borrow for unshuttered work" };
+      this.#failures.record(failure, `job ${id}`);
+      throw new EmulationFailure(failure);
+    }
     if (this.#activeIds.has(id)) {
       const failure = { kind: "protocol" as const, message: `rhino-local: duplicate active job id: ${id}` };
       this.#failures.record(failure, `job ${id}`);
@@ -936,7 +1002,13 @@ export class RhinoRunner {
       this.#closing = true;
       // Keep both lanes usable until accepted evaluations (including shadow replay) finish.
       await Promise.race([Promise.all([...this.#jobs]), sleep(this.#shutdownWaitMs)]);
-      await Promise.all(this.#processes().map((p) => p.close()));
+      if (this.#releaseBorrow !== undefined) {
+        // A closing borrower cannot leave work running in a sibling's JVM.
+        await Promise.all(this.#processes().filter((p) => p.hasPending(this.#activeIds)).map((p) => p.close()));
+        await this.#releaseBorrow();
+      } else {
+        await Promise.all(this.#processes().map((p) => p.close()));
+      }
     })();
     await this.#closePromise;
   }

@@ -1728,11 +1728,20 @@ job rather than hanging. `close()` ends stdin and waits for the process;
 **JVM reuse.** Under the package's Vitest reporter, `useLease` borrows its JVM
 from a pool the reporter keeps in the main Vitest process, so a worker runs
 every file it is given on one JVM rather than starting one per file. The pool
-keeps one JVM per worker, per lane (two with `AIC_SCRIPT_TESTER_JVM=both`) and
-per lease a worker holds at once. A borrowed JVM is returned at `afterAll` and
-lent again only if it is idle: one that crashed, retired itself after a spawned
-thread survived cleanup, or still has a job running (a lease closed while a
-case was still executing) is discarded, and the next file gets a fresh JVM.
+keeps one JVM per worker and per lane (two with `AIC_SCRIPT_TESTER_JVM=both`)
+for compatible `useLease` calls, including overlapping leases in nested or
+concurrent suites. Each lease tears down its own work at `afterAll`. The last
+lease returns the JVM and its warm caches to the pool. A JVM that crashed,
+retired itself after a spawned thread survived cleanup, or still has a job
+running when the lease closes is discarded. Lower-level runner borrows stay
+exclusive by default because they can run unshuttered jobs.
+
+Runner readiness has a 60-second deadline. `useLease(suite, { spawnTimeoutMs })`
+can raise that deadline. Vitest's test timeout separately bounds a test that
+is already running. Pending jobs report the JVM's exit code and signal when
+it dies. With phase timing enabled, `pool-discard` rows record why a JVM was
+dropped, including startup and return-check timeouts, active jobs, unshuttered
+work, and runner build changes.
 
 What reuse guarantees:
 
