@@ -40,7 +40,7 @@ export function writeBuildIdentity(root: string = packageRoot): BuildIdentityWri
     // this package's own manifest belongs to the discovered repository.
     git(root, ["ls-files", "--error-unmatch", "--", "package.json"]);
     commit = git(root, ["rev-parse", "--short=12", "HEAD"]);
-    dirty = git(root, ["status", "--porcelain", "--", "."]) !== "";
+    dirty = git(root, ["status", "--porcelain", "--untracked-files=normal", "--", "."]) !== "";
   } catch {
     if (existsSync(path)) rmSync(path);
     return { status: "unknown", path };

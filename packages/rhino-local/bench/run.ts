@@ -38,7 +38,7 @@ function checkoutIdentity(): string | undefined {
     const commit = execFileSync("git", ["rev-parse", "--short=12", "HEAD"], {
       cwd: new URL("..", import.meta.url), encoding: "utf8",
     }).trim();
-    const dirty = execFileSync("git", ["status", "--porcelain", "--", "."], {
+    const dirty = execFileSync("git", ["status", "--porcelain", "--untracked-files=normal", "--", "."], {
       cwd: new URL("..", import.meta.url), encoding: "utf8",
     }).trim() !== "";
     return `${commit}${dirty ? "-dirty" : ""} (checkout)`;

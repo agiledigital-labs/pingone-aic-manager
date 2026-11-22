@@ -90,6 +90,7 @@ describe("writeBuildIdentity", () => {
     git(enclosing, ["commit", "-q", "-m", "init"]);
 
     writeFileSync(join(enclosing, "notes.txt"), "outside package\n");
+    git(root, ["config", "status.showUntrackedFiles", "no"]);
     expect(writeBuildIdentity(root)).toMatchObject({ status: "written", dirty: false });
 
     writeFileSync(join(root, "inside.txt"), "inside package\n");
