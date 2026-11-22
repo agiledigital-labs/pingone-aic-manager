@@ -1304,6 +1304,8 @@ impl ProjectConfig {
              local-config/\n\
              backups/\n\
              *.log\n\
+             undo.log.lock\n\
+             undo.log.tmp\n\
              # Which ESV secret version holds which SAML certificate. No key\n\
              # material, but it names the tenant, its realms and its entities.\n\
              # Three names, not one: a change takes the lock on the first\n\
