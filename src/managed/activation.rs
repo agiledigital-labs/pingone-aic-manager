@@ -746,29 +746,45 @@ async fn finish_with(
             effects,
             records,
         }) => {
-            if let Err(reason) = check_inventory(io.as_ref(), added, &effects).await {
-                let activation = from_objects(
-                    timeout,
-                    0.0,
-                    skipped_records(&records, "refused", &reason.to_string()).collect(),
-                );
-                announce(added, &activation);
-                return Ok(Some(activation));
-            }
+            // Configuration is already confirmed. Latch SIGINT before any
+            // survey request can block, even though nothing needs cleanup yet.
             command
                 .interrupt
                 .cleanup_done
                 .store(false, Ordering::SeqCst);
             command.listen()?;
-            let activation = probe_types_with(
-                io,
-                &records,
-                timeout,
-                LIMITS,
-                command.interrupt.clone(),
-                Some((added, &effects)),
-            )
-            .await;
+            let activation = match command
+                .run(check_inventory(io.as_ref(), added, &effects))
+                .await
+            {
+                None => {
+                    let reason = "interrupted while refreshing the probe inventory";
+                    let mut report = from_objects(
+                        timeout,
+                        0.0,
+                        skipped_records(&records, "not_confirmed", reason).collect(),
+                    );
+                    report.interrupted = true;
+                    report.detail = Some(reason.into());
+                    report
+                }
+                Some(Err(reason)) => from_objects(
+                    timeout,
+                    0.0,
+                    skipped_records(&records, "refused", &reason.to_string()).collect(),
+                ),
+                Some(Ok(())) => {
+                    probe_types_with(
+                        io,
+                        &records,
+                        timeout,
+                        LIMITS,
+                        command.interrupt.clone(),
+                        Some((added, &effects)),
+                    )
+                    .await
+                }
+            };
             command.interrupt.cleanup_done.store(true, Ordering::SeqCst);
             announce(added, &activation);
             activation

@@ -132,6 +132,7 @@ fn run(
     listener.set_nonblocking(true).unwrap();
     let mut child = project.command().args(args).spawn().unwrap();
     let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    let mut unanswered = Vec::new();
     loop {
         if child.try_wait().unwrap().is_some() {
             break;
@@ -166,7 +167,11 @@ fn run(
             }
             other => panic!("unexpected agent operation: {other}"),
         };
-        let _ = writeln!(stream, "{response}");
+        if response["fixture_hold"] == true {
+            unanswered.push(stream);
+        } else {
+            let _ = writeln!(stream, "{response}");
+        }
     }
     (child.wait_with_output().unwrap(), tenant)
 }
@@ -387,5 +392,53 @@ fn later_probe_refuses_drift_on_its_mapping_target_and_preserves_earlier_id() {
             1
         );
         assert!(String::from_utf8_lossy(&output.stderr).contains(&id));
+    }
+}
+
+#[test]
+fn sigint_cancels_the_first_postwrite_survey_and_reports_confirmed_writes() {
+    for set in [true, false] {
+        let project = Project::new();
+        let capture = project.0.join("capture.json");
+        let mut args = if set {
+            set_args().to_vec()
+        } else {
+            map_args(&capture).to_vec()
+        };
+        args.push("--force");
+        let mut signalled = false;
+        let (output, tenant) = run(
+            &project,
+            &args,
+            Tenant::new(!set),
+            |tenant, request, pid| {
+                if request["path"] == SYNC
+                    && tenant
+                        .writes()
+                        .iter()
+                        .any(|(_, path)| path.starts_with(REPO))
+                {
+                    assert!(!signalled);
+                    signalled = true;
+                    assert_eq!(unsafe { libc::kill(pid as i32, libc::SIGINT) }, 0);
+                    // Do not answer this request. Only cancellation can let the
+                    // command report the writes rather than wait on the survey.
+                    return Some(json!({"fixture_hold":true}));
+                }
+                None
+            },
+        );
+        assert!(signalled, "{output:?}");
+        let body = stopped_report(&output, set, &capture);
+        assert_eq!(body["storage_activation"]["interrupted"], true, "{body}");
+        assert!(
+            body["storage_activation"]["objects"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|object| object.get("id").is_none()),
+            "{body}"
+        );
+        assert!(tenant.writes().iter().all(|(method, _)| *method == "PUT"));
     }
 }
