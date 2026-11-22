@@ -536,10 +536,11 @@ mod tests {
         let refused = AicClient::new(configured, synthetic_signing_key());
         let error = refused.bearer_with_min_ttl(900).await.unwrap_err();
         assert!(error.to_string().contains("lifetime is 899s"));
-        let cache = refused.token_cache.lock().unwrap();
-        assert_eq!(cache.expires_at(), 0);
-        assert_eq!(cache.get_with_min_ttl(0), None);
-        drop(cache);
+        {
+            let cache = refused.token_cache.lock().unwrap();
+            assert_eq!(cache.expires_at(), 0);
+            assert_eq!(cache.get_with_min_ttl(0), None);
+        }
 
         let missing = r#"{"access_token":"narrow-token","scope":"fr:am:*"}"#.to_string();
         let mut configured = tenant(token_endpoint_body(missing).await);
