@@ -47,7 +47,16 @@ describe("writeBuildIdentity", () => {
   });
 
   it("leaves an unknown identity when the source tree has no git metadata", () => {
-    const root = tree();
+    const enclosing = mkdtempSync(join(tmpdir(), "rl-enclosing-"));
+    roots.push(enclosing);
+    git(enclosing, ["init", "-q"]);
+    writeFileSync(join(enclosing, "README.md"), "enclosing repository\n");
+    git(enclosing, ["add", "README.md"]);
+    git(enclosing, ["commit", "-q", "-m", "init"]);
+    const root = join(enclosing, "unpacked-package");
+    mkdirSync(root);
+    mkdirSync(join(root, "dist"));
+    writeFileSync(join(root, "package.json"), "{\"name\":\"example\"}\n");
     const identity = join(root, "dist", "build-identity.json");
     writeFileSync(identity, "{\"commit\":\"0123456789ab\",\"dirty\":false}\n");
     expect(writeBuildIdentity(root)).toEqual({ status: "unknown", path: identity });
@@ -67,5 +76,23 @@ describe("writeBuildIdentity", () => {
       commit,
       dirty: false,
     });
+  });
+
+  it("scopes dirty state to the package and counts package untracked files", () => {
+    const enclosing = mkdtempSync(join(tmpdir(), "rl-monorepo-"));
+    roots.push(enclosing);
+    const root = join(enclosing, "packages", "rhino-local");
+    mkdirSync(join(root, "dist"), { recursive: true });
+    writeFileSync(join(root, "package.json"), "{\"name\":\"example\"}\n");
+    writeFileSync(join(root, ".gitignore"), "dist\n");
+    git(enclosing, ["init", "-q"]);
+    git(enclosing, ["add", "packages/rhino-local/package.json", "packages/rhino-local/.gitignore"]);
+    git(enclosing, ["commit", "-q", "-m", "init"]);
+
+    writeFileSync(join(enclosing, "notes.txt"), "outside package\n");
+    expect(writeBuildIdentity(root)).toMatchObject({ status: "written", dirty: false });
+
+    writeFileSync(join(root, "inside.txt"), "inside package\n");
+    expect(writeBuildIdentity(root)).toMatchObject({ status: "written", dirty: true });
   });
 });
