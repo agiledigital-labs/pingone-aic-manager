@@ -31,7 +31,7 @@ impl Project {
         Self(root)
     }
 
-    fn command(&self) -> Command {
+    fn command(&self, no_prompt: bool) -> Command {
         let mut command = Command::new(env!("CARGO_BIN_EXE_aic"));
         command
             .current_dir(&self.0)
@@ -40,8 +40,11 @@ impl Project {
             .env("XDG_STATE_HOME", self.0.join("state"))
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .args(["--no-prompt", "managed", "relationship"]);
+            .stderr(Stdio::piped());
+        if no_prompt {
+            command.arg("--no-prompt");
+        }
+        command.args(["managed", "relationship"]);
         command
     }
 }
@@ -125,12 +128,24 @@ impl Tenant {
 fn run(
     project: &Project,
     args: &[&str],
+    tenant: Tenant,
+    respond: impl FnMut(&mut Tenant, &Value, u32) -> Option<Value>,
+) -> (Output, Tenant) {
+    let mut command = project.command(true);
+    command.args(args);
+    run_command(project, command, tenant, respond)
+}
+
+fn run_command(
+    project: &Project,
+    mut command: Command,
     mut tenant: Tenant,
     mut respond: impl FnMut(&mut Tenant, &Value, u32) -> Option<Value>,
 ) -> (Output, Tenant) {
     let listener = UnixListener::bind(project.0.join(".aic/agent.sock")).unwrap();
     listener.set_nonblocking(true).unwrap();
-    let mut child = project.command().args(args).spawn().unwrap();
+    let mut child = command.spawn().unwrap();
+    drop(command); // Close the parent's copies of any terminal slave handles.
     let deadline = std::time::Instant::now() + Duration::from_secs(15);
     let mut unanswered = Vec::new();
     loop {
@@ -441,4 +456,134 @@ fn sigint_cancels_the_first_postwrite_survey_and_reports_confirmed_writes() {
         );
         assert!(tenant.writes().iter().all(|(method, _)| *method == "PUT"));
     }
+}
+
+#[test]
+fn production_set_observes_probe_consent_undo_and_put_order() {
+    for force in [false, true] {
+        let project = Project::new();
+        let undo = project.0.join(".aic/undo.log");
+        let mut args = set_args().to_vec();
+        if force {
+            args.push("--force");
+        }
+        let mut undo_on_first_survey = None;
+        let mut undo_on_managed_put = None;
+        let (output, tenant) = run(&project, &args, Tenant::new(false), |_, request, _| {
+            if request["path"] == SYNC && undo_on_first_survey.is_none() {
+                undo_on_first_survey = Some(undo.exists());
+            }
+            if request["method"] == "PUT" && request["path"] == MANAGED {
+                undo_on_managed_put = Some((undo.exists(), request["confirmed_prod"] == true));
+            }
+            None
+        });
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(undo_on_first_survey, Some(false), "{stderr}");
+        if force {
+            assert_eq!(output.status.code(), Some(0), "{stderr}");
+            assert_eq!(undo_on_managed_put, Some((true, true)), "{stderr}");
+            assert!(undo.exists());
+        } else {
+            assert_eq!(output.status.code(), Some(1), "{stderr}");
+            assert!(
+                stderr.contains("storage activation probe requires confirmation"),
+                "{stderr}"
+            );
+            assert!(tenant.writes().is_empty(), "{:?}", tenant.writes());
+            assert!(!undo.exists());
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn script_prompts(
+    command: &mut Command,
+    replies: &'static [(&'static str, &'static [u8])],
+) -> std::thread::JoinHandle<(usize, String)> {
+    use std::io::Read;
+    use std::os::fd::FromRawFd;
+    use std::os::unix::process::CommandExt;
+
+    let mut master = -1;
+    let mut slave = -1;
+    assert_eq!(
+        unsafe {
+            libc::openpty(
+                &mut master,
+                &mut slave,
+                std::ptr::null_mut(),
+                std::ptr::null(),
+                std::ptr::null(),
+            )
+        },
+        0,
+        "openpty: {}",
+        std::io::Error::last_os_error(),
+    );
+    let mut master = unsafe { std::fs::File::from_raw_fd(master) };
+    let slave = unsafe { std::fs::File::from_raw_fd(slave) };
+    command
+        .stdin(slave.try_clone().unwrap())
+        .stderr(slave)
+        .env("TERM", "xterm");
+    unsafe {
+        command.pre_exec(|| {
+            if libc::setsid() < 0 || libc::ioctl(libc::STDIN_FILENO, libc::TIOCSCTTY, 0) < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    std::thread::spawn(move || {
+        let mut transcript = Vec::new();
+        let mut pos = 0;
+        let mut sent = 0;
+        let mut bytes = [0; 1024];
+        loop {
+            let count = match master.read(&mut bytes) {
+                Ok(0) => break,
+                Ok(count) => count,
+                Err(error) if error.raw_os_error() == Some(libc::EIO) => break,
+                Err(error) => panic!("reading prompts: {error}"),
+            };
+            transcript.extend_from_slice(&bytes[..count]);
+            if let Some((prompt, answer)) = replies.get(sent)
+                && let Some(index) = transcript[pos..]
+                    .windows(prompt.len())
+                    .position(|w| w == prompt.as_bytes())
+            {
+                pos += index + prompt.len();
+                master.write_all(answer).unwrap();
+                sent += 1;
+            }
+        }
+        (sent, String::from_utf8_lossy(&transcript).into_owned())
+    })
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn map_declines_probe_without_persisting_capture_or_switching() {
+    let project = Project::new();
+    let capture = project.0.join("capture.json");
+    let mut command = project.command(false);
+    command.args(map_args(&capture));
+    let terminal = script_prompts(
+        &mut command,
+        &[
+            ("map 1 pair(s), 0 links", b"y\r"),
+            ("create, read, and delete one probe record", b"n\r"),
+        ],
+    );
+    let (output, tenant) = run_command(&project, command, Tenant::new(true), |_, _, _| None);
+    let (answered, transcript) = terminal.join().unwrap();
+    assert_eq!(answered, 2, "{transcript}");
+    assert!(
+        !capture.exists(),
+        "capture was saved after refusal: {transcript}"
+    );
+    assert!(tenant.writes().is_empty(), "{:?}", tenant.writes());
+    assert_eq!(output.status.code(), Some(1), "{transcript}");
+    assert!(transcript.contains("probe declined"), "{transcript}");
 }
