@@ -495,7 +495,8 @@ function __rhinoLocalCtxCopy(value) {
 // may-act, 2026-11-10). Absent, the tag stays unmeasured and faults, as it
 // did before that option existed. `opts.writes`: setAttribute and store are
 // measured (access-token modification, 2026-11-14). setAttribute is not
-// visible until store(); store records one identityWrites entry per attribute.
+// visible until store(); user store records one identityWrites entry per attribute.
+// opts.kind distinguishes the measured agent refusal from user persistence.
 // addAttribute stays unmeasured.
 function __rhinoLocalCtxBuildIdentity(seed, opts) {
   // Measured 2026-11-10: String(identity) is the wrapper's Java toString
@@ -546,6 +547,16 @@ function __rhinoLocalCtxBuildIdentity(seed, opts) {
       return undefined;
     });
     __rhinoLocalCtxMethod(identity, "identity", ngCls, "store", 0, function () {
+      // Measured 2026-11-15: client_credentials resolves an agent identity.
+      // AM accepts pending attributes but its Agents plugin refuses store().
+      if (opts.kind === "agent") {
+        throw __rhinoLocalJavaException(ngCls + "$IdentityUpdateException: " +
+          "Exception persisting attribute: Plug-in com.sun.identity.idm.plugins.internal.AgentsRepo: " +
+          "Error while setting attributes for agentonly=" + String(seed.name));
+      }
+      if (opts.kind !== "user") {
+        throw __rhinoLocalCtxUnmeasured("identity.store()", "for an identity from this grant type");
+      }
       var names = Object.keys(pending);
       var i;
       var stored;

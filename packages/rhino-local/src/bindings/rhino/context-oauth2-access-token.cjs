@@ -499,7 +499,14 @@ function __rhinoLocalSeedAccessToken(given) {
     realm = d.token.realm;
   }
   accessToken = __rhinoLocalAtBuildToken(d.token);
-  identity = __rhinoLocalCtxBuildIdentity(d.identity, { writes: true });
+  // Only these grants establish the identity kind: client_credentials is
+  // the client's agent; password authenticates the resource-owner user.
+  // Other grants (including refresh/token exchange) need their own evidence.
+  identity = __rhinoLocalCtxBuildIdentity(d.identity, {
+    writes: true,
+    kind: d.token.grantType === "client_credentials" ? "agent"
+      : d.token.grantType === "password" ? "user" : null,
+  });
   scopes = __rhinoLocalCtxBuildScopes(d.scopes);
   requestProperties = __rhinoLocalCtxBuildRequest(d.request, d.token.realm, null);
   clientProperties = __rhinoLocalCtxBuildClient(d.client, null);

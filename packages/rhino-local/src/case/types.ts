@@ -332,7 +332,8 @@ export interface OpenidmEffect {
 /**
  * One attribute an identity handle persisted with `store()`. On the decision
  * node that handle is `idRepository.getIdentity(id)`. On access-token
- * modification it is the bound `identity`, and `identity` in the effect is
+ * modification it is the bound user `identity` (password grant); client/agent
+ * store throws and records no effect. `identity` in the effect is
  * `getName()` (`given.identity.name`). Named as the script named it (AM's
  * attribute name), because the write goes through AM's identity repository
  * rather than the `openidm` binding.
@@ -772,7 +773,13 @@ export interface AccessTokenSeed {
   clientId?: string;
   /** Default `clientId` — what a `client_credentials` grant has. */
   resourceOwnerId?: string;
-  /** Default `"client_credentials"`. */
+  /**
+   * Default `"client_credentials"`: identity.store() throws the measured
+   * catchable client/agent IdentityUpdateException, with no write.
+   * `"password"` selects measured user persistence. Other grants fault as
+   * unmeasured on store(), including when caught; identity.name alone does
+   * not establish a user identity.
+   */
   grantType?: string;
   /** Default `given.realm`, else `"/alpha"`. */
   realm?: string;
