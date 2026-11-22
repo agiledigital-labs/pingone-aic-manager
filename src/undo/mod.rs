@@ -369,6 +369,8 @@ pub struct DiskLog {
     entries: Vec<UndoEntry>,
     #[cfg(test)]
     rewrite_pause: Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>,
+    #[cfg(test)]
+    append_pause: Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>,
 }
 
 enum LockWait {
@@ -393,6 +395,8 @@ impl DiskLog {
             entries,
             #[cfg(test)]
             rewrite_pause: None,
+            #[cfg(test)]
+            append_pause: None,
         })
     }
 
@@ -444,6 +448,11 @@ impl DiskLog {
 
     fn append_entry(&self, entry: &UndoEntry, wait: LockWait) -> Result<()> {
         let _lock = self.lock_mutations(wait)?;
+        #[cfg(test)]
+        if let Some((paused, resume)) = &self.append_pause {
+            paused.send(()).unwrap();
+            resume.recv().unwrap();
+        }
         let mut file = OpenOptions::new()
             .create(true)
             .append(true)
@@ -458,12 +467,6 @@ impl DiskLog {
         &mut self,
         change: impl FnOnce(&mut Vec<UndoEntry>) -> Result<(R, bool)>,
     ) -> Result<R> {
-        // No file means there are no disk entries to change. In particular,
-        // the TUI startup sweep must not create a project marker or sidecars.
-        if !self.path.try_exists()? {
-            self.entries.retain(|entry| !persistable(entry.sensitivity));
-            return change(&mut self.entries).map(|(result, _)| result);
-        }
         let _lock = self.lock_mutations(LockWait::Blocking)?;
         // History views can outlive other writers. Use the current file under
         // the lock, preserving entries this instance never persisted.
@@ -544,6 +547,12 @@ impl UndoLog for DiskLog {
     }
 
     fn expire_stale(&mut self, now: DateTime<Utc>) -> Result<usize> {
+        // The startup sweep can skip an absent log without creating project
+        // files. Explicit mutations still lock before reading the log.
+        if !self.path.try_exists()? {
+            self.entries.retain(|entry| !persistable(entry.sensitivity));
+            return Ok(expire_in_place(&mut self.entries, now));
+        }
         self.update_entries(|entries| {
             let count = expire_in_place(entries, now);
             Ok((count, count > 0))
@@ -776,6 +785,43 @@ mod tests {
         assert_eq!(listed[0].tenant, "uat");
 
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn disk_log_purge_waits_for_first_append() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let dir = crate::config::TestDir::new();
+        let path = dir.path("undo.log");
+        let mut writer = DiskLog::load(path.clone()).unwrap();
+        let mut purging = DiskLog::load(path.clone()).unwrap();
+
+        let (paused_tx, paused_rx) = mpsc::channel();
+        let (resume_tx, resume_rx) = mpsc::channel();
+        writer.append_pause = Some((paused_tx, resume_rx));
+        let appender =
+            std::thread::spawn(move || writer.record(entry_for("UAT", "first")).unwrap());
+        paused_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert!(!path.exists(), "the paused append already created the log");
+
+        let (started_tx, started_rx) = mpsc::channel();
+        let (purged_tx, purged_rx) = mpsc::channel();
+        let purger = std::thread::spawn(move || {
+            started_tx.send(()).unwrap();
+            let count = purging.forget_tenant("UAT").unwrap();
+            purged_tx.send(()).unwrap();
+            count
+        });
+        started_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        let purged_while_paused = purged_rx.recv_timeout(Duration::from_millis(300)).is_ok();
+        resume_tx.send(()).unwrap();
+        appender.join().unwrap();
+        let count = purger.join().unwrap();
+
+        assert_eq!(count, 1, "purge skipped the first append");
+        assert!(!purged_while_paused, "purge bypassed the append lock");
+        assert!(DiskLog::load(path).unwrap().list(10).is_empty());
     }
 
     #[test]
