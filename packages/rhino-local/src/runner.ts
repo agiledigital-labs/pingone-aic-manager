@@ -92,6 +92,7 @@ const execFileAsync = promisify(execFile);
 
 const READY = "rhino-local-runner ready";
 export const DEFAULT_SPAWN_TIMEOUT_MS = 60_000;
+const CANCELLATION_ACK_TIMEOUT_MS = 2_000;
 
 export class RhinoRunnerExitError extends Error {
   readonly exitCode: number | null;
@@ -186,6 +187,7 @@ class JvmProcess {
   /** Borrowed from the pool: closing returns it there instead of shutting it down. */
   readonly #pooled: PooledChild | undefined;
   #pending = new Map<string, Pending>();
+  #cancellationAcks: { done: Promise<boolean>; finish: (acknowledged: boolean) => void } | undefined;
   #stdoutBuf = "";
   #stderrBuf = "";
   #closed = false;
@@ -244,6 +246,7 @@ class JvmProcess {
         this.#pending.delete(id);
         pending.reject(error);
       }
+      this.#cancellationAcks?.finish(true);
       for (const waiter of this.#exitWaiters) {
         waiter();
       }
@@ -281,6 +284,23 @@ class JvmProcess {
       this.#child.stdin.write(`${JSON.stringify({ id, op: "cancel" })}\n`);
       pending.reject(owner.reason as Error);
     }
+  }
+
+  waitForCancellationAcks(): Promise<boolean> | undefined {
+    if (this.#pending.size === 0 || [...this.#pending.values()].some((job) => !job.cancelled)) return undefined;
+    if (this.#cancellationAcks !== undefined) return this.#cancellationAcks.done;
+
+    let finish!: (acknowledged: boolean) => void;
+    const done = new Promise<boolean>((resolve) => {
+      const timer = setTimeout(() => finish(false), CANCELLATION_ACK_TIMEOUT_MS);
+      finish = (acknowledged) => {
+        clearTimeout(timer);
+        this.#cancellationAcks = undefined;
+        resolve(acknowledged);
+      };
+    });
+    this.#cancellationAcks = { done, finish };
+    return done;
   }
 
   async waitUntilReady(timeoutMs: number, owner = true): Promise<void> {
@@ -446,7 +466,7 @@ class JvmProcess {
     });
   }
 
-  async close(): Promise<void> {
+  async close(cancellationTimedOut = false): Promise<void> {
     if (this.#exit) {
       await this.#removeContainer();
       return;
@@ -463,7 +483,9 @@ class JvmProcess {
         // this JVM next. The unpooled path shuts the JVM down, which bounds it;
         // here the JVM is discarded instead, and the pool starts a fresh one.
         const error = new Error(
-          `rhino-local: lease closed with ${this.#pending.size} job(s) still pending; JVM discarded`
+          cancellationTimedOut
+            ? `rhino-local: JVM did not acknowledge cancellation within ${CANCELLATION_ACK_TIMEOUT_MS}ms; JVM discarded`
+            : `rhino-local: lease closed with ${this.#pending.size} job(s) still pending; JVM discarded`
         );
         for (const [id, pending] of this.#pending) {
           this.#pending.delete(id);
@@ -570,8 +592,14 @@ class JvmProcess {
       return;
     }
     this.#pending.delete(response.id);
-    if (pending.cancelled) this.#timings.delete(response.id);
-    else pending.resolve(response);
+    if (pending.cancelled) {
+      this.#timings.delete(response.id);
+      if (this.#cancellationAcks !== undefined && ![...this.#pending.values()].some((job) => job.cancelled)) {
+        this.#cancellationAcks.finish(true);
+      }
+    } else {
+      pending.resolve(response);
+    }
   }
 
   async #answerCall(call: HostCall): Promise<void> {
@@ -815,11 +843,15 @@ export class RhinoRunner {
         if (owner?.aborted) borrow.process.cancelOwned(owner);
         borrow.users -= 1;
         if (borrow.users > 0) return;
+        const acks = borrow.process.waitForCancellationAcks();
+        const cancellationTimedOut = acks !== undefined && !(await acks);
+        // A new borrower can take this validated transport while it drains.
+        if (borrow.users > 0) return;
         if (shared !== undefined) {
-          shared.delete(borrow);
+          if (!shared.delete(borrow)) return;
           if (shared.size === 0) sharedBorrows.delete(key);
         }
-        await borrow.process.close();
+        await borrow.process.close(cancellationTimedOut);
       }));
     };
     try {

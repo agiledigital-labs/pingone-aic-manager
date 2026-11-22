@@ -1739,9 +1739,10 @@ keeps one JVM per worker and per lane (two with `AIC_SCRIPT_TESTER_JVM=both`)
 for compatible `useLease` calls, including overlapping leases in nested or
 concurrent suites. When a lease closes while others still hold the same JVM,
 it lets its jobs finish within the teardown deadline and then cancels any
-that remain. The last lease returns the JVM and its
-warm caches to the pool. A JVM that crashed, retired itself after a spawned
-thread survived cleanup, or was returned with work still running is discarded.
+that remain. The last lease waits up to two seconds for cancellation
+acknowledgements before returning the JVM and its warm caches to the pool.
+A JVM that crashed, retired itself after a spawned thread survived cleanup,
+or still has work running when it is returned is discarded.
 Lower-level runner borrows stay exclusive by default because they can run
 unshuttered jobs.
 

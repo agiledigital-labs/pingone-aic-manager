@@ -314,3 +314,77 @@ it.skipIf(process.env.AIC_SCRIPT_TESTER_JVM !== "both")("closing a paired borrow
     await pool.stop();
   }
 }, 60_000);
+
+it.skipIf(process.platform === "win32").each([
+  { mode: "acknowledged", resumeBeforeReturn: true },
+  { mode: "unanswered", resumeBeforeReturn: false },
+])("the last holder waits for cancellation before returning the JVM ($mode)", async ({ resumeBeforeReturn }) => {
+  const directory = mkdtempSync(join(tmpdir(), "rhino-pool-cancel-"));
+  const timing = join(directory, "timing.jsonl");
+  vi.stubEnv(TIMING_ENV, timing);
+  const pool = await JvmPool.start();
+  try {
+    const owner = await RhinoRunner.borrow(pool.address, { lane: "host", shared: true, shutdownWaitMs: 150 });
+    const idle = await RhinoRunner.borrow(pool.address, { lane: "host", shared: true });
+    try {
+      const pid = Number((await owner.eval(PID_PROBE)).value);
+      expect(pid).toBeGreaterThan(0);
+      expect((await idle.eval(PID_PROBE)).value).toBe(pid);
+      expectEmulationFailure(/Error: rhino-local: lease closed with 1 job\(s\) still pending; its jobs cancelled/);
+      const pending = owner.eval({
+        source: 'java.lang.System.err.println("interruptible job started"); for (;;) {}',
+        classAllowList: ["java.lang.System", "java.io.PrintStream"],
+        timeoutMs: 0,
+      }).catch((error: unknown) => error);
+      await expect.poll(() => owner.stderr.includes("interruptible job started"), { timeout: 15_000 }).toBe(true);
+      // The JVM cannot acknowledge until the last holder has started closing.
+      process.kill(pid, "SIGSTOP");
+      let stopped = true;
+      const resume = (): void => {
+        if (!stopped) return;
+        stopped = false;
+        try {
+          process.kill(pid, "SIGCONT");
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+        }
+      };
+      try {
+        await owner.close();
+        expect(await pending).toMatchObject({ message: expect.stringContaining("its jobs cancelled") });
+        const returning = idle.close();
+        if (resumeBeforeReturn) {
+          await new Promise<void>((resolve) => setImmediate(resolve));
+          resume();
+        }
+        await returning;
+      } finally {
+        resume();
+      }
+      const next = await RhinoRunner.borrow(pool.address, { lane: "host" });
+      try {
+        const nextPid = (await next.eval(PID_PROBE)).value;
+        if (resumeBeforeReturn) {
+          expect(pool.started).toBe(1);
+          expect(nextPid).toBe(pid);
+        } else {
+          expect(pool.started).toBe(2);
+          expect(nextPid).not.toBe(pid);
+          const rows = readFileSync(timing, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+          expect(rows).toContainEqual(expect.objectContaining({
+            type: "pool-discard",
+            reason: expect.stringContaining("did not acknowledge cancellation within 2000ms"),
+          }));
+        }
+      } finally {
+        await next.close();
+      }
+    } finally {
+      await Promise.all([owner.close(), idle.close()]);
+    }
+  } finally {
+    await pool.stop();
+    vi.unstubAllEnvs();
+    rmSync(directory, { recursive: true, force: true });
+  }
+}, 60_000);
