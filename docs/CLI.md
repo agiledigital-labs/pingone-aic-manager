@@ -207,7 +207,7 @@ binary deliberately does not read passwords from environment variables.
 | `aic whoami [--tenant <name>]` | Mint and print token info plus the local operator name and host for a context.                                 |
 | `aic whoami --token`           | Print **only** the bearer token (for scripting, e.g. `curl -H "Authorization: Bearer $(aic whoami --token)"`). |
 | `aic whoami --json`            | The same identity as plain `whoami`, as JSON: `tenant`, `host`, `sa`, `operator`, `expires_at`, `expires_in`. `access_token` is present only with `--token`. |
-| `aic whoami --min-ttl <secs>`  | Return a cached token only when it has at least `<secs>` left; otherwise the agent mints one in memory and checks the endpoint's raw `expires_in`. The CLI then checks remaining life from the reply and refuses a short result without printing the token. A floor at the full issued lifetime can fall short by elapsed time; choose a slightly lower floor. Older daemons get `aic session stop` guidance. |
+| `aic whoami --min-ttl <secs>`  | Return a cached token only when it has at least `<secs>` left; otherwise the agent mints one in memory and checks the endpoint's raw `expires_in`. Replaces the 840s default used by `--token`, including with a lower floor. The CLI then checks remaining life from the reply and refuses a short result without printing the token. A floor at the full issued lifetime can fall short by elapsed time; choose a slightly lower floor. Older daemons get `aic session stop` guidance. |
 | `aic whoami --idm [--json]`    | Show the IDM component, its roles, and the scopes the service-account token requested. Prints no token and no id. States that a management scope is not the IDM admin role. Cannot be combined with `--token` or `--min-ttl`. |
 | `aic whoami --scope <scope>`   | Repeat for each scope. Mint a token that carries only those, each one this install already requests. The agent does not cache it in place of the normal token. Refuses a scope outside that list. A scope the service account does not hold fails the whole grant. Cannot be combined with `--idm` or `--min-ttl`. |
 | `aic whoami --token --host <url-or-host>` | As `--token`, for the context whose host the URL names (unless `--tenant` is given); refuses — no token printed, non-zero exit — unless the host is that context's own or one of its custom domains. |
@@ -293,11 +293,13 @@ subtraction `aic session status` uses for `Ns remaining` (zero or below is
 the object rather than the bare token and stderr stays empty. `--min-ttl`
 applies with or without `--token`: the agent returns the cached token when
 it still has that many seconds left, and otherwise asks the agent to mint
-one into the same in-memory cache. The agent checks a fresh token against the
-endpoint's raw `expires_in`. The CLI then independently checks remaining life
-from `expires_at - now`, using a later timestamp, and refuses without printing
-a token if the reply is too short. A floor at the token's full issued lifetime
-can fall short by the time the CLI checks it; a slightly lower floor
+one into the same in-memory cache. `--min-ttl` replaces the 840s default used
+by `--token`, including when the requested floor is lower. The agent checks a
+fresh token against the endpoint's raw `expires_in`. The CLI then independently
+checks remaining life from `expires_at - now`, using a later timestamp, and
+refuses without printing a token if the reply is too short. A floor at the
+token's full issued lifetime can fall short by the time the CLI checks it; a
+slightly lower floor
 accommodates elapsed time. The refusal reports the reply's remaining life and
 the requested floor, and recommends `aic session stop` only when the agent
 predates this check. The unlock/status preflight still runs first. Verified
