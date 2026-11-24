@@ -1010,3 +1010,108 @@ describe("G6: slash-path attribute names", () => {
     expect((await post(collector(["preferences/remember"]))).status).toBe(501);
   });
 });
+
+describe("G4: inner trees that wait for the user, and nest", () => {
+  const read = (tag: string) =>
+    decision(
+      `nodeState.putShared("r_${tag}", JSON.stringify({name: String(journey.name()), inner: String(journey.innerJourney()), os: String(nodeState.get("os")), ot: String(nodeState.get("ot")), t1: String(nodeState.get("t1")), t2: String(nodeState.get("t2")), user: String(nodeState.get("username"))})); action.goTo("true");`,
+      `read-${tag}`,
+    );
+  const put = (name: string, shared: string, transient: string) =>
+    decision(
+      `nodeState.putShared("${shared}", "s"); nodeState.putTransient("${transient}", "t"); action.goTo("true");`,
+      name,
+    );
+  const build = (withCollector: boolean) =>
+    new JourneyEmulator(
+      new JourneyConfig({
+        realm: "alpha",
+        trees: {
+          invented: {
+            entryNodeId: "seedO",
+            nodes: {
+              seedO: { nodeType: "ScriptedDecisionNode", connections: { true: "e1" } },
+              e1: { nodeType: "InnerTreeEvaluatorNode", connections: { true: "dump", false: FAILURE } },
+              dump: { nodeType: "ScriptedDecisionNode", connections: { true: SUCCESS } },
+            },
+          },
+          one: {
+            entryNodeId: "seed1",
+            innerTreeOnly: true,
+            nodes: {
+              seed1: { nodeType: "ScriptedDecisionNode", connections: { true: "a" } },
+              a: { nodeType: "ScriptedDecisionNode", connections: { true: "e2" } },
+              e2: { nodeType: "InnerTreeEvaluatorNode", connections: { true: "b", false: FAILURE } },
+              b: { nodeType: "ScriptedDecisionNode", connections: { true: SUCCESS } },
+            },
+          },
+          two: {
+            entryNodeId: "seed2",
+            innerTreeOnly: true,
+            nodes: {
+              seed2: { nodeType: "ScriptedDecisionNode", connections: { true: "c" } },
+              c: { nodeType: "ScriptedDecisionNode", connections: { true: withCollector ? "user" : "d" } },
+              user: { nodeType: "UsernameCollectorNode", connections: { outcome: "d" } },
+              d: { nodeType: "ScriptedDecisionNode", connections: { true: SUCCESS } },
+            },
+          },
+        },
+        nodes: {
+          InnerTreeEvaluatorNode: { e1: { tree: "one" }, e2: { tree: "two" } },
+          UsernameCollectorNode: { user: {} },
+          ScriptedDecisionNode: Object.fromEntries(
+            ["seedO", "seed1", "seed2", "a", "b", "c", "d", "dump"].map((id) => [
+              id,
+              { script: id, outcomes: ["true"] },
+            ]),
+          ),
+        },
+        scripts: {
+          seedO: put("seedO", "os", "ot"),
+          seed1: put("seed1", "s1", "t1"),
+          seed2: put("seed2", "s2", "t2"),
+          a: read("a"),
+          b: read("b"),
+          c: read("c"),
+          d: read("d"),
+          dump: decision(
+            `if (callbacks.isEmpty()) { callbacksBuilder.hiddenValueCallback("r", JSON.stringify({a: nodeState.get("r_a"), b: nodeState.get("r_b"), c: nodeState.get("r_c"), d: nodeState.get("r_d"), ot: String(nodeState.get("ot")), name: String(journey.name())})); } else { action.goTo("true"); }`,
+          ),
+        },
+      }),
+      runner,
+      new IdmEmulator(new IdmConfig({ sync: { mappings: [] }, managed: { objects: [] } }), runner),
+    );
+  const report = (body: JsonValue) =>
+    Object.fromEntries(
+      Object.entries(JSON.parse(hiddenOf(body)) as Record<string, string>).map(([k, v]) => [
+        k,
+        typeof v === "string" && v.startsWith("{") ? (JSON.parse(v) as JsonValue) : v,
+      ]),
+    ) as Record<string, Record<string, string> | string>;
+  it("nests: shared visible at every depth, transient isolated and restored on return", async () => {
+    const result = report((await post(build(false))).body as JsonValue);
+    expect(result).toMatchObject({
+      ot: "t",
+      name: "invented",
+      // Inner 1 sees only its own transient; inner 2 sees neither of the outer ones.
+      a: { name: "one", inner: "true", os: "s", ot: "null", t1: "t", t2: "null" },
+      c: { name: "two", inner: "true", os: "s", ot: "null", t1: "null", t2: "t" },
+      // Back in inner 1 its transient is restored, and inner 2's shared writes remain.
+      b: { name: "one", t1: "t", t2: "null" },
+    });
+  });
+  it("resumes inside the inner tree after a callback, which drops transient at every level", async () => {
+    const emu = build(true);
+    const first = await post(emu);
+    expect((first.body as { callbacks: { type: string }[] }).callbacks[0]?.type).toBe("NameCallback");
+    const done = await post(emu, answerAll(first.body as JsonValue, ["someone"]));
+    const result = report(done.body as JsonValue);
+    expect(result).toMatchObject({
+      ot: "null",
+      name: "invented",
+      d: { name: "two", inner: "true", t2: "null", user: "someone" },
+      b: { name: "one", t1: "null", user: "someone" },
+    });
+  });
+});

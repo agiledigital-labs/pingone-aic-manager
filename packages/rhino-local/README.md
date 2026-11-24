@@ -2757,8 +2757,9 @@ IDM. Callbacks use the tenant `{authId, callbacks}` output/input envelopes;
 `aic/callbacks.ts` fills their inputs unchanged. Queued callbacks beat `goTo`;
 the node runs again on resume. Shared state survives, transient survives
 callback-free edges and is dropped at a round trip. Inner trees share shared
-state, isolate their transient state and restore outer transient state. Inner
-exceptions, callbacks and nested inner trees remain missing. Unsupported bindings, session-property actions, `noSession`, unsupported tree
+state, isolate their transient state and restore outer transient state. Callbacks
+inside an inner tree resume there and inner trees nest; a Page inside an inner
+tree and inner exceptions remain missing. Unsupported bindings, session-property actions, `noSession`, unsupported tree
 flags and unmocked HTTP are fatal missing behavior, even if script catches or
 `finally` tries to hide the failure. So is every `rhino-local:` diagnostic the
 binding runtime raises for behaviour it does not model (an argument count whose

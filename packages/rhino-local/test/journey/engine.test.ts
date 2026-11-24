@@ -351,12 +351,10 @@ it("stale callback snapshot replays from its immutable shared state and survives
   expect(dump((await request(emu, first.body as object)).body)).toBe(2);
   expect(dump((await request(emu.fork(), first.body as object)).body)).toBe(2);
 });
-it.each(["throw new Error('inner');", "callbacksBuilder.nameCallback('inner');"])(
+it.each(["throw new Error('inner');"])(
   "unmeasured inner behavior is missing: %s",
   async (source) => {
-    const cause = source.startsWith("throw")
-      ? "inner tree script exception"
-      : "inner tree callbacks";
+    const cause = "inner tree script exception";
     expectEmulationFailure(cause);
     const emu = graph(
       {

@@ -567,11 +567,10 @@ export class JourneyEmulator {
       const config = this.config.node(node.nodeType, frame.node);
       if (!config) this.missing(`node configuration: ${node.nodeType}/${frame.node}`);
       if (node.nodeType === "InnerTreeEvaluatorNode") {
-        if (inner) this.missing("nested inner trees");
         if (typeof config.tree !== "string") this.missing("inner tree target configuration");
         const innerTree = this.tree(config.tree);
         this.measured(
-          "inner trees share shared state and use isolated transient state; journey names follow the executing tree",
+          "inner trees share shared state and use isolated transient state; journey names follow the executing tree; callbacks inside an inner tree resume there, and inner trees nest",
         );
         state.frames.push({
           tree: config.tree,
@@ -593,7 +592,6 @@ export class JourneyEmulator {
       );
       if (result.abort) return result.abort;
       if (result.callbacks.length) {
-        if (inner) this.missing("inner tree callbacks");
         this.measured(
           "queued callbacks supersede goTo; node re-executes on resume with shared state preserved",
         );
@@ -881,7 +879,7 @@ export class JourneyEmulator {
     request: AuthenticateRequest,
     log?: RequestLog,
   ): Promise<NodeResult> {
-    if (state.frames.length > 1) this.missing("inner tree callbacks");
+    if (state.frames.length > 1) this.missing("PageNode inside an inner tree");
     const texts = {
       ...this.pageText(config, "pageHeader", "header", request),
       ...this.pageText(config, "pageDescription", "description", request),

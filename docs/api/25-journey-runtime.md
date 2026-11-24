@@ -134,6 +134,20 @@ failure node (`fail`).
 | `journey.mustRun()` / `identityResource()` | `false` / `managed/alpha_user` in both | — |
 | An `innerTreeOnly: true` tree invoked directly by `authIndexValue` | `400 {"code":400,"reason":"Bad Request","message":"No Configuration found"}` | The outer trees (`innerTreeOnly: false`) in the same run started normally |
 
+Callbacks and nesting (measured 2026-11-25, sandbox, `kdemo-g-` trees): outer tree (writes shared `zzOS`,
+transient `zzOT`) → inner 1 (writes `zz1S`/`zz1T`) → inner 2 (writes `zz2S`/`zz2T`, then a
+`UsernameCollectorNode`) → back up to a dump in the outer tree. Each script read the keys, `journey.name()` and
+`journey.innerJourney()`.
+
+| Question | Observed | Control |
+| --- | --- | --- |
+| A collector inside an inner tree | Its `NameCallback` is the response to the first POST; the submission resumes **in the inner tree** (`journey.name()` is the inner tree's, `innerJourney()` true) and the journey went on to finish the outer tree | The same trees with the collector removed finish in one POST |
+| Nested inner trees | Work: outer → inner 1 → inner 2 returned `true` up each level. Shared state is visible at every depth and written back up (`zz2S` seen in inner 1 and the outer tree) | — |
+| Transient at depth | Inner 2 saw neither the outer's `zzOT` nor inner 1's `zz1T`; it saw its own `zz2T` | Inner 1 saw only `zz1T`, not `zzOT` |
+| Transient restored on return, no callback in between | Inner 1 read `zz1T` again after inner 2 ended, and the outer tree read `zzOT` after inner 1 ended | The same run with a callback inside inner 2: both read `null` on return, because a callback round trip drops transient state at **every** level |
+| `journey.name()` / `innerJourney()` | The innermost executing tree's name at each level; `true` in both inner trees, `false` outside | — |
+
+
 ## Identify Existing User
 
 Measured 2026-11-02 with `scripts/experiment-journey-identity-nodes.sh`
@@ -564,8 +578,8 @@ None of these was exercised; do not build on them as measured:
   `action.suspend()` or `withHeader` inside a page; a `pageHeader` with
   several locales under an `Accept-Language` request.
 - `withLockoutMessage` on an account that is actually locked out.
-- Inner Tree with `displayErrorOutcome: true` when the inner tree throws; an
-  inner tree that sends callbacks; nested inner trees.
+- Inner Tree with `displayErrorOutcome: true` when the inner tree throws; a
+  Page inside an inner tree.
 - Replaying the `authId` of a step that led to **success** (whether a second
   session is minted).
 - Message Node, Choice Collector, Polling Wait, Email Suspend and other node
