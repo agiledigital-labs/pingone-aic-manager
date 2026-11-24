@@ -37,7 +37,20 @@ export function journeyHttp(
     });
     return {
       status: result.status,
-      headers: [["content-type", "application/json"]],
+      headers: [
+        ["content-type", "application/json"],
+        ...(result.cookies ?? []).map((cookie): [string, string] => [
+          "set-cookie",
+          [
+            `${cookie.name}=${cookie.value}`,
+            `Expires=${cookie.expires}`,
+            `Path=${cookie.path}`,
+            ...(cookie.secure ? ["Secure"] : []),
+            ...(cookie.httpOnly ? ["HttpOnly"] : []),
+            `SameSite=${cookie.sameSite}`,
+          ].join("; "),
+        ]),
+      ],
       body: result.rawBody ?? JSON.stringify(result.body),
     };
   };

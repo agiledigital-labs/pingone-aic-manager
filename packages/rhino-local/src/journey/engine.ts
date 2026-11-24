@@ -19,11 +19,14 @@ import { fromWire, toWire, type WireCallback } from "./callbacks.ts";
 import { JourneyNodes, EMULATED, type NodeResult } from "./nodes.ts";
 import { JourneyConfig } from "./config.ts";
 import { journeyPreamble } from "./script.ts";
+import { EXTRA_OUTCOMES, STUB_TYPES } from "./extra-nodes.ts";
 import type {
   AuthenticateRequest,
   AuthenticateResult,
   HttpMock,
   NodeDocument,
+  SessionDelta,
+  TermsAndConditions,
   TreeDocument,
 } from "./types.ts";
 const SOURCE = "docs/api/25-journey-runtime.md (measurement agent, 2026-11-02)";
@@ -46,6 +49,8 @@ type State = {
   /** Callbacks each Page child sent at discovery, and the callbacks themselves. */
   page?: { counts: number[]; effects: CallbackEffect[] };
   existingSession?: Record<string, string>;
+  /** What nodes have asked of the session the journey creates on success. */
+  session?: SessionDelta;
   /** Evidence gathered before a round trip; the eventual result depends on it too. */
   provenance?: Provenance[];
 };
@@ -56,6 +61,10 @@ export type JourneyOptions = {
   /** Complete existing-session snapshots supplied by cookie value; not fabricated from tokenId. */
   sessions?: Readonly<Record<string, Readonly<Record<string, string>>>>;
   cookieName?: string;
+  /** Clock for nodes that stamp time (epoch ms); defaults to `Date.now`. */
+  now?: () => number;
+  /** The realm's Terms and Conditions, which Accept Terms and Conditions presents. */
+  termsAndConditions?: TermsAndConditions;
   maxTransitions?: number;
   timeoutMs?: number;
 };
@@ -68,6 +77,7 @@ const OUTCOMES: Readonly<Record<string, readonly string[]>> = Object.freeze({
   IdentifyExistingUserNode: ["true", "false"],
   CreateObjectNode: ["CREATED", "FAILURE"],
   PatchObjectNode: ["PATCHED", "FAILURE"],
+  ...EXTRA_OUTCOMES,
 });
 const PAGE_CHILDREN: readonly string[] = [
   "ScriptedDecisionNode",
@@ -106,6 +116,15 @@ export function listOutcomes(
   }
   return Object.hasOwn(OUTCOMES, type) ? OUTCOMES[type] : undefined;
 }
+function mergeSession(before: SessionDelta | undefined, next: SessionDelta): SessionDelta {
+  return {
+    ...before,
+    ...next,
+    ...(before?.properties || next.properties
+      ? { properties: { ...before?.properties, ...next.properties } }
+      : {}),
+  };
+}
 export class JourneyEmulator {
   readonly config: JourneyConfig;
   readonly idm: IdmEmulator;
@@ -126,14 +145,22 @@ export class JourneyEmulator {
     this.config = config;
     this.runner = runner;
     this.idm = idm;
-    this.nodes = new JourneyNodes(idm, this.evidence, (name) => this.missing(name));
+    this.nodes = new JourneyNodes(idm, this.evidence, (name) => this.missing(name), {
+      now: options.now ?? Date.now,
+      declared: (nodeId) => options.declaredOutcomes?.[nodeId],
+      ...(options.termsAndConditions ? { terms: options.termsAndConditions } : {}),
+    });
     for (const tree of Object.values(config.trees))
       for (const [id, node] of Object.entries(tree.nodes)) {
-        if (Object.hasOwn(options.declaredOutcomes ?? {}, id) && EMULATED.includes(node.nodeType))
+        if (
+          Object.hasOwn(options.declaredOutcomes ?? {}, id) &&
+          EMULATED.includes(node.nodeType) &&
+          !STUB_TYPES.includes(node.nodeType)
+        )
           throw new TypeError(`declared outcome for emulated node: ${node.nodeType}/${id}`);
       }
     for (const [type, configs] of Object.entries(config.nodes))
-      if (EMULATED.includes(type))
+      if (EMULATED.includes(type) && !STUB_TYPES.includes(type))
         for (const id of Object.keys(configs)) {
           if (Object.hasOwn(options.declaredOutcomes ?? {}, id))
             throw new TypeError(`declared outcome for emulated node: ${type}/${id}`);
@@ -202,7 +229,11 @@ export class JourneyEmulator {
   private error(status: number, message: string): Omit<AuthenticateResult, "provenance"> {
     return {
       status,
-      body: { code: status, reason: status === 400 ? "Bad Request" : "Unauthorized", message },
+      body: {
+        code: status,
+        reason: status === 400 ? "Bad Request" : "Unauthorized",
+        message,
+      },
     };
   }
   private empty(): Omit<AuthenticateResult, "provenance"> {
@@ -215,7 +246,10 @@ export class JourneyEmulator {
     this.evidence.assumed(
       "authId uses a random snapshot id and HMAC-SHA256; forks copy snapshots and share signing credentials",
     );
-    const stored = structuredClone({ ...state, provenance: this.evidence.entries() });
+    const stored = structuredClone({
+      ...state,
+      provenance: this.evidence.entries(),
+    });
     for (const frame of stored.frames) {
       frame.transient = {};
       delete frame.javaMap;
@@ -383,9 +417,29 @@ export class JourneyEmulator {
         if (this.config.realm !== "alpha")
           this.missing(`session success realm: ${this.config.realm}`);
         if (typeof body.authId === "string") this.completed.add(body.authId);
+        const tokenId = randomUUID();
+        const session = state.session;
         return {
           status: 200,
-          body: { tokenId: randomUUID(), successUrl: "/enduser/?realm=/alpha", realm: "/alpha" },
+          body: {
+            tokenId,
+            successUrl: "/enduser/?realm=/alpha",
+            realm: "/alpha",
+          },
+          ...(session
+            ? {
+                session: {
+                  properties: session.properties ?? {},
+                  ...(session.maxIdleTime !== undefined
+                    ? { maxIdleTime: session.maxIdleTime }
+                    : {}),
+                  ...(session.maxSessionTime !== undefined
+                    ? { maxSessionTime: session.maxSessionTime }
+                    : {}),
+                },
+                ...(session.cookie ? { cookies: [session.cookie] } : {}),
+              }
+            : {}),
         };
       }
       const node = currentTree.nodes[frame.node];
@@ -399,7 +453,11 @@ export class JourneyEmulator {
         this.measured(
           "inner trees share shared state and use isolated transient state; journey names follow the executing tree",
         );
-        state.frames.push({ tree: config.tree, node: innerTree.entryNodeId, transient: {} });
+        state.frames.push({
+          tree: config.tree,
+          node: innerTree.entryNodeId,
+          transient: {},
+        });
         submitted = [];
         continue;
       }
@@ -423,7 +481,10 @@ export class JourneyEmulator {
         );
         const callbacks = toWire(result.callbacks, (name) => this.missing(name));
         state.pending = callbacks;
-        return { status: 200, body: { authId: this.snapshot(state), callbacks } };
+        return {
+          status: 200,
+          body: { authId: this.snapshot(state), callbacks },
+        };
       }
       const outcome = result.outcome;
       const allowed = this.outcomes(node.nodeType, config);
@@ -435,7 +496,10 @@ export class JourneyEmulator {
       if (reply) return reply;
       submitted = [];
     }
-    throw new EmulationFailure({ kind: "protocol", message: "journey transition limit exceeded" });
+    throw new EmulationFailure({
+      kind: "protocol",
+      message: "journey transition limit exceeded",
+    });
   }
   private async scripted(
     config: NodeDocument,
@@ -504,7 +568,10 @@ export class JourneyEmulator {
           scriptName: script.name ?? config.script ?? "script",
           scriptId: config.script ?? "script",
           ...(state.existingSession ? { existingSession: state.existingSession } : {}),
-          javaMaps: { shared: Boolean(state.javaMap), transient: Boolean(frame.javaMap) },
+          javaMaps: {
+            shared: Boolean(state.javaMap),
+            transient: Boolean(frame.javaMap),
+          },
           ...(request.headers ? { headers: { ...request.headers } } : {}),
           ...(request.cookies ? { cookies: { ...request.cookies } } : {}),
           parameters: Object.fromEntries(
@@ -525,7 +592,11 @@ export class JourneyEmulator {
     if (response.outcome !== "ok") {
       if (inner) this.missing("inner tree script exception");
       this.measured("thrown scripted decision error returns 401 Login failure");
-      return { outcome: null, callbacks: [], abort: this.error(401, "Login failure") };
+      return {
+        outcome: null,
+        callbacks: [],
+        abort: this.error(401, "Login failure"),
+      };
     }
     // The runner's bridge serializes the harvest in Java and fails it as an emulation failure.
     if (typeof response.value !== "string") this.missing("journey harvest serialization");
@@ -548,7 +619,10 @@ export class JourneyEmulator {
     state.javaMap = result.effects.javaMapObjectAttributes.shared;
     frame.javaMap = result.effects.javaMapObjectAttributes.transient;
     if (result.errorMessage !== null) state.errorMessage = result.errorMessage;
-    return { outcome: result.effects.outcome, callbacks: result.effects.callbacks };
+    return {
+      outcome: result.effects.outcome,
+      callbacks: result.effects.callbacks,
+    };
   }
   private async execute(
     type: string,
@@ -571,7 +645,9 @@ export class JourneyEmulator {
         frame.transient,
         submitted,
         this.tree(frame.tree).identityResource ?? `managed/${this.config.realm}_user`,
+        id,
       );
+      if (result.session) state.session = mergeSession(state.session, result.session);
       // Doc 25 probes: objectAttributes a node writes prints in Java-map form in the next script.
       if (JSON.stringify(state.shared.objectAttributes) !== JSON.stringify(before[0]))
         state.javaMap = isDocument(state.shared.objectAttributes);
@@ -789,7 +865,9 @@ export class JourneyEmulator {
     for (const reason of wire.assumed as string[]) this.evidence.assumed(reason);
     let response: Awaited<ReturnType<HttpMock>>;
     try {
-      response = await this.options.http(url, options, { bodyText: wire.body ?? "" });
+      response = await this.options.http(url, options, {
+        bodyText: wire.body ?? "",
+      });
     } catch (error) {
       throw new EmulationFailure(
         emulationFailure(error) ?? {
