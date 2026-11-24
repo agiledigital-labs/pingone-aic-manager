@@ -35,7 +35,7 @@ export function revision(request: RestRequest): string | undefined {
 export class ManagedStore {
   private cookieKey = randomBytes(32);
   // Body syntax is unmeasured: recognize our opaque tokens by issuance, not a guessed regex.
-  private passwordTokens = new Set<string>();
+  private passwordTokens = new Map<string, string>();
   private readonly records: Map<string, Document>;
   /** Array properties `materialize` injected per record, which a query reads as absent (round-5 P3-6). */
   private materialized = new Map<string, Set<string>>();
@@ -239,8 +239,14 @@ export class ManagedStore {
       return;
     }
     if (/^\{[^}]*\}/.test(object.password)) missing(this.evidence, "alpha_user password scheme is unmeasured");
-    object.password = "{PBKDF2-HMAC-SHA256}" + createHmac("sha512", randomBytes(32)).update(object.password).digest("hex").slice(0, 70);
-    this.passwordTokens.add(object.password);
+    const plain = object.password;
+    object.password = "{PBKDF2-HMAC-SHA256}" + createHmac("sha512", randomBytes(32)).update(plain).digest("hex").slice(0, 70);
+    this.passwordTokens.set(object.password, plain);
+  }
+
+  /** Whether `candidate` is the plain text a token this store issued was made from. A token it never issued verifies nothing. */
+  verifyPassword(token: string, candidate: string): boolean {
+    return this.passwordTokens.get(token) === candidate;
   }
 
   private projectVisible(type: ManagedType, object: Document, selectors: string[], op: Operation): Document {

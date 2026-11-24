@@ -58,7 +58,40 @@ export type AuthenticateRequest = {
   readonly userAgent?: string;
   readonly transactionId?: string;
 };
-export type AuthenticateResult = RestResult;
+/** A cookie the authenticate response sets, beside the session cookie. */
+export type SetCookie = {
+  readonly name: string;
+  readonly value: string;
+  /** HTTP date, as the tenant's `Expires` attribute. */
+  readonly expires: string;
+  readonly path: string;
+  readonly secure: boolean;
+  readonly httpOnly: boolean;
+  readonly sameSite: "lax" | "strict" | "none";
+};
+/** What a node asks of the session AM creates on success. */
+export type SessionDelta = {
+  properties?: Record<string, string>;
+  /** Minutes. */
+  maxIdleTime?: number;
+  maxSessionTime?: number;
+  cookie?: SetCookie;
+};
+/** The Terms and Conditions the realm serves; a tenant setting, not node configuration. */
+export type TermsAndConditions = {
+  readonly version: string;
+  readonly terms: string;
+  readonly createDate: string;
+};
+export type AuthenticateResult = RestResult & {
+  /** Set only on a successful journey that asked for session effects. */
+  readonly session?: {
+    readonly properties: Readonly<Record<string, string>>;
+    readonly maxIdleTime?: number;
+    readonly maxSessionTime?: number;
+  };
+  readonly cookies?: readonly SetCookie[];
+};
 /**
  * What AIC would put on the wire for the request, beside the parsed `options`
  * (docs/api/12): `bodyText` renders every JS number as a Java double (`1` is
@@ -73,5 +106,9 @@ export type HttpMock = (
   options: { [key: string]: JsonValue },
   wire: HttpWire,
 ) =>
-  | Promise<{ status: number; body?: JsonValue; headers?: Record<string, string> }>
+  | Promise<{
+      status: number;
+      body?: JsonValue;
+      headers?: Record<string, string>;
+    }>
   | { status: number; body?: JsonValue; headers?: Record<string, string> };

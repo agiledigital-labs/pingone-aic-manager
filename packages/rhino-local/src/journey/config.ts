@@ -1,4 +1,5 @@
 /** Immutable REST config snapshot; journey instances and their forks share it. */
+import { validateExtraNode } from "./extra-nodes.ts";
 import type { JourneyConfigInput, NodeDocument, ScriptDocument, TreeDocument } from "./types.ts";
 function freeze(value: unknown): void {
   if (value === null || typeof value !== "object") return;
@@ -37,7 +38,10 @@ export class JourneyConfig {
     }
     for (const [type, nodes] of Object.entries(input.nodes)) {
       record(nodes, `nodes/${type}`);
-      for (const [id, node] of Object.entries(nodes)) record(node, `nodes/${type}/${id}`);
+      for (const [id, node] of Object.entries(nodes)) {
+        record(node, `nodes/${type}/${id}`);
+        validateExtraNode(type, node);
+      }
     }
     for (const [id, script] of Object.entries(input.scripts)) record(script, `scripts/${id}`);
     for (const page of Object.values(input.nodes.PageNode ?? {})) {

@@ -6,7 +6,8 @@ import type { IdmEmulator } from "../idm/emulator.ts";
 import type { Evidence } from "../idm/provenance.ts";
 import type { Document, RestResult } from "../idm/types.ts";
 import type { HostCall, JsonValue } from "../protocol.ts";
-import type { AuthenticateResult, NodeDocument } from "./types.ts";
+import { EXTRA_TYPES, ExtraNodes, type ExtraContext } from "./extra-nodes.ts";
+import type { AuthenticateResult, NodeDocument, SessionDelta } from "./types.ts";
 export const EMULATED = [
   "ScriptedDecisionNode",
   "InnerTreeEvaluatorNode",
@@ -18,8 +19,11 @@ export const EMULATED = [
   "IdentifyExistingUserNode",
   "CreateObjectNode",
   "PatchObjectNode",
+  ...EXTRA_TYPES,
 ];
 export type NodeResult = {
+  /** Effects on the session AM creates when the journey succeeds. */
+  session?: SessionDelta;
   outcome: string | null;
   callbacks: CallbackEffect[];
   abort?: Omit<AuthenticateResult, "provenance">;
@@ -38,7 +42,14 @@ export class JourneyNodes {
   private readonly idm: IdmEmulator;
   private readonly evidence: Evidence;
   private readonly missing: (name: string) => never;
-  constructor(idm: IdmEmulator, evidence: Evidence, missing: (name: string) => never) {
+  private readonly extra: ExtraNodes;
+  constructor(
+    idm: IdmEmulator,
+    evidence: Evidence,
+    missing: (name: string) => never,
+    extra: Omit<ExtraContext, "idm" | "evidence" | "missing">,
+  ) {
+    this.extra = new ExtraNodes({ idm, evidence, missing, ...extra });
     this.idm = idm;
     this.evidence = evidence;
     this.missing = missing;
@@ -97,7 +108,10 @@ export class JourneyNodes {
     transient: Document,
     submitted: CallbackEffect[],
     defaultResource: string,
+    id: string,
   ): Promise<NodeResult> {
+    if (EXTRA_TYPES.includes(type))
+      return this.extra.run(type, id, config, shared, transient, submitted, defaultResource);
     const done = (outcome: string): NodeResult => ({ outcome, callbacks: [] });
     if (
       ["UsernameCollectorNode", "PasswordCollectorNode", "ValidatedPasswordNode"].includes(type)

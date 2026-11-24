@@ -61,6 +61,12 @@ export class IdmEmulator {
     return fork;
   }
 
+  /**
+   * Whether `candidate` is the plain text behind an encoded password this emulator issued (a journey's
+   * Data Store Decision). Fidelity, not security: the emulator keeps the plain text of every password it encodes.
+   */
+  verifyPassword(token: string, candidate: string): boolean { return this.managed.verifyPassword(token, candidate); }
+
   /** Forks share the audit view; verdict ownership belongs to each operation. */
   get emulationFailures() { return this.failures.entries; }
 

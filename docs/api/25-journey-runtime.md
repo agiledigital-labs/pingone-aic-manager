@@ -22,7 +22,7 @@ and never print a `tokenId`.** Read the fields an experiment needs by name.
 
 ## Verified against
 
-Sandbox tenant, realm `alpha`, **2026-11-02 to 2026-11-04**, next-gen scripted decisions
+Sandbox tenant, realm `alpha`, **2026-11-02 to 2026-11-04** and, for "Built-in node types", **2026-11-25**, next-gen scripted decisions
 (`evaluatorVersion: "2.0"`). Every section names the
 `scripts/experiment-journey-*.sh` run that established it; those scripts
 create their own `zzemu-*` trees, nodes, scripts and users and delete them on
@@ -404,6 +404,84 @@ SAML, policy) accepts the assignment. Whether this key is emitted at the
 production log level: the sandbox is verbose (`08-logs.md`), and the
 audit topic's own filtering is unmeasured.
 
+## Built-in node types (2026-11-25)
+
+Measured on the sandbox tenant, realm `alpha`, 2026-11-25, next-gen scripted
+decisions. Each node sat in a throwaway tree (`kdemo-nt-*` trees, scripts and
+users, all deleted afterwards) behind a seed script that put the state under
+test, and a dump script reported `nodeState.keys()` and values, on its first
+pass and again after its own callback round trip (a key that survives it is
+shared). The drivers were one-off scripts built on `experiment_journey_lib.py`
+and are not committed; re-measure before building on a row you doubt.
+`listOutcomes` is quoted from the tenant.
+
+### Data Store Decision (`listOutcomes`: `["true","false"]`)
+
+Config `{}`. Driven with state put by a script (a page of collectors gave the
+same answers).
+
+| Question | Observed | Control |
+| --- | --- | --- |
+| Right password | `true`; **no state written** (no `_id`, `universalId` or `authLevel` change) | Keys before and after identical |
+| Wrong password, another user's password, empty password, unknown user | `false` | Same tree, right password: `true` |
+| Letter case of the username | Case-insensitive: `ALICE`-style input of an existing `userName` is `true` | Exact case: `true` |
+| A mail address as the username | `false`: the lookup is `userName` only | The same user's `userName`: `true` |
+| Where the username and password are read | Username from **shared** state only: a username put in transient state **aborts the journey with 401 `Login failure`**, as does no username or no password. The password is found in either bucket | Shared username plus transient or shared password: `true` |
+
+### Set Session Properties (`listOutcomes`: `["outcome"]`)
+
+| Question | Observed | Control |
+| --- | --- | --- |
+| Config validation (node `PUT`) | `400 Invalid config: At least one of the following properties must be set: properties, maxSessionTime, maxIdleTime` for `{}` and for `{"properties":{}}`. `400 Invalid config: Provided properties cannot include system session properties: [clientType, FullLoginURL, Principals, XUSRef, Locale, amlbcookie, UserId, loginURL, logoutHooks, Service, HostName, UserToken, IndexType, webhooks, UserProfile, AuthLevel, CharSet, authInstant, Host, AMCtxId, OidcSid, sun.am.UniversalIdentifier, Organization, Principal]` for any of them, also beside an allowed one | An allowed name (`kdemoNtProp`) and `maxIdleTime` alone: accepted |
+| Effect | A second journey given the first's session cookie saw every configured property in `existingSession` beside the system ones. `maxIdleTime: 7` / `maxSessionTime: 11` (minutes) moved `getSessionInfo`'s `maxIdleExpirationTime` / `maxSessionExpirationTime` to 7 and 11 minutes after login | A node with neither: 45 and 120 minutes (the realm defaults) |
+| `getSessionProperties` and `getSessionInfo` | Return only the allow-listed properties (`AMCtxId`): a configured property is **not** visible there, only in `existingSession` | — |
+
+### Set Persistent Cookie (`listOutcomes`: `["outcome"]`)
+
+| Question | Observed | Control |
+| --- | --- | --- |
+| Signing key | With neither `hmacSigningKey` nor a secret label configured the journey ends **500 with an empty body**. With a base64 256-bit `hmacSigningKey`: success | Same tree with the key |
+| What the response sets | Three `Set-Cookie`: the session cookie, the persistent cookie, then `amlbcookie`. The persistent one is named `persistentCookieName`, holds a ~1.5 KB value, and has `Expires` = login + `maxLife` **hours** (9 gave +9 h, 3 gave +3 h), `Path=/`, the tenant `Domain`, `Secure`, `HttpOnly`, `SameSite` | `useHttpOnlyCookie: false` dropped `HttpOnly` only |
+| `useSecureCookie: false` | `Secure` was **still set** (the platform forces it) | `true`: set |
+| `sameSite` | `LAX`, `STRICT`, `NONE` came back as `lax`, `strict`, `none` | — |
+
+Not measured: the value's claims (it looks like a signed JWT), the effect of
+`idleTimeout`, and signing through a secret label.
+
+### One Time Password Generator (`listOutcomes`: `["outcome"]`)
+
+| Question | Observed | Control |
+| --- | --- | --- |
+| State written | **Shared** `oneTimePassword` (a string of digits, **leading zeros kept**, `00241136`) and `oneTimePasswordTimestamp` (a **number**, epoch **seconds**). Both survived the callback round trip | `maxAuthenticationSessionDuration` (transient) did not |
+| Length | 6, 7 and 8 gave that many digits; a different password every run. A `length` of **9, 10, 11, 12 or 20 passes the node `PUT` but fails the journey with 401 `Login failure`** | A `length` of 0, 3, 4 or 5 is refused at `PUT`: `400 Data validation failed for the attribute, One Time Password Length`. No `length` is accepted, and ran as 8 |
+
+### Retry Limit Decision (`listOutcomes`: `["Retry","Reject"]`)
+
+| Question | Observed | Control |
+| --- | --- | --- |
+| Counter | **Shared** `<node id>.retryCount`, a number that survives round trips; the node id is the key's prefix, so two retry nodes count separately | — |
+| Behaviour | `retryLimit: N` gives `Retry` for visits 1 to N (the count reads 1 to N), then `Reject` on every later visit with the count left at N. Limits 1, 2, 3 and an unset limit (default 3) all fit that | `retryLimit: 0` is refused at `PUT`: `400 Data validation failed for the attribute, Retry Limit. Reason: The value must be greater than zero` |
+| `incrementUserAttributeOnFailure: true` | With `_id` and `username` in shared state, a limit of 2 reached `Reject` and the user's managed record held **no changed attribute** (`GET` with `_fields=*`) | Not measured: AM's own invalid-attempts attribute, which IDM may not expose |
+
+### Accept Terms and Conditions (`listOutcomes`: `["outcome"]`)
+
+| Question | Observed | Control |
+| --- | --- | --- |
+| Callback | One `TermsAndConditionsCallback`, outputs `version`, `terms`, `createDate` (the realm's Terms and Conditions service); `IDToken1` starts as the boolean `false` | — |
+| Answers | `true` or the string `"true"` takes `outcome`. `false`, `"false"` and `""` send the same callback again, writing nothing | — |
+| State | **Shared** `termsAccepted`, a **string** `{ "acceptDate": "<ISO instant, nanoseconds>", "termsVersion": "<version>" }`, and `termsVersion` | Both survived the round trip |
+
+### CAPTCHA (`product-CaptchaNode`, `listOutcomes`: `["true","false"]`)
+
+Only the callback was measured: a `ReCaptchaCallback` with outputs
+`recaptchaSiteKey`, `captchaApiUri`, `captchaDivClass`, `reCaptchaV3`,
+`disableSubmission` (from `siteKey`, `apiUri`, `divClass`, `reCaptchaV3`,
+`disableSubmission`) and an empty-string `IDToken1`. A fake token, and an empty
+one, ended the journey with 401 `Login failure` (not `false`), with the
+provider's published always-pass test keys as well as with fake ones, so
+neither outcome was reached; verification calls a provider that the harness
+cannot reproduce, and the emulator takes the verdict from the caller.
+
 ## Not yet measured
 
 None of these was exercised; do not build on them as measured:
@@ -422,6 +500,8 @@ None of these was exercised; do not build on them as measured:
 - Replaying the `authId` of a step that led to **success** (whether a second
   session is minted).
 - Message Node, Choice Collector, Polling Wait, Email Suspend and other node
-  types not named above.
+  types not named above or in "Built-in node types".
+- Any of the nodes in "Built-in node types" inside a Page, inside an inner
+  tree, or with a configuration other than the one listed there.
 - Any of this in realm `bravo` or under a `noSession` / `transactionalOnly`
   tree.
