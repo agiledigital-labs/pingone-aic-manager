@@ -5,6 +5,7 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import org.mozilla.javascript.BaseFunction;
 import org.mozilla.javascript.Callable;
+import org.mozilla.javascript.ConsString;
 import org.mozilla.javascript.Context;
 import org.mozilla.javascript.Function;
 import org.mozilla.javascript.JavaScriptException;
@@ -190,6 +191,8 @@ final class AmHostBridge extends BaseFunction {
       "docs/api/12-script-bindings-matrix.md (§5 non-JSON values in an object body, 2026-11-04)";
   private static final String FORM_SOURCE =
       "docs/api/12-script-bindings-matrix.md (§6 the httpClient.send form option, 2026-11-25)";
+  private static final String CONS_SOURCE =
+      "docs/api/12-script-bindings-matrix.md (§7 which values httpClient.send accepts, 2026-11-25)";
   private static final String CREATE_SOURCE =
       "docs/api/12-script-bindings-matrix.md (openidm.create content with an undefined value,"
           + " 2026-11-04)";
@@ -704,6 +707,134 @@ final class AmHostBridge extends BaseFunction {
     return false;
   }
 
+  /**
+   * docs/api/12 §7: AIC's header map accepts only java.lang.String values. A value a script built
+   * with {@code +} is a Rhino ConsString, a different class, and is refused like a number, a
+   * boolean or an object, at {@code send} (not at {@code get}). null and undefined are omitted, and
+   * an array of strings is accepted. The error text is {@code Cannot add values for key '<key>':
+   * <the value's toString()>}, a catchable InternalError.
+   */
+  private Object checkHeaders(Context cx, Object options) {
+    if (!(options instanceof ScriptableObject)) return options;
+    Object headers = ScriptableObject.getProperty((Scriptable) options, "headers");
+    if (!(headers instanceof ScriptableObject) || headers instanceof NativeArray) return options;
+    ScriptableObject map = (ScriptableObject) headers;
+    java.util.List<String> omitted = new ArrayList<String>();
+    for (Object id : map.getIds()) {
+      if (!(id instanceof CharSequence)) continue;
+      String key = id.toString();
+      Object value = ScriptableObject.getProperty(map, key);
+      if (value instanceof Wrapper) continue; // a Java object: the encoder decides what it is
+      if (value == null || value == Undefined.instance) {
+        calls.note("measured", "httpClient.send header whose value is null or undefined is omitted", CONS_SOURCE);
+        omitted.add(key);
+        continue;
+      }
+      String text;
+      if (value instanceof ConsString) {
+        calls.note(
+            "measured",
+            "httpClient.send header value built by concatenation (a Rhino ConsString, typeof"
+                + " object) is refused with a catchable InternalError; .toString(), .concat,"
+                + " String(x), slice, join and replace results are java.lang.String and pass",
+            CONS_SOURCE);
+        text = value.toString();
+      } else if (value instanceof CharSequence) {
+        continue;
+      } else if (value instanceof Number) {
+        calls.note(
+            "measured",
+            "httpClient.send header value that is a number, boolean, object or String object is"
+                + " refused with a catchable InternalError; a number prints as a Java double"
+                + " (1 is 1.0, 1e21 is 1.0E21)",
+            CONS_SOURCE);
+        text = Double.toString(((Number) value).doubleValue());
+      } else if (value instanceof Boolean) {
+        calls.note(
+            "measured",
+            "httpClient.send header value that is a number, boolean, object or String object is"
+                + " refused with a catchable InternalError; a number prints as a Java double"
+                + " (1 is 1.0, 1e21 is 1.0E21)",
+            CONS_SOURCE);
+        text = value.toString();
+      } else if (value instanceof NativeArray) {
+        NativeArray array = (NativeArray) value;
+        for (int i = 0; i < array.getLength(); i++) {
+          Object element = array.get(i, array);
+          if (!(element instanceof CharSequence) || element instanceof ConsString) {
+            throw missing(
+                "httpClient.send header array holding a value that is not a plain string: "
+                    + key
+                    + " (AIC throws a catchable InternalError that names its class loader,"
+                    + " docs/api/12 §7)");
+          }
+        }
+        calls.note(
+            "assumed",
+            "httpClient.send header array of strings is accepted (measured: the receiver saw"
+                + " [\"a\",\"b\"] as a,b and [] as no header); one header line per element is"
+                + " assumed, the receiver's echo cannot tell it from one joined line",
+            null);
+        continue;
+      } else if (value instanceof ScriptableObject
+          && ("Object".equals(((ScriptableObject) value).getClassName())
+              || "String".equals(((ScriptableObject) value).getClassName()))) {
+        calls.note(
+            "measured",
+            "httpClient.send header value that is a number, boolean, object or String object is"
+                + " refused with a catchable InternalError; a number prints as a Java double"
+                + " (1 is 1.0, 1e21 is 1.0E21)",
+            CONS_SOURCE);
+        text = Context.toString(value);
+      } else {
+        throw missing(
+            "httpClient.send header value of an unmeasured type: " + key + " (docs/api/12 §7)");
+      }
+      throw ScriptRuntime.constructError(
+          "InternalError", "Cannot add values for key '" + key + "': " + text);
+    }
+    if (omitted.isEmpty()) return options;
+    // The tenant sends no such header; the mock sees the request without it, and the script's
+    // own objects are left as they were.
+    ScriptableObject source = (ScriptableObject) options;
+    Scriptable copy = cx.newObject(top);
+    for (Object id : source.getIds()) {
+      if (!(id instanceof CharSequence) || "headers".equals(id.toString())) continue;
+      ScriptableObject.putProperty(copy, id.toString(), ScriptableObject.getProperty(source, id.toString()));
+    }
+    Scriptable kept = cx.newObject(top);
+    for (Object id : map.getIds()) {
+      if (id instanceof CharSequence && !omitted.contains(id.toString()))
+        ScriptableObject.putProperty(kept, id.toString(), ScriptableObject.getProperty(map, id.toString()));
+    }
+    ScriptableObject.putProperty(copy, "headers", kept);
+    return copy;
+  }
+
+  /** A ConsString where AIC needs a java.lang.String throws a ClassCastException that names loaders. */
+  private void refuseConcatenation(Object options) {
+    if (!(options instanceof Scriptable)) return;
+    Object method = ScriptableObject.getProperty((Scriptable) options, "method");
+    if (method instanceof ConsString)
+      throw missing(
+          "httpClient.send method built by concatenation (AIC throws a catchable InternalError:"
+              + " a ConsString cannot be cast to java.lang.String, with its class loader named;"
+              + " docs/api/12 §7)");
+    Object form = ScriptableObject.getProperty((Scriptable) options, "form");
+    if (form instanceof ScriptableObject && !(form instanceof NativeArray)) {
+      ScriptableObject map = (ScriptableObject) form;
+      for (Object id : map.getIds()) {
+        if (id instanceof CharSequence
+            && ScriptableObject.getProperty(map, id.toString()) instanceof ConsString)
+          throw missing(
+              "httpClient.send form value built by concatenation: "
+                  + id
+                  + " (AIC throws a catchable InternalError: a ConsString cannot be cast to"
+                  + " java.lang.String, with its class loader named; use .toString(), docs/api/12 §7)");
+      }
+    }
+  }
+
   private final class HttpSend extends BaseFunction {
     @Override
     public Object call(Context cx, Scriptable scope, Scriptable thisObj, Object[] args) {
@@ -711,6 +842,8 @@ final class AmHostBridge extends BaseFunction {
       if (url == Undefined.instance || url == null) throw missing("httpClient.send with no URL");
       Object options = arg(args, 1);
       if (!ScriptableObject.isTrue(options)) options = cx.newObject(top);
+      options = checkHeaders(cx, options);
+      refuseConcatenation(options);
       // docs/api/12 (httpClient.send body serialization): undefined in a body goes out as null.
       Object input =
           encode(
@@ -765,7 +898,25 @@ final class AmHostBridge extends BaseFunction {
         if (!jsonContentType(sent.get("headers"))) {
           assumed.add("httpClient body text without a Content-Type: application/json header");
         }
-        if (body instanceof CharSequence) {
+        if (body instanceof ConsString) {
+          // docs/api/12 §7: only a java.lang.String body goes out as itself. A concatenation is
+          // not one, so AIC serializes it as a JSON string and sets the Content-Type, replacing
+          // the script's header whatever it was: the urlencoded body a script built with + arrives
+          // quoted, as application/json.
+          Encoder text = new Encoder(cx, "AM host httpClient.send body: ", "", null, true);
+          text.write(body, "");
+          assumed.addAll(text.assumed);
+          for (String behavior : text.measured) calls.note("measured", behavior, NONJSON_SOURCE);
+          wire.put("body", text.text());
+          wire.put("contentType", "application/json; charset=UTF-8");
+          calls.note(
+              "measured",
+              "httpClient.send string body built by concatenation (a Rhino ConsString) is sent as"
+                  + " a JSON string, \"a=1\" with its quotes, as application/json; charset=UTF-8,"
+                  + " replacing the script's Content-Type; a java.lang.String body (a literal,"
+                  + " .toString(), String(x), JSON.stringify) is sent raw under the script's header",
+              CONS_SOURCE);
+        } else if (body instanceof CharSequence) {
           wire.put("body", body.toString());
           assumed.add("httpClient body text for a string body, sent as the string itself");
         } else {
@@ -780,6 +931,10 @@ final class AmHostBridge extends BaseFunction {
           assumed.addAll(text.assumed);
           for (String behavior : text.measured) calls.note("measured", behavior, NONJSON_SOURCE);
           wire.put("body", text.text());
+          // docs/api/12 §3: a serialized body under Content-Type: application/json goes out with
+          // the charset suffix. Any other header with a serialized body was not measured.
+          if (jsonContentType(sent.get("headers")))
+            wire.put("contentType", "application/json; charset=UTF-8");
         }
       }
       wire.put("assumed", new ArrayList<Object>(assumed));

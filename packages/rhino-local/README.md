@@ -2798,7 +2798,16 @@ Integer (written as an integer, which is measured for `s.length`, `indexOf` and
 `size()` results and assumed for a `JSON.parse` result). A `form` request goes out
 urlencoded as Java's `URLEncoder` writes it, with the content type AIC sets, and the
 mock's third argument carries it as `contentType` (docs/api/12 §6); a
-non-string value is missing. `objectAttributes` that a node
+non-string value is missing. A string a script built with `+` is a Rhino
+`ConsString`, which AIC does not treat as a `java.lang.String` (docs/api/12
+§7): as a header value (and a number, a boolean, an object or a `new String`)
+`send` throws the tenant's catchable `InternalError: Cannot add values for key
+'Authorization': Bearer abc`, and as the `body` it goes out as a JSON string
+(`"a=1&b=abc"`, quotes included) under `application/json; charset=UTF-8`,
+replacing the script's header, which is why a urlencoded token body built by
+`+` gets a 400 there; `.toString()`, `String(x)`, `concat`, `slice`, `join` and
+`replace` results are plain strings and pass. A `form` value or a `method` built
+with `+` is missing behaviour. `objectAttributes` that a node
 wrote, or that crossed a callback round trip, reaches the next script as a Java
 map (`get`/`put` work); its printed form is measured, the methods are inferred
 and labelled assumed.

@@ -761,6 +761,57 @@ on the number before it), and a non-object `form`. rhino-local encodes with
 assumed, and refuses a non-string value as missing behaviour instead of
 reproducing the `InternalError` text, which carries class-loader names.
 
+### 7. A string a script built with `+` is not a `java.lang.String` (verified 2026-11-25)
+
+`scripts/experiment-journey-httpclient-header.sh`: a next-gen journey decision
+node per case, one `httpClient.send` under `try`, to the same httpbin.org echo
+(`/headers` and `/post`, which return what they received, with `Content-Type`
+and `Content-Length`). Objects are throwaway `kdemo-g2-` trees, nodes and
+scripts, deleted by name and re-listed empty. `t` is a non-constant string
+(`var t = ...` computed in the script), so `"Bearer " + t` is a concatenation
+and `"Bearer " + "abc"` is a literal the compiler folds.
+
+Rhino builds a `ConsString` for `+` on non-constant operands. On the tenant
+that is **not** a `java.lang.String`: `typeof` reports `"object"` and it has no
+`constructor`. `.toString()`, `.concat`, `String(x)`, `.slice(0)`,
+`[..].join("")`, `.replace(..)`, `JSON.parse(..)` results and literals are
+`java.lang.String` (`typeof` `"string"`). Wherever AIC needs a `java.lang.String`
+the two differ, and **what it does about it depends on the position**:
+
+| Position | Value | Result |
+| --- | --- | --- |
+| header value | literal; `.toString()`, `.concat`, `String()`, `slice`, `join`, `replace`, `JSON.parse` result; the folded `"Bearer " + "abc"` | sent, and echoed |
+| header value | `"Bearer " + t`; `"" + t`; `s += t`; `"Bearer " + JSON.parse(..).a`; a template literal (via `eval`); `new String(..)` | **`send` throws, catchable**: `InternalError: Cannot add values for key 'X-Probe': Bearer abc` (the same for `Authorization`); nothing sent. It throws at `send`, before `.get()` |
+| header value | `1`, `1.5`, `0`, `1e21`, `true`, `{a: 1}` | the same error, with the value's Java text: `1.0`, `1.5`, `0.0`, `1.0E21`, `true`, `[object Object]` |
+| header value | `null`, `undefined`, `[]` | the header is **absent** at the receiver; no error |
+| header value | `["a"]`, `["a", "b"]` | accepted; the receiver saw `a` and `a,b` (one line or one per element: the echo cannot tell) |
+| header value | `[1]`, `["a", "b" + t]`, `[["a"]]` | throws `InternalError`: `class java.lang.Double cannot be cast to class java.lang.String ...`, the same for `ConsString`, and `null` for the nested array; the first two messages name the web application's class loader |
+| header key | `h["X-" + t] = "v"` | sent as `X-abc`: keys are always strings |
+| URL | `"https://httpbin.org/" + (cond ? "post" : "get")` | sent: the URL is converted |
+| `method` | `"PO" + t.slice(0, 0) + "ST"` | throws `InternalError: class org.mozilla.javascript.ConsString cannot be cast to class java.lang.String ...` (loader named) |
+| `form` value | `{a: "1", b: "x" + t}` | the same `ClassCastException` text; the literal control is sent (docs/api/12 §6) |
+| object `body` value | `{a: "x" + t}` | fine: `{"a":"xabc"}`, `Content-Type: application/json; charset=UTF-8`, length 12 |
+| string `body` | a literal or `.toString()` result, with `Content-Type: application/x-www-form-urlencoded` | sent **raw**, the form parsed by the receiver, the script's header kept (`text/plain`, `application/json` and no header likewise) |
+| string `body` | `"a=1&b=" + t` under **any** header (urlencoded, `text/plain`, `application/json`, none) | sent as a **JSON string**: `"a=1&b=abc"` with its quotes (length 11, not 9), `Content-Type: application/json; charset=UTF-8`, the script's header replaced |
+| string `body` | `"q=\"" + t + "\\\u00e9"` | `"q=\"abc\\é"`: quote and backslash escaped, `é` raw (§4) |
+| string `body` | `JSON.stringify({a: 1})` under `application/json` | raw `{"a":1}`, header unchanged, no charset |
+
+Two measured consequences that were found the hard way. A header built as
+`"Bearer " + token` fails on the tenant with the error above. A urlencoded
+token-request body built by concatenation arrives as a JSON string under
+`application/json` and the token endpoint answers **400**, where the same text
+through `.toString()`, or the `form` option (§6), works; the cause is the type
+of the string, not the content type the script set. The script's own header is
+not what decides, which is why the failure looks like a wrong header.
+
+Not measured: a `ConsString` in a `query` or other option, a number as a body
+that is a string, the array header's wire form, a `ConsString` inside an array
+in an object `body`. rhino-local refuses what it did not measure
+(`Missing journey behavior`): a `ConsString` or other non-string in a header
+array, a `method` or `form` value built with `+` (the tenant text names a class
+loader the emulator does not have), and a header value of any other type. The
+emulator reproduces the two catchable errors and the JSON-string body exactly.
+
 ### `openidm.create` content with an `undefined` value (verified 2026-11-04)
 
 Same script; one next-gen journey decision node called

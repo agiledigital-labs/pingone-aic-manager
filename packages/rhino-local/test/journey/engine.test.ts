@@ -1089,10 +1089,12 @@ it.each([
     "AM host openidm.update argument: undefined at [2].u",
   ],
   [
-    "undefined HTTP header",
-    "httpClient.send('https://service.example.com/x',{method:'GET',headers:{h:undefined}}).get();" +
+    // An undefined header value was measured (docs/api/12 §7): the header is omitted, so it is
+    // no longer here. An undefined in an option nobody measured stays missing.
+    "undefined in an unmeasured HTTP option",
+    "httpClient.send('https://service.example.com/x',{method:'GET',extra:undefined}).get();" +
       SUCCEED,
-    "AM host httpClient.send argument: undefined at [1].headers.h",
+    "AM host httpClient.send argument: undefined at [1].extra",
   ],
 ])("a value JSON would rewrite is missing: %s", async (_name, source, cause) => {
   expectEmulationFailure(cause);

@@ -304,6 +304,217 @@ describe("G12: httpClient.send form option", () => {
   });
 });
 
+describe("G20/G21: a script-built string is a ConsString, not a java.lang.String (docs/api/12 §7)", () => {
+  type Seen = {
+    options: Record<string, JsonValue>;
+    bodyText: string;
+    type?: string;
+  };
+  /** `extra` runs first; `t` is a non-constant string, so `"Bearer " + t` is a concatenation. */
+  const run = async (script: string) => {
+    const seen: Seen[] = [];
+    const emu = make(
+      `var t = "ABC".toLowerCase();
+       var caught = "none";
+       try { ${script} } catch (e) { caught = String(e); }
+       nodeState.putShared("username", "u");
+       nodeState.putShared("caught", caught);
+       action.goTo("true");`,
+      {},
+      {
+        http: (_url, options, wire) => {
+          seen.push({
+            options,
+            bodyText: wire.bodyText,
+            ...(wire.contentType ? { type: wire.contentType } : {}),
+          });
+          return { status: 200, body: {} };
+        },
+      },
+    );
+    const result = await start(emu);
+    return { result, seen, emu };
+  };
+  const send = (options: string) =>
+    `httpClient.send("https://service.example.com/x", ${options}).get();`;
+  /** What the script's own catch saw, read from the success body is not possible; echo it by status. */
+  const caughtText = async (options: string) => {
+    const seen: Seen[] = [];
+    let caught = "";
+    const emu = make(
+      `var t = "ABC".toLowerCase();
+       var caught = "none";
+       try { ${send(options)} } catch (e) { caught = String(e); }
+       httpClient.send("https://service.example.com/report", {method: "POST", body: {caught: caught}}).get();
+       nodeState.putShared("username", "u");
+       action.goTo("true");`,
+      {},
+      {
+        http: (url, options, wire) => {
+          if (url.endsWith("/report")) {
+            caught = String((options.body as { caught: string }).caught);
+          } else {
+            seen.push({ options, bodyText: wire.bodyText });
+          }
+          return { status: 200, body: {} };
+        },
+      },
+    );
+    expect((await start(emu)).status).toBe(200);
+    return { caught, seen };
+  };
+
+  it("a header built with + throws the tenant's InternalError at send, and nothing goes out", async () => {
+    const { caught, seen } = await caughtText(
+      `{method: "POST", headers: {Authorization: "Bearer " + t}}`,
+    );
+    expect(caught).toBe(
+      "InternalError: Cannot add values for key 'Authorization': Bearer abc",
+    );
+    expect(seen).toHaveLength(0);
+  });
+
+  it("the same text as a java.lang.String passes (the discriminating case): toString, concat, String(), slice, join, replace and a literal", async () => {
+    for (const value of [
+      `("Bearer " + t).toString()`,
+      `"Bearer ".concat(t)`,
+      `String("Bearer " + t)`,
+      `("Bearer " + t).slice(0)`,
+      `["Bearer ", t].join("")`,
+      `("Bearer " + t).replace("x", "y")`,
+      `"Bearer abc"`,
+    ]) {
+      const { caught, seen } = await caughtText(
+        `{method: "POST", headers: {Authorization: ${value}}}`,
+      );
+      expect(caught, value).toBe("none");
+      expect(seen, value).toHaveLength(1);
+      expect(seen[0]?.options.headers, value).toEqual({
+        Authorization: "Bearer abc",
+      });
+    }
+  });
+
+  it("a number, a boolean, an object and a String object are refused with the value's Java text", async () => {
+    const cases: [string, string][] = [
+      ["1", "1.0"],
+      ["1.5", "1.5"],
+      ["1e21", "1.0E21"],
+      ["true", "true"],
+      ["{a: 1}", "[object Object]"],
+      [`new String("abc")`, "abc"],
+    ];
+    for (const [value, text] of cases) {
+      const { caught, seen } = await caughtText(
+        `{method: "GET", headers: {"X-Probe": ${value}}}`,
+      );
+      expect(caught, value).toBe(
+        `InternalError: Cannot add values for key 'X-Probe': ${text}`,
+      );
+      expect(seen, value).toHaveLength(0);
+    }
+  });
+
+  it("null, undefined and an empty array omit the header and are sent; an array of strings is sent", async () => {
+    for (const value of ["null", "undefined", "[]", `["a", "b"]`]) {
+      const { caught, seen } = await caughtText(
+        `{method: "GET", headers: {"X-Probe": ${value}}}`,
+      );
+      expect(caught, value).toBe("none");
+      expect(seen, value).toHaveLength(1);
+    }
+  });
+
+  it("an array holding a concatenation is missing behaviour, not a guess at the tenant's class-loader text", async () => {
+    expectEmulationFailure(
+      /httpClient\.send header array holding a value that is not a plain string: X-Probe.*/,
+    );
+    const { result } = await run(
+      send(`{method: "GET", headers: {"X-Probe": ["a", "b" + t]}}`),
+    );
+    expect(result.status).toBe(501);
+  });
+
+  it("a urlencoded body built with + goes out as a JSON string under application/json, whatever the script's header said", async () => {
+    const { seen } = await run(
+      send(
+        `{method: "POST", headers: {"Content-Type": "application/x-www-form-urlencoded"}, body: "a=1&b=" + t}`,
+      ),
+    );
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toMatchObject({
+      bodyText: `"a=1&b=abc"`,
+      type: "application/json; charset=UTF-8",
+    });
+  });
+
+  it("the same body as a java.lang.String is sent raw under the script's own header (the discriminating case)", async () => {
+    for (const value of [`("a=1&b=" + t).toString()`, `"a=1&b=abc"`]) {
+      const { seen } = await run(
+        send(
+          `{method: "POST", headers: {"Content-Type": "application/x-www-form-urlencoded"}, body: ${value}}`,
+        ),
+      );
+      expect(seen[0], value).toMatchObject({ bodyText: "a=1&b=abc" });
+      expect(seen[0]?.type, value).toBeUndefined();
+    }
+  });
+
+  it("a concatenated body is escaped as a JSON string, as every measured body string is", async () => {
+    const { seen } = await run(
+      send(
+        `{method: "POST", headers: {"Content-Type": "text/plain"}, body: "q=\\"" + t + "\\\\\\u00e9"}`,
+      ),
+    );
+    expect(seen[0]).toMatchObject({
+      // The text q="abc\é as a JSON string: quote and backslash escaped, é raw (docs/api/12 §4).
+      bodyText: String.raw`"q=\"abc\\` + "\u00e9" + '"',
+      type: "application/json; charset=UTF-8",
+    });
+  });
+
+  it("an object body under application/json carries the charset suffix; under no header it carries no content type", async () => {
+    const withHeader = await run(
+      send(
+        `{method: "POST", headers: {"Content-Type": "application/json"}, body: {a: 1}}`,
+      ),
+    );
+    expect(withHeader.seen[0]).toMatchObject({
+      bodyText: `{"a":1.0}`,
+      type: "application/json; charset=UTF-8",
+    });
+    const without = await run(send(`{method: "POST", body: {a: 1}}`));
+    expect(without.seen[0]?.type).toBeUndefined();
+  });
+
+  it("a form value or a method built with + is missing behaviour; the toString'd value is fine", async () => {
+    expectEmulationFailure(
+      /httpClient\.send form value built by concatenation: b.*/,
+    );
+    const form = await run(
+      send(`{method: "POST", form: {a: "1", b: "x" + t}}`),
+    );
+    expect(form.result.status).toBe(501);
+  });
+
+  it("a form value that was toString'd is sent", async () => {
+    const { seen } = await run(
+      send(`{method: "POST", form: {a: "1", b: ("x" + t).toString()}}`),
+    );
+    expect(seen[0]).toMatchObject({ bodyText: "a=1&b=xabc" });
+  });
+
+  it("a method built with + is missing behaviour", async () => {
+    expectEmulationFailure(
+      /httpClient\.send method built by concatenation.*/,
+    );
+    const { result } = await run(
+      send(`{method: "PO" + t.slice(0, 0) + "ST"}`),
+    );
+    expect(result.status).toBe(501);
+  });
+});
+
 const userStore = () =>
   new IdmEmulator(
     new IdmConfig({
