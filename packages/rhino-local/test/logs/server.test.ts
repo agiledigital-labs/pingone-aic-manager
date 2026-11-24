@@ -31,7 +31,7 @@ afterEach(async () => {
   await Promise.all(running.splice(0).map((s) => s.close()));
 });
 
-async function rig(options: Partial<LogsServerOptions> & { retentionNs?: bigint } = {}): Promise<Rig> {
+async function rig(options: Partial<LogsServerOptions> & { retentionNs?: bigint; defaultQuota?: true } = {}): Promise<Rig> {
   const clock = { now: T0 + 10_000n * SECOND };
   const fake: Clock = { nowNs: () => clock.now };
   const real = { ms: 1_000_000 };
@@ -40,7 +40,7 @@ async function rig(options: Partial<LogsServerOptions> & { retentionNs?: bigint 
     store,
     clock: fake,
     keys: KEY,
-    requestsPerMinute: false,
+    ...(options.defaultQuota === true ? {} : { requestsPerMinute: false as const }),
     realNowMs: () => real.ms,
     ...options,
   });
@@ -318,7 +318,15 @@ describe("authentication", () => {
 });
 
 describe("rate limiting", () => {
-  it("allows 15 requests per real minute per source, then 429 with whole-second Retry-After", async () => {
+  it("defaults to the tenant's 60 per minute for the environment", async () => {
+    const r = await rig({ defaultQuota: true });
+    for (let i = 0; i < 60; i++) {
+      expect((await get(r, window({ source: i % 2 === 0 ? "am-everything" : "idm-everything" }))).status, `request ${i + 1}`).toBe(200);
+    }
+    expect((await get(r, window({ source: "am-access" }))).status).toBe(429);
+  });
+
+  it("allows N requests per real minute for the environment, then 429 with whole-second Retry-After", async () => {
     const r = await rig({ requestsPerMinute: 15 });
     for (let i = 0; i < 15; i++) {
       expect((await get(r, window({ source: "am-everything" }))).status, `request ${i + 1}`).toBe(200);
@@ -328,8 +336,9 @@ describe("rate limiting", () => {
     expect(limited.status).toBe(429);
     expect(limited.headers.get("retry-after")).toBe("45");
 
-    // A different source has its own quota: IDM's budget is not AM's.
-    expect((await get(r, window({ source: "idm-everything" }))).status).toBe(200);
+    // The quota is per environment: another source shares it (a per-source
+    // quota would admit this one).
+    expect((await get(r, window({ source: "idm-everything" }))).status).toBe(429);
 
     // Rejected requests did not consume quota: waiting out the oldest hit admits again.
     r.real.ms += 45_000;

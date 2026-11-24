@@ -39,7 +39,7 @@ export type LogsServerOptions = {
   /** 0 picks an ephemeral port. */
   readonly port?: number;
   readonly host?: string;
-  /** Requests per real minute per requested source. `false` disables. Default 15. */
+  /** Requests per real minute for the whole environment, all sources together. `false` disables. Default 60, the tenant's documented limit. */
   readonly requestsPerMinute?: number | false;
   /** Real time in ms, for the quota window. Injectable for tests. */
   readonly realNowMs?: () => number;
@@ -129,9 +129,13 @@ function decodeCookie(cookie: string, expected: CookieQuery): Snapshot {
   }
 }
 
-/** Sliding one-minute window per source name. */
+/**
+ * Sliding one-minute window for the whole server, i.e. one environment: the
+ * tenant documents "60 requests/min per environment" (docs/api/08-logs.md,
+ * from Ping's documentation; not measured on the sandbox). Sources share it.
+ */
 class Quota {
-  readonly #hits = new Map<string, number[]>();
+  #hits: number[] = [];
   readonly #perMinute: number;
   readonly #now: () => number;
   constructor(perMinute: number, now: () => number) {
@@ -139,27 +143,22 @@ class Quota {
     this.#now = now;
   }
 
-  /** Charges every name, or none: returns the seconds to wait, or 0 if admitted. */
-  charge(names: readonly string[]): number {
+  /** Returns the seconds to wait, or 0 if admitted (and then charged). */
+  charge(): number {
     const now = this.#now();
-    let wait = 0;
-    for (const name of names) {
-      const hits = (this.#hits.get(name) ?? []).filter((t) => t > now - 60_000);
-      this.#hits.set(name, hits);
-      if (hits.length >= this.#perMinute) {
-        const oldest = hits[0] as number;
-        wait = Math.max(wait, Math.max(1, Math.ceil((oldest + 60_000 - now) / 1000)));
-      }
+    this.#hits = this.#hits.filter((t) => t > now - 60_000);
+    if (this.#hits.length >= this.#perMinute) {
+      const oldest = this.#hits[0] as number;
+      return Math.max(1, Math.ceil((oldest + 60_000 - now) / 1000));
     }
-    if (wait > 0) return wait;
-    for (const name of names) this.#hits.get(name)?.push(now);
+    this.#hits.push(now);
     return 0;
   }
 }
 
 export async function startLogsServer(options: LogsServerOptions): Promise<LogsServer> {
   const { store, clock, keys } = options;
-  const perMinute = options.requestsPerMinute === undefined ? 15 : options.requestsPerMinute;
+  const perMinute = options.requestsPerMinute === undefined ? 60 : options.requestsPerMinute;
   const quota =
     perMinute === false ? undefined : new Quota(perMinute, options.realNowMs ?? (() => Date.now()));
   let fault = options.fault;
@@ -206,7 +205,7 @@ export async function startLogsServer(options: LogsServerOptions): Promise<LogsS
     attempts.set(`${sourceParam}|${cookie ?? ""}`, reportedAttempt);
 
     if (quota !== undefined) {
-      const wait = quota.charge(requested);
+      const wait = quota.charge();
       if (wait > 0) {
         throw new HttpError(429, "Too Many Requests", { "retry-after": String(wait) });
       }
