@@ -115,17 +115,28 @@ export type HttpWire = {
    */
   readonly contentType?: string;
 };
+/**
+ * A request that never connects, as the tenant reports it (docs/api/25, "httpClient connection
+ * failures", 2026-11-25): `send` returns and `get()` throws a JavaException. Three causes were
+ * measured, each with its own message:
+ * - `refused`: the host answered with a reset (`Connection refused (connect failed)`);
+ * - `unknown-host`: the name does not resolve (`<host>: Name or service not known`; the host is the
+ *   URL's);
+ * - `connect-timeout`: nothing answered (`Timeout connecting to [/<address>:<port>]`; the resolved
+ *   address and port are the mock's to say, because the tenant names the address, not the host).
+ */
+export type HttpFailure =
+  | { readonly kind: "refused" }
+  | { readonly kind: "unknown-host" }
+  | { readonly kind: "connect-timeout"; readonly address: string; readonly port: number };
+export type HttpMockResponse =
+  | { status: number; body?: JsonValue; headers?: Record<string, string> }
+  | { failure: HttpFailure };
 export type HttpMock = (
   url: string,
   options: { [key: string]: JsonValue },
   wire: HttpWire,
-) =>
-  | Promise<{
-      status: number;
-      body?: JsonValue;
-      headers?: Record<string, string>;
-    }>
-  | { status: number; body?: JsonValue; headers?: Record<string, string> };
+) => Promise<HttpMockResponse> | HttpMockResponse;
 
 /**
  * The realm password policy a Validated Password node with `validateInput: true` evaluates. The

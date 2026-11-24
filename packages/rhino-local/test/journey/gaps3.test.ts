@@ -727,3 +727,70 @@ describe("session properties from scripts", () => {
     expect((await finish(chain([`action.putSessionProperty('Host', 'x');`]))).status).toBe(501);
   });
 });
+
+// ---------------------------------------------------------------------------------------------
+// HttpMock connection failure (batch 3 G25, batch 5 B5-3). Doc 25, "httpClient connection failures".
+describe("httpClient connection failures", () => {
+  const probe = `
+    var out = { where: 'none' };
+    var pending = null;
+    try { pending = httpClient.send('http://invented.example.com:8080/x', { method: 'GET' }); out.sent = typeof pending; }
+    catch (e) { out.where = 'send'; }
+    if (pending) {
+      try { out.status = pending.get().status; }
+      catch (e) { out.where = 'get'; out.name = e.name; out.message = String(e.message); out.string = String(e); out.isError = e instanceof Error; out.keys = Object.keys(e).join(','); }
+    }
+    callbacksBuilder.hiddenValueCallback('res', JSON.stringify(out));`;
+  const tree = (): JourneyConfigInput => ({
+    realm: "alpha",
+    trees: {
+      invented: {
+        entryNodeId: "s",
+        nodes: { s: { nodeType: "ScriptedDecisionNode", connections: { true: SUCCESS } } },
+      },
+    },
+    nodes: { ScriptedDecisionNode: { s: { script: "s", outcomes: ["true"] } } },
+    scripts: { s: script(probe + "action.goTo('true');") },
+  });
+  const PREFIX =
+    "java.util.concurrent.ExecutionException: org.forgerock.openam.scripting.wrappers.HttpClientScriptException: java.lang.RuntimeException: ";
+  async function seen(failure: unknown) {
+    const emu = make(tree(), { http: () => ({ failure }) as never });
+    return dump((await run(emu, "invented")).body);
+  }
+  it.each([
+    [{ kind: "refused" }, "java.net.ConnectException: Connection refused (connect failed)"],
+    [{ kind: "unknown-host" }, "java.net.UnknownHostException: invented.example.com: Name or service not known"],
+    [
+      { kind: "connect-timeout", address: "192.0.2.1", port: 81 },
+      "java.net.ConnectException: Timeout connecting to [/192.0.2.1:81]",
+    ],
+  ])("%j is thrown by get(), not send(), as a JavaException", async (failure, tail) => {
+    const state = await seen(failure);
+    // Discriminating: where it throws. An implementation throwing from send() reports where: 'send'.
+    expect(state).toMatchObject({
+      where: "get",
+      sent: "object",
+      name: "JavaException",
+      message: PREFIX + tail,
+      string: `JavaException: ${PREFIX}${tail}`,
+      isError: true,
+    });
+    // name is not an own enumerable key (measured keys: message,fileName,lineNumber,stack,...).
+    expect(String(state.keys)).not.toContain("name");
+  });
+  it("an uncaught connection failure ends the journey 401 Login failure", async () => {
+    const input = tree();
+    const bare = {
+      ...input,
+      scripts: { s: script("httpClient.send('http://invented.example.com/x', {method:'GET'}).get(); action.goTo('true');") },
+    };
+    const emu = make(bare, { http: () => ({ failure: { kind: "refused" } }) });
+    expect(await run(emu, "invented")).toMatchObject({ status: 401, body: { message: "Login failure" } });
+  });
+  it("a failure kind it does not model is missing", async () => {
+    expectEmulationFailure("httpClient mock failure: http://invented.example.com:8080/x");
+    const emu = make(tree(), { http: () => ({ failure: { kind: "tls-handshake" } }) as never });
+    expect((await run(emu, "invented")).status).toBe(501);
+  });
+});

@@ -2745,6 +2745,10 @@ const result = await journey.request({
 });
 ```
 
+The `http` mock may also return `{ failure: { kind: "refused" | "unknown-host" } }` or
+`{ failure: { kind: "connect-timeout", address, port } }`: the script's `httpClient.send(...).get()` then throws the
+JavaException the tenant throws (doc 25, "httpClient connection failures").
+
 The caller supplies one IDM emulator per test, shared with the journey, so
 script `openidm` calls execute managed hooks in that instance. `fork()` shares
 frozen config and the runner, forks IDM records, copies authentication snapshots,

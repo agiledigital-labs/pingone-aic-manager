@@ -899,6 +899,30 @@ Not measured: the other AM-owned names for a script (the emulator refuses them a
 `SetSessionPropertiesNode`'s validation above), `removeSessionProperty` of a property on the incoming session (`missing`),
 `withMaxIdleTime` / `withMaxSessionTime` on the action (still refused), and a property put in an inner tree.
 
+## httpClient connection failures (2026-11-25)
+
+`httpClient.send(...)` to a host that cannot be reached, in a next-gen scripted decision, with `send` and `.get()` in
+separate `try` blocks. Sandbox, throwaway `kdemo-g3-` trees and scripts (deleted; get-after 404). Probe:
+`scripts/experiment-journey-http-failure.sh`. Targets: loopback port 1, a `.invalid` name, a documentation address.
+
+| Target | Thrown by | Message after `java.util.concurrent.ExecutionException: org.forgerock.openam.scripting.wrappers.HttpClientScriptException: java.lang.RuntimeException: ` |
+| ------ | --------- | ------- |
+| refused (`127.0.0.1:1`) | `.get()` | `java.net.ConnectException: Connection refused (connect failed)` |
+| unresolvable name | `.get()` | `java.net.UnknownHostException: <host>: Name or service not known` |
+| non-routable (`192.0.2.1:81`) | `.get()` | `java.net.ConnectException: Timeout connecting to [/192.0.2.1:81]` |
+
+- `send()` itself returns an object; nothing throws until `.get()`. The thrown value has `name` `JavaException`,
+  `String(e)` is `JavaException: <message>`, `e instanceof Error` is true, and its own keys are
+  `message,fileName,lineNumber,stack,javaException,rhinoException` (`name` is not one). `e.javaException.getClass()` throws.
+- The stack's first line is `\tat <script name>:<line>`.
+- A non-routable address ended in the timeout above rather than hanging the script.
+
+The emulator's `JourneyOptions.http` mock may return `{ failure: { kind: "refused" } }`,
+`{ failure: { kind: "unknown-host" } }` (the host is the URL's) or
+`{ failure: { kind: "connect-timeout", address, port } }` (the tenant names the resolved address, so the mock says it);
+any other kind is `missing`. Not modelled: the `javaException` and `rhinoException` own keys, the stack text, and failures
+of other kinds (TLS, a reset after connect, a read timeout), none measured.
+
 ## Not yet measured
 
 None of these was exercised; do not build on them as measured:

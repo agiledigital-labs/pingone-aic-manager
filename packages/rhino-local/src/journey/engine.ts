@@ -1228,6 +1228,24 @@ export class JourneyEmulator {
         },
       );
     }
+    if (response && "failure" in response) {
+      const { failure } = response;
+      const host = new URL(url).hostname;
+      const tail =
+        failure.kind === "refused"
+          ? "java.net.ConnectException: Connection refused (connect failed)"
+          : failure.kind === "unknown-host"
+            ? `java.net.UnknownHostException: ${host}: Name or service not known`
+            : failure.kind === "connect-timeout" &&
+                typeof failure.address === "string" &&
+                Number.isInteger(failure.port)
+              ? `java.net.ConnectException: Timeout connecting to [/${failure.address}:${failure.port}]`
+              : undefined;
+      if (tail === undefined) this.missing(`httpClient mock failure: ${url}`);
+      const result = { failure: tail };
+      this.checkHostValue(result);
+      return result;
+    }
     if (
       !response ||
       !Number.isInteger(response.status) ||
