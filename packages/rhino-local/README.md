@@ -2825,6 +2825,49 @@ and aborts with 401 when an identifier names nobody. Identify/Create do not add
 an extra principal-existence check at Success: doc 25 does not establish one.
 Create alone leaves username absent and therefore cannot produce a session.
 
+#### Built-in node types added from the 2026-11-25 measurements
+
+`src/journey/extra-nodes.ts` holds these; each row is measured in doc 25
+("Built-in node types"). Config is read from the node JSON as the tenant stores
+it, and the node `PUT` refusals are raised by `JourneyConfig` as `RangeError`s
+carrying the tenant's `400` text.
+
+- `DataStoreDecisionNode` checks shared `username` (a username only in
+  transient state aborts 401, as on the tenant) and the password from either
+  bucket against the IDM emulator's `alpha_user`, case-insensitively on
+  `userName`, and writes no state. The IDM emulator now keeps the plain text of
+  a password it stored, so it can answer this (fidelity, not security). An
+  account that is inactive or has no password is `missing`.
+- `SetSessionPropertiesNode`, `SetPersistentCookieNode`: the result of a
+  successful `request` carries `session: {properties, maxIdleTime?,
+  maxSessionTime?}` (minutes) and `cookies` (the persistent cookie, `Secure`
+  always set, `Expires` = now + `maxLife` hours, `SameSite` lower-cased);
+  `journeyHttp` emits them as `Set-Cookie`. The persistent cookie's value is an
+  HS256 JWT over username, `iat` and `exp`, since the real claims are unmeasured, and a configuration with no
+  `hmacSigningKey` ends as the tenant's empty 500. The emulator does **not**
+  mint a session cookie or build `existingSession` from a newly issued tokenId.
+- `OneTimePasswordGeneratorNode` writes shared `oneTimePassword` (digit string,
+  leading zeros kept) and `oneTimePasswordTimestamp` (epoch seconds); lengths
+  above 8 abort 401 as measured.
+- `RetryLimitDecisionNode` counts in shared `<nodeId>.retryCount`. The user
+  attribute behind `incrementUserAttributeOnFailure` is not modelled (no
+  IDM-visible change was measured).
+- `AcceptTermsAndConditionsNode` sends `TermsAndConditionsCallback`; the terms
+  come from `JourneyOptions.termsAndConditions` (`{version, terms,
+  createDate}`), the tenant takes them from a realm service. The accept
+  timestamp carries milliseconds then zeros; the tenant's nanoseconds are not
+  reproducible.
+- `product-CaptchaNode` is a **stub**: the `ReCaptchaCallback` shape is
+  measured, but the provider verdict could not be reproduced on the tenant, so
+  the outcome must come from `declaredOutcomes` (undeclared is `missing`).
+  `reCaptchaV3` is not modelled. `JourneyOptions.now` replaces the clock.
+
+Gaps in this set: Captcha and Terms and Conditions are not accepted as Page
+children, and the persistent cookie's `secretLabelIdentifier` signing, claims
+and `idleTimeout` are not modelled. The emulator's Username and Password
+collectors accept an empty answer where the tenant re-prompts (measured with a
+Page of collectors in front of `DataStoreDecisionNode`).
+
 Attribute policy evaluation/validateOnly, validated-password validation,
 split objectAttributes passed to Create/Patch/Identify, conflicting identity
 sources for Patch, a null identity source, `httpClient.send` with no URL, Identify with no identity value at all, Patch with neither an
