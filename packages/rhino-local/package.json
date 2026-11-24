@@ -64,7 +64,8 @@
     "aic-script-tester-pull-profile": "dist/bin/pull-profile.js",
     "aic-script-tester-fetch-jar": "dist/bin/fetch-jar.js",
     "aic-script-tester-timing": "dist/bin/timing.js",
-    "aic-emulator-logs": "dist/bin/emulator-logs.js"
+    "aic-emulator-logs": "dist/bin/emulator-logs.js",
+    "aic-emulator-demo": "dist/bin/emulator-demo.js"
   },
   "files": [
     "dist/",
