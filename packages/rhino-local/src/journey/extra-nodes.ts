@@ -424,7 +424,8 @@ export class ExtraNodes {
    */
   private captcha(config: NodeDocument, id: string, submitted: CallbackEffect[]): NodeResult {
     const { evidence } = this.ctx;
-    if (config.reCaptchaV3 === true) this.ctx.missing("product-CaptchaNode reCaptchaV3: true");
+    if (config.reCaptchaV3 !== undefined && typeof config.reCaptchaV3 !== "boolean")
+      this.ctx.missing("product-CaptchaNode reCaptchaV3 configuration");
     for (const key of ["siteKey", "apiUri", "divClass"] as const)
       if (typeof config[key] !== "string")
         this.ctx.missing(`product-CaptchaNode ${key} configuration`);
@@ -443,13 +444,29 @@ export class ExtraNodes {
             recaptchaSiteKey: config.siteKey as string,
             captchaApiUri: config.apiUri as string,
             captchaDivClass: config.divClass as string,
-            reCaptchaV3: false,
+            reCaptchaV3: config.reCaptchaV3 === true,
             disableSubmission: config.disableSubmission,
           },
         ],
       };
     if (submitted.length !== 1 || submitted[0]?.type !== "ReCaptchaCallback")
       this.ctx.missing("product-CaptchaNode callback submission");
+    // Measured with reCaptchaV3 true and false: an empty token fails the journey 401 Login failure,
+    // a non-empty one the provider rejects takes false (doc 25, CAPTCHA, 2026-11-25).
+    if (submitted[0]?.value === "") {
+      evidence.measured(
+        "product-CaptchaNode with an empty token fails the journey with 401 Login failure, with reCaptchaV3 true or false",
+        "docs/api/25-journey-runtime.md (CAPTCHA, 2026-11-25)",
+      );
+      return {
+        outcome: null,
+        callbacks: [],
+        abort: {
+          status: 401,
+          body: { code: 401, reason: "Unauthorized", message: "Login failure" },
+        },
+      };
+    }
     const outcome = this.ctx.declared?.(id);
     if (outcome === undefined)
       this.ctx.missing(

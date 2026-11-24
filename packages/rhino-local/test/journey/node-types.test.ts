@@ -631,14 +631,6 @@ it("product-CaptchaNode without a declared verdict is missing, not guessed", asy
     emulation: { missing: [cause] },
   });
 });
-it("product-CaptchaNode v3 is missing", async () => {
-  expectEmulationFailure("product-CaptchaNode reCaptchaV3: true");
-  const emu = make(
-    flow("product-CaptchaNode", { ...CAPTCHA, reCaptchaV3: true }, "", ["true", "false"]),
-  );
-  expect(await request(emu)).toMatchObject({ status: 501 });
-});
-
 // Username/Password collectors (docs/api/25, 2026-11-25): an empty answer re-sends the callback, alone or in
 // a Page; a whitespace-only answer is accepted.
 function collectorFlow(page: boolean): JourneyConfigInput {

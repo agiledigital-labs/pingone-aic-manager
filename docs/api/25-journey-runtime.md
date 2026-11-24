@@ -623,14 +623,24 @@ Not measured: whether a re-sent `NameCallback` echoes the submitted value.
 
 ### CAPTCHA (`product-CaptchaNode`, `listOutcomes`: `["true","false"]`)
 
-Only the callback was measured: a `ReCaptchaCallback` with outputs
-`recaptchaSiteKey`, `captchaApiUri`, `captchaDivClass`, `reCaptchaV3`,
-`disableSubmission` (from `siteKey`, `apiUri`, `divClass`, `reCaptchaV3`,
-`disableSubmission`) and an empty-string `IDToken1`. A fake token, and an empty
-one, ended the journey with 401 `Login failure` (not `false`), with the
-provider's published always-pass test keys as well as with fake ones, so
-neither outcome was reached; verification calls a provider that the harness
-cannot reproduce, and the emulator takes the verdict from the caller.
+A `ReCaptchaCallback` with outputs `recaptchaSiteKey`, `captchaApiUri`, `captchaDivClass`, `reCaptchaV3`,
+`disableSubmission` (from `siteKey`, `apiUri`, `divClass`, `reCaptchaV3`, `disableSubmission`) and an empty-string
+`IDToken1`. The node's other stored fields (`secretKey`, `scoreThreshold` a string such as `"0.5"`, `captchaUri`) do not
+reach the callback.
+
+Re-measured 2026-11-25 (sandbox, throwaway `kdemo-g3-` trees and nodes, deleted; get-after 404; probe
+`scripts/experiment-journey-captcha-v3.sh`) with invented site and secret keys, `reCaptchaV3` true and false, standalone and
+as the last child of a Page after a username collector:
+
+| Case | Measured |
+| ---- | -------- |
+| `reCaptchaV3: true` | The same callback with `reCaptchaV3` **true**; every other output as with false; the same `true`/`false` outcomes |
+| An **empty** token, v2 or v3, alone or in a Page | `401 Login failure` |
+| A **non-empty fake** token, v2 or v3, alone or in a Page | `200`, the node left by **`false`** (the page's `false` outcome in a Page; the collector's username was written) |
+
+This corrects the earlier note here that a fake token also ended 401: with invented keys the non-empty token reached
+`false`. Not measured: a token the provider accepts (so `true` is never reached by a probe), and what `scoreThreshold` does.
+The emulator takes the verdict for a non-empty token from `JourneyOptions.declaredOutcomes`, and fails an empty one 401.
 
 ### Message, choice and state nodes (2026-11-25)
 

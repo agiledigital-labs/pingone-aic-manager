@@ -794,3 +794,56 @@ describe("httpClient connection failures", () => {
     expect((await run(emu, "invented")).status).toBe(501);
   });
 });
+
+// ---------------------------------------------------------------------------------------------
+// reCaptchaV3 on product-CaptchaNode (batch 5 B5-1). Doc 25, "CAPTCHA".
+describe("product-CaptchaNode reCaptchaV3", () => {
+  const captcha = (v3: boolean): JourneyConfigInput => ({
+    realm: "alpha",
+    trees: {
+      invented: {
+        entryNodeId: "c",
+        nodes: {
+          c: { nodeType: "product-CaptchaNode", connections: { true: "t", false: "f" } },
+          t: { nodeType: "ScriptedDecisionNode", connections: {} },
+          f: { nodeType: "ScriptedDecisionNode", connections: {} },
+        },
+      },
+    },
+    nodes: {
+      "product-CaptchaNode": {
+        c: { siteKey: "invented-site", apiUri: "https://captcha.example.com/api.js", divClass: "invented-div", disableSubmission: false, reCaptchaV3: v3, scoreThreshold: "0.5" },
+      },
+      ScriptedDecisionNode: { t: { script: "t", outcomes: [] }, f: { script: "f", outcomes: [] } },
+    },
+    scripts: { t: script(report("true")), f: script(report("false")) },
+  });
+  type Wire = { callbacks: { output: { name: string; value: JsonValue }[]; input: { value: JsonValue }[] }[] };
+  const answer = (body: JsonValue, token: string): JsonValue => {
+    const copy = structuredClone(body) as Wire;
+    (copy.callbacks[0]!.input[0] as { value: JsonValue }).value = token;
+    return copy as unknown as JsonValue;
+  };
+  it.each([true, false])("sends reCaptchaV3 %s as configured, and the rest of the node's fields", async (v3) => {
+    const first = await run(make(captcha(v3)), "invented");
+    const fields = Object.fromEntries((first.body as Wire).callbacks[0]!.output.map((f) => [f.name, f.value]));
+    // Discriminating: the callback used to say false whatever the node held.
+    expect(fields).toEqual({
+      recaptchaSiteKey: "invented-site",
+      captchaApiUri: "https://captcha.example.com/api.js",
+      captchaDivClass: "invented-div",
+      reCaptchaV3: v3,
+      disableSubmission: false,
+    });
+  });
+  it.each([true, false])("an empty token fails the journey 401 Login failure (reCaptchaV3 %s); a token the provider rejects takes false", async (v3) => {
+    const emu = make(captcha(v3), { declaredOutcomes: { c: "false" } });
+    const first = await run(emu, "invented");
+    expect(await run(emu, "invented", { body: answer(first.body, "") })).toMatchObject({
+      status: 401,
+      body: { message: "Login failure" },
+    });
+    // Control: a non-empty token reaches the declared verdict.
+    expect(dump((await run(emu, "invented", { body: answer(first.body, "any-token") })).body).branch).toBe("false");
+  });
+});
