@@ -48,6 +48,15 @@ export type AuthenticateRequest = {
   readonly rawBody?: string;
   readonly headers?: Readonly<Record<string, string[]>>;
   readonly cookies?: Readonly<Record<string, string>>;
+  /**
+   * Only the log records read these four. `url` is the full URL as the caller sent it, and is
+   * what `http.request.path` carries; `transactionId` stands for the `x-forgerock-transactionid`
+   * header; this field wins over the header.
+   */
+  readonly url?: string;
+  readonly clientIp?: string;
+  readonly userAgent?: string;
+  readonly transactionId?: string;
 };
 export type AuthenticateResult = RestResult;
 /**

@@ -2905,3 +2905,34 @@ non-array `outcomes` configuration, Patch patchAsObject/ignoredFields, Page
 headers/descriptions and nested Pages remain fatal missing behavior when
 reached. Policy evaluation is not copied
 into the journey layer: managed writes use the existing IDM policy seam.
+
+### Journey log records (`logSink`)
+
+`JourneyOptions.logSink` makes the journey emulator write the AIC log records an
+`authenticate` request produces into a `LogSink` (`src/logs/record.ts`), in a
+tenant's order. Without a sink nothing is emitted and nothing else changes.
+`now` (epoch nanoseconds, default real time) is injected, so a virtual clock
+drives the timestamps; `origin` spells `http.request.path` when the request has
+no `url`; `latencyMs` overrides the measured `response.elapsedTime`. The request
+may carry `url`, `clientIp`, `userAgent` and `transactionId` (or the
+`x-forgerock-transactionid` header, which becomes `<id>/0`).
+
+Per request, in order: `am-access` `AM-ACCESS-ATTEMPT`; each script's `logger.*`
+lines (`am-core`, `trace` never, `debug` and up as the sandbox emits them, logger
+`scripts.AUTHENTICATION_TREE_DECISION_NODE.<script id>.(<script name>)`); one
+`am-authentication` `AM-NODE-LOGIN-COMPLETED` per node that completed
+(`nodeOutcome` is always a string); `AM-TREE-LOGIN-COMPLETED` when the tree ends;
+the am-core 401 WARN; `am-access` `AM-ACCESS-OUTCOME`. Every record of one
+journey, across its round trips, carries one `trackingIds[0]`. A script that
+throws writes no node record and the measured am-core ERROR and three WARN
+lines; an abandoned journey simply stops. A decision script may assign a
+top-level `auditEntryDetail` (a string or an object): it lands in that node's
+record as `nodeExtraLogging.auditInfo` (keys sorted, `undefined` as `null`;
+`null` or unassigned writes nothing; an array, number or boolean fails the tree
+with 401; a throw writes nothing). `nodeState.putShared("auditEntryDetail", ...)`
+does not count. Shapes: `docs/api/08-logs.md` ("Script logger lines, and the
+node completion record") and `docs/api/25-journey-runtime.md` ("What a script can
+put in the audit log"). The successful end `AM-TREE-LOGIN-COMPLETED` was never
+measured (the sandbox answers 500); it is written in one function,
+`RequestLog.treeSucceeded` in `src/journey/emit.ts`, so a measurement changes one
+place. Every other unmeasured choice is marked `UNMEASURED` in that file.
