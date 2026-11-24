@@ -18,6 +18,7 @@ const SUPPORTED = [
   "ReCaptchaCallback",
   "ConfirmationCallback",
   "ChoiceCallback",
+  "ValidatedCreatePasswordCallback",
 ];
 export function toWire(
   callbacks: CallbackEffect[],
@@ -26,7 +27,7 @@ export function toWire(
   return callbacks.map((callback, index) => {
     if (!SUPPORTED.includes(callback.type)) absent(`callback wire type: ${callback.type}`);
     const output = Object.entries(callback)
-      .filter(([key]) => key !== "type")
+      .filter(([key]) => key !== "type" && !(callback.type === "NameCallback" && key === "value"))
       .map(([name, value]) => ({ name, value }));
     const out: WireCallback = { type: callback.type, output };
     if (callback.type !== "TextOutputCallback")
@@ -34,7 +35,7 @@ export function toWire(
         {
           name: `IDToken${index + 1}`,
           value:
-            callback.type === "StringAttributeInputCallback"
+            callback.type === "StringAttributeInputCallback" || callback.type === "NameCallback"
               ? (callback.value ?? "")
               : callback.type === "HiddenValueCallback"
                 ? (callback.id ?? "")
@@ -49,7 +50,10 @@ export function toWire(
                         : "",
         },
       ];
-    if (callback.type === "StringAttributeInputCallback")
+    if (
+      callback.type === "StringAttributeInputCallback" ||
+      callback.type === "ValidatedCreatePasswordCallback"
+    )
       out.input?.push({ name: `IDToken${index + 1}validateOnly`, value: false });
     return out;
   });
@@ -90,13 +94,16 @@ export function fromWire(
       callback.input[0].value !== undefined
     )
       effect.value = callback.input[0].value;
-    if (callback.type === "StringAttributeInputCallback") {
+    if (
+      callback.type === "StringAttributeInputCallback" ||
+      callback.type === "ValidatedCreatePasswordCallback"
+    ) {
       if (
         !Array.isArray(callback.input) ||
         !isDocument(callback.input[1]) ||
         typeof callback.input[1].value !== "boolean"
       )
-        absent("StringAttributeInputCallback validateOnly input shape");
+        absent(`${callback.type} validateOnly input shape`);
       effect.validateOnly = callback.input[1].value;
     }
     return effect;

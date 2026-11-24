@@ -2757,8 +2757,9 @@ IDM. Callbacks use the tenant `{authId, callbacks}` output/input envelopes;
 `aic/callbacks.ts` fills their inputs unchanged. Queued callbacks beat `goTo`;
 the node runs again on resume. Shared state survives, transient survives
 callback-free edges and is dropped at a round trip. Inner trees share shared
-state, isolate their transient state and restore outer transient state. Inner
-exceptions, callbacks and nested inner trees remain missing. Unsupported bindings, session-property actions, `noSession`, unsupported tree
+state, isolate their transient state and restore outer transient state. Callbacks
+inside an inner tree resume there and inner trees nest; a Page inside an inner
+tree and inner exceptions remain missing. Unsupported bindings, session-property actions, `noSession`, unsupported tree
 flags and unmocked HTTP are fatal missing behavior, even if script catches or
 `finally` tries to hide the failure. So is every `rhino-local:` diagnostic the
 binding runtime raises for behaviour it does not model (an argument count whose
@@ -2794,8 +2795,10 @@ such header, a string or top-level non-object body, `\r`/`\b`/`\f`, a C1
 control, a lone low surrogate, a
 fraction or an integer past 1e6, or a number the script engine holds as a Java
 Integer (written as an integer, which is measured for `s.length`, `indexOf` and
-`size()` results and assumed for a `JSON.parse` result). A `form` request is
-missing, because its body is not the JSON text. `objectAttributes` that a node
+`size()` results and assumed for a `JSON.parse` result). A `form` request goes out
+urlencoded as Java's `URLEncoder` writes it, with the content type AIC sets, and the
+mock's third argument carries it as `contentType` (docs/api/12 §6); a
+non-string value is missing. `objectAttributes` that a node
 wrote, or that crossed a callback round trip, reaches the next script as a Java
 map (`get`/`put` work); its printed form is measured, the methods are inferred
 and labelled assumed.
@@ -2951,19 +2954,28 @@ the `inputs` read restriction, and `outputs` (also unrestrictive on the tenant).
 The OTP expiry boundary, cookie expiry and `idleTimeout`, and `ValidatedPasswordNode`
 or Page children for the new nodes are unmeasured or unsupported.
 
-Gaps in this set: Captcha and Terms and Conditions are not accepted as Page
-children, and the persistent cookie's `secretLabelIdentifier` signing, claims
+An Attribute Collector accepts a slash path (`preferences/otp`): the schema is
+walked a segment at a time, the callback is named by the path and the value is
+stored nested. Only a string property is built, and it is taken from the
+measured boolean case, so the run says so.
+
+Captcha (as the last child) and Terms and Conditions are accepted as Page
+children, a Page sends its `pageHeader` and `pageDescription` as `header` and
+`description`, and a Page whose children queue no callbacks passes through.
+
+Gaps in this set: the persistent cookie's `secretLabelIdentifier` signing, claims
 and `idleTimeout` are not modelled.
 
-Attribute policy evaluation/validateOnly, validated-password validation,
-split objectAttributes passed to Create/Patch/Identify, conflicting identity
+Attribute policy evaluation/validateOnly, validated-password validation inside
+a Page or beyond the `JourneyOptions.passwordPolicy` fields (`minLength`,
+`characterSets` as `"0:<chars>"`, `minCharacterSets`), a key held as an object in both split objectAttributes maps, conflicting identity
 sources for Patch, a null identity source, `httpClient.send` with no URL, Identify with no identity value at all, Patch with neither an
 identity value nor objectAttributes, a non-object shared objectAttributes under
 AttributeCollector or Identify, `ValidatedPasswordNode` over an existing
 transient objectAttributes, a `ValidatedUsernameNode` Page child, callbacks
 posted without an authId to an entry node other than a scripted decision, a
-non-array `outcomes` configuration, Patch patchAsObject/ignoredFields, Page
-headers/descriptions and nested Pages remain fatal missing behavior when
+non-array `outcomes` configuration, Patch patchAsObject/ignoredFields and
+nested Pages remain fatal missing behavior when
 reached. Policy evaluation is not copied
 into the journey layer: managed writes use the existing IDM policy seam.
 

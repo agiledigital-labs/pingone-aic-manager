@@ -21,6 +21,10 @@ export type ScriptState = {
   parameters?: Record<string, string[]>;
   /** Buckets whose objectAttributes AM hands a script as a Java map rather than a JS object. */
   javaMaps?: { shared: boolean; transient: boolean };
+  /** LIBRARY script sources by name: what `require(name)` loads, as on the tenant. */
+  libraries?: Record<string, string>;
+  /** The environment's ESVs, as `systemEnv.getProperty` reads them. */
+  esv?: Record<string, string | null>;
 };
 
 /*
@@ -129,10 +133,9 @@ const overlay = (roots: string[], maps: { shared: boolean; transient: boolean })
     });
   })(utils, '', 0);
   [['idRepository', idRepository], ['secrets', secrets],
-    ['cacheManager', cacheManager], ['systemEnv', systemEnv]].forEach(function (pair) {
+    ['cacheManager', cacheManager]].forEach(function (pair) {
     refuse(pair[1], pair[0], []);
   });
-  require = host('refusal', 'require library resolution');
 })(__rhinoLocalJourneyHost, ${JSON.stringify(roots)}, ${JSON.stringify(MEASURED_UTILS)},
   ${JSON.stringify(maps)});
 `;
@@ -150,6 +153,12 @@ export function journeyPreamble(state: ScriptState): CasePreamble {
     requestHeaders: state.headers ?? {},
     requestCookies: state.cookies ?? {},
     requestParameters: state.parameters ?? {},
+    // An ESV the environment does not define reads as null (docs/api/12, library section).
+    esv: state.esv ?? {},
+    esvUndeclared: "absent",
+    ...(state.libraries && Object.keys(state.libraries).length
+      ? { libraries: state.libraries }
+      : {}),
     ...(state.existingSession ? { existingSession: state.existingSession } : {}),
     bindings: {
       journey: {

@@ -33,6 +33,7 @@ import type {
   HttpMock,
   NodeDocument,
   ScriptDocument,
+  PasswordPolicy,
   SessionDelta,
   TermsAndConditions,
   TreeDocument,
@@ -73,6 +74,8 @@ export type JourneyOptions = {
   cookieName?: string;
   /** The realm's Terms and Conditions, which Accept Terms and Conditions presents. */
   termsAndConditions?: TermsAndConditions;
+  /** The realm password policy Validated Password evaluates when `validateInput` is true. */
+  passwordPolicy?: PasswordPolicy;
   maxTransitions?: number;
   timeoutMs?: number;
   /**
@@ -95,6 +98,12 @@ export type JourneyOptions = {
    * node decided and however the tree wires "false". Not an AM behaviour; absent, nothing changes.
    */
   failAt?: (node: { tree: string; nodeId: string }) => boolean;
+  /**
+   * The environment's ESVs by full name (`esv.some.name`). `systemEnv.getProperty` reads them, and
+   * so do `&{esv.…}` placeholders in the node configuration the emulator reads. A name that is
+   * not here reads as `null` in a script, as on the tenant.
+   */
+  esv?: Readonly<Record<string, string | null>>;
 };
 const OUTCOMES: Readonly<Record<string, readonly string[]>> = Object.freeze({
   UsernameCollectorNode: ["outcome"],
@@ -113,6 +122,8 @@ const PAGE_CHILDREN: readonly string[] = [
   "PasswordCollectorNode",
   "AttributeCollectorNode",
   "ValidatedPasswordNode",
+  "AcceptTermsAndConditionsNode",
+  "product-CaptchaNode",
 ];
 /**
  * A node's stored outcome vocabulary, as doc 25's listOutcomes table reports it;
@@ -151,6 +162,50 @@ export function listOutcomes(
   if (dynamic) return dynamic;
   return Object.hasOwn(OUTCOMES, type) ? OUTCOMES[type] : undefined;
 }
+/** The config's LIBRARY scripts keyed by script name, decoded; a script with no name cannot be required. */
+function libraryBodies(config: JourneyConfig): Record<string, string> {
+  const out: Record<string, string> = Object.create(null) as Record<string, string>;
+  for (const script of Object.values(config.scripts)) {
+    if (script.context !== "LIBRARY" || typeof script.name !== "string") continue;
+    if (typeof script.script !== "string") continue;
+    out[script.name] = Buffer.from(script.script, "base64").toString("utf8");
+  }
+  return out;
+}
+const PLACEHOLDER = /&\{esv\.([^}|]+)(?:\|[^}]*)?\}/g;
+/**
+ * A node's configuration with its ESV placeholders resolved from the configured ESVs. The tenant
+ * wraps some fields as `{"$string": "&{esv.x}"}` / `{"$int": ...}` (docs/api/09-journeys.md): the
+ * wrapper is read through, and a literal in one stays itself. A placeholder with no configured
+ * value is missing behaviour: guessing one would make a field read as text it never held.
+ */
+function resolveEsv(
+  config: NodeDocument,
+  esv: Readonly<Record<string, string | null>>,
+  missing: (name: string) => never,
+): NodeDocument {
+  const text = (value: string): string =>
+    value.replace(PLACEHOLDER, (_all, name: string) => {
+      const found = Object.hasOwn(esv, `esv.${name}`) ? esv[`esv.${name}`] : undefined;
+      if (typeof found !== "string") missing(`ESV placeholder not configured: esv.${name}`);
+      return found;
+    });
+  const walk = (value: unknown): unknown => {
+    if (typeof value === "string") return text(value);
+    if (Array.isArray(value)) return value.map(walk);
+    if (value === null || typeof value !== "object") return value;
+    const keys = Object.keys(value);
+    if (keys.length === 1 && keys[0] === "$string" && typeof (value as Document).$string === "string")
+      return text((value as { $string: string }).$string);
+    if (keys.length === 1 && keys[0] === "$int" && typeof (value as Document).$int === "string") {
+      const resolved = Number(text((value as { $int: string }).$int));
+      if (!Number.isInteger(resolved)) missing("ESV placeholder resolved to a non-integer");
+      return resolved;
+    }
+    return Object.fromEntries(keys.map((key) => [key, walk((value as Document)[key])]));
+  };
+  return walk(config) as NodeDocument;
+}
 function mergeSession(before: SessionDelta | undefined, next: SessionDelta): SessionDelta {
   return {
     ...before,
@@ -170,6 +225,8 @@ export class JourneyEmulator {
   private failures = new EmulationFailureJournal();
   private key = randomBytes(32);
   private snapshots = new Map<string, State>();
+  /** LIBRARY scripts by name: `require(name)` resolves a library by its script name. */
+  private readonly libraries: Record<string, string>;
   private completed = new Set<string>();
   private logs: JourneyLogs | undefined;
   constructor(
@@ -181,12 +238,13 @@ export class JourneyEmulator {
     this.config = config;
     this.runner = runner;
     this.idm = idm;
+    this.libraries = libraryBodies(config);
     const nowNs = options.now;
     this.nodes = new JourneyNodes(idm, this.evidence, (name) => this.missing(name), {
       now: nowNs ? () => Number(nowNs() / 1_000_000n) : Date.now,
       declared: (nodeId) => options.declaredOutcomes?.[nodeId],
       ...(options.termsAndConditions ? { terms: options.termsAndConditions } : {}),
-    });
+    }, options.passwordPolicy);
     for (const tree of Object.values(config.trees))
       for (const [id, node] of Object.entries(tree.nodes)) {
         if (
@@ -525,11 +583,10 @@ export class JourneyEmulator {
       const config = this.config.node(node.nodeType, frame.node);
       if (!config) this.missing(`node configuration: ${node.nodeType}/${frame.node}`);
       if (node.nodeType === "InnerTreeEvaluatorNode") {
-        if (inner) this.missing("nested inner trees");
         if (typeof config.tree !== "string") this.missing("inner tree target configuration");
         const innerTree = this.tree(config.tree);
         this.measured(
-          "inner trees share shared state and use isolated transient state; journey names follow the executing tree",
+          "inner trees share shared state and use isolated transient state; journey names follow the executing tree; callbacks inside an inner tree resume there, and inner trees nest",
         );
         state.frames.push({
           tree: config.tree,
@@ -551,7 +608,6 @@ export class JourneyEmulator {
       );
       if (result.abort) return result.abort;
       if (result.callbacks.length) {
-        if (inner) this.missing("inner tree callbacks");
         this.measured(
           "queued callbacks supersede goTo; node re-executes on resume with shared state preserved",
         );
@@ -562,7 +618,12 @@ export class JourneyEmulator {
         state.pending = callbacks;
         return {
           status: 200,
-          body: { authId: this.snapshot(state), callbacks },
+          body: {
+            authId: this.snapshot(state),
+            callbacks,
+            ...(result.header !== undefined ? { header: result.header } : {}),
+            ...(result.description !== undefined ? { description: result.description } : {}),
+          },
         };
       }
       const outcome = result.outcome;
@@ -679,6 +740,8 @@ export class JourneyEmulator {
             shared: Boolean(state.javaMap),
             transient: Boolean(frame.javaMap),
           },
+          libraries: this.libraries,
+          esv: { ...this.options.esv },
           ...(request.headers ? { headers: { ...request.headers } } : {}),
           ...(request.cookies ? { cookies: { ...request.cookies } } : {}),
           parameters: Object.fromEntries(
@@ -790,10 +853,11 @@ export class JourneyEmulator {
       });
     }
     if (EMULATED.includes(type)) {
+      const resolved = resolveEsv(config, this.options.esv ?? {}, (name) => this.missing(name));
       const before = [state.shared.objectAttributes, frame.transient.objectAttributes];
       const result = await this.nodes.run(
         type,
-        config,
+        resolved,
         state.shared,
         frame.transient,
         submitted,
@@ -815,6 +879,36 @@ export class JourneyEmulator {
     this.evidence.assumed(`declared by test: ${frame.tree}/${id} -> ${String(outcome)}`);
     return { outcome, callbacks: [] };
   }
+  /**
+   * A Page's localized `pageHeader` / `pageDescription` map as the wire string (doc 25, 2026-11-25): the
+   * `en` entry, else the only entry, an empty string meaning none. Which of several locales an
+   * Accept-Language request picks is unmeasured.
+   */
+  private pageText(
+    config: NodeDocument,
+    field: "pageHeader" | "pageDescription",
+    wire: "header" | "description",
+    request: AuthenticateRequest,
+  ): { header?: string; description?: string } {
+    const map = config[field];
+    if (map === undefined) return {};
+    if (!isDocument(map)) this.missing(`PageNode ${field} shape`);
+    const keys = Object.keys(map);
+    if (!keys.length) return {};
+    const lang = Object.keys(request.headers ?? {}).some(
+      (h) => h.toLowerCase() === "accept-language",
+    );
+    if (lang && keys.length > 1)
+      this.missing(`PageNode ${field} with several locales and Accept-Language`);
+    const key = Object.hasOwn(map, "en") ? "en" : keys.length === 1 ? keys[0] : undefined;
+    if (key === undefined) this.missing(`PageNode ${field} with several locales and no en`);
+    const value = map[key];
+    if (typeof value !== "string") this.missing(`PageNode ${field} value`);
+    this.measured(
+      "a PageNode sends pageHeader and pageDescription as header and description beside its callbacks: the en entry, else a sole entry, omitted when empty; a re-sent page repeats them",
+    );
+    return value === "" ? {} : { [wire]: value };
+  }
   private async page(
     config: NodeDocument,
     state: State,
@@ -823,12 +917,11 @@ export class JourneyEmulator {
     request: AuthenticateRequest,
     log?: RequestLog,
   ): Promise<NodeResult> {
-    if (state.frames.length > 1) this.missing("inner tree callbacks");
-    for (const field of ["pageHeader", "pageDescription"])
-      if (
-        isDocument(config[field]) ? Object.keys(config[field]).length : config[field] !== undefined
-      )
-        this.missing(`PageNode ${field}`);
+    if (state.frames.length > 1) this.missing("PageNode inside an inner tree");
+    const texts = {
+      ...this.pageText(config, "pageHeader", "header", request),
+      ...this.pageText(config, "pageDescription", "description", request),
+    };
     if (!Array.isArray(config.nodes) || !config.nodes.length)
       this.missing("PageNode child configuration");
     const previous = state.page;
@@ -877,6 +970,16 @@ export class JourneyEmulator {
           this.measured("a throw in a Page child's discovery run fails the first POST with 401");
         return result;
       }
+      if (
+        previous &&
+        child.nodeType === "product-CaptchaNode" &&
+        own.some((cb) => cb.type === "ReCaptchaCallback" && cb.value === "")
+      ) {
+        this.measured(
+          "a Page whose product-CaptchaNode child is submitted with an empty token fails with 401 Login failure",
+        );
+        return { outcome: null, callbacks: [], abort: this.error(401, "Login failure") };
+      }
       // Discovery ignores the child's Action (doc 25); whether a message set there survives is unmeasured.
       if (!previous && state.errorMessage !== message)
         this.missing("action.withErrorMessage in a PageNode discovery run");
@@ -889,7 +992,15 @@ export class JourneyEmulator {
       "PageNode children run in order with only their own callbacks; last child supplies the outcome",
     );
     if (!previous) {
-      if (!collected.length) this.missing("PageNode without callbacks");
+      if (!collected.length) {
+        // Doc 25 (2026-11-25): a page whose children queue no callbacks runs each child once and leaves
+        // by the last child's outcome, with nothing sent to the client.
+        if (outcome === null) this.missing("PageNode without callbacks and without an outcome");
+        this.measured(
+          "a PageNode whose children queue no callbacks runs them once and passes through by the last child's outcome",
+        );
+        return { outcome, callbacks: [] };
+      }
       state.page = { counts, effects: structuredClone(collected) };
       state.shared.pageNodeCallbacks = toWire(collected, (name) => this.missing(name)) as JsonValue;
       this.evidence.assumed(
@@ -901,7 +1012,7 @@ export class JourneyEmulator {
         this.measured(
           "PageNode discovery runs every scripted child once, with real effects and retained state, and ignores its goTo; submission runs it again",
         );
-      return { outcome: null, callbacks: collected };
+      return { outcome: null, callbacks: collected, ...texts };
     }
     if (collected.length) {
       // Doc 25 measured a re-send only for collectors; what a script's effects do
@@ -920,7 +1031,11 @@ export class JourneyEmulator {
           if (counts[index] !== count)
             this.missing("PageNode callback count changes on resubmission");
           retry.push(...collected.splice(0, count));
-        } else if (answered.every((cb) => cb.type === "StringAttributeInputCallback")) {
+        } else if (
+          answered.every(
+            (cb) => cb.type === "StringAttributeInputCallback" || cb.type === "NameCallback",
+          )
+        ) {
           retry.push(...answered.map((cb) => ({ ...cb })));
         } else {
           if (sent.some((cb) => cb.type !== "PasswordCallback")) firstShape = true;
@@ -940,7 +1055,7 @@ export class JourneyEmulator {
       this.measured(
         "required empty attribute re-sends the whole page with echoed values and empty failedPolicies",
       );
-      return { outcome: null, callbacks: retry };
+      return { outcome: null, callbacks: retry, ...texts };
     }
     return { outcome, callbacks: [] };
   }
@@ -1023,6 +1138,7 @@ export class JourneyEmulator {
     try {
       response = await this.options.http(url, options, {
         bodyText: wire.body ?? "",
+        ...(typeof wire.contentType === "string" ? { contentType: wire.contentType } : {}),
       });
     } catch (error) {
       throw new EmulationFailure(

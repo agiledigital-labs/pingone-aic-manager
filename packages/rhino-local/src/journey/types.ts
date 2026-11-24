@@ -106,7 +106,15 @@ export type AuthenticateResult = RestResult & {
  * with plain-ASCII strings; anything else is labelled assumed, and `form` is
  * missing.
  */
-export type HttpWire = { readonly bodyText: string };
+export type HttpWire = {
+  readonly bodyText: string;
+  /**
+   * Set when AIC chooses the Content-Type itself: a `form` request goes out as
+   * `application/x-www-form-urlencoded` whatever header the script set (docs/api/12 §6), and
+   * `bodyText` is then the encoded pairs.
+   */
+  readonly contentType?: string;
+};
 export type HttpMock = (
   url: string,
   options: { [key: string]: JsonValue },
@@ -118,3 +126,17 @@ export type HttpMock = (
       headers?: Record<string, string>;
     }>
   | { status: number; body?: JsonValue; headers?: Record<string, string> };
+
+/**
+ * The realm password policy a Validated Password node with `validateInput: true` evaluates. The
+ * tenant reads it from IDM, which the emulator does not; the shapes below are what the tenant
+ * reported for its own policy (docs/api/25, "Validated password", 2026-11-25).
+ */
+export type PasswordPolicy = {
+  /** `LENGTH_BASED` min-password-length. */
+  readonly minLength?: number;
+  /** `CHARACTER_SET` character-sets, each `"0:<characters>"`: satisfied by one character of the set. */
+  readonly characterSets?: readonly string[];
+  /** `CHARACTER_SET` min-character-sets. */
+  readonly minCharacterSets?: number;
+};

@@ -4,10 +4,10 @@ import { EmulationFailure } from "../emulation.ts";
 import { isDocument, own, setOwn } from "../idm/document.ts";
 import type { IdmEmulator } from "../idm/emulator.ts";
 import type { Evidence } from "../idm/provenance.ts";
-import type { Document, RestResult } from "../idm/types.ts";
+import type { Document, PropertyConfig, RestResult } from "../idm/types.ts";
 import type { HostCall, JsonValue } from "../protocol.ts";
 import { EXTRA_TYPES, ExtraNodes, type ExtraContext } from "./extra-nodes.ts";
-import type { AuthenticateResult, NodeDocument, SessionDelta } from "./types.ts";
+import type { AuthenticateResult, NodeDocument, PasswordPolicy, SessionDelta } from "./types.ts";
 export const EMULATED = [
   "ScriptedDecisionNode",
   "InnerTreeEvaluatorNode",
@@ -26,6 +26,9 @@ export type NodeResult = {
   session?: SessionDelta;
   outcome: string | null;
   callbacks: CallbackEffect[];
+  /** A Page's resolved `pageHeader` / `pageDescription`, sent beside its callbacks. */
+  header?: string;
+  description?: string;
   abort?: Omit<AuthenticateResult, "provenance">;
   /**
    * The script's `auditEntryDetail` (string or map), for the node's completion record. A Page's
@@ -38,29 +41,137 @@ const PRECEDENCE_SOURCE =
   "docs/api/25-journey-runtime.md (Identify Existing User precedence, 2026-11-04)";
 const BLANK_SOURCE =
   "docs/api/25-journey-runtime.md (A blank or null lookup value, and letter case, 2026-11-04)";
+/** Writes `value` at a slash path, creating the intermediate objects (a sibling path shares them). */
+function setNested(target: Document, path: string[], value: JsonValue): void {
+  const [head, ...rest] = path;
+  if (head === undefined) return;
+  if (!rest.length) return setOwn(target, head, value);
+  const existing = own(target, head);
+  const child: Document = isDocument(existing) ? existing : {};
+  setNested(child, rest, value);
+  setOwn(target, head, child);
+}
+const PASSWORD_SOURCE = "docs/api/25-journey-runtime.md (Validated password, 2026-11-25)";
 export class JourneyNodes {
   private readonly idm: IdmEmulator;
   private readonly evidence: Evidence;
   private readonly missing: (name: string) => never;
   private readonly extra: ExtraNodes;
+  private readonly passwordPolicy: PasswordPolicy | undefined;
   constructor(
     idm: IdmEmulator,
     evidence: Evidence,
     missing: (name: string) => never,
     extra: Omit<ExtraContext, "idm" | "evidence" | "missing">,
+    passwordPolicy?: PasswordPolicy,
   ) {
+    this.passwordPolicy = passwordPolicy;
     this.extra = new ExtraNodes({ idm, evidence, missing, ...extra });
     this.idm = idm;
     this.evidence = evidence;
     this.missing = missing;
   }
+  /**
+   * The attributes an identity node acts on. With both buckets holding `objectAttributes` (a
+   * Validated Password page leaves exactly that) they are overlaid key by key, transient winning:
+   * Create, Patch and Identify were each measured so on 2026-11-25 (docs/api/25, "split"), and
+   * none of them rewrites either bucket's own map. Only flat values were measured, so a key both
+   * buckets hold as objects is missing.
+   */
   private attributes(shared: Document, transient: Document): Document | undefined {
+    const both = Object.hasOwn(transient, "objectAttributes") && Object.hasOwn(shared, "objectAttributes");
     const attrs = Object.hasOwn(transient, "objectAttributes")
       ? transient.objectAttributes
       : shared.objectAttributes;
     if (attrs === undefined) return undefined;
     if (!isDocument(attrs)) this.missing("objectAttributes is not an object");
-    return attrs;
+    if (!both) return attrs;
+    const base = shared.objectAttributes;
+    if (!isDocument(base)) this.missing("objectAttributes is not an object");
+    const merged: Document = { ...base };
+    for (const [key, value] of Object.entries(attrs)) {
+      if (isDocument(value) && isDocument(base[key]))
+        this.missing("split objectAttributes sharing a nested object key");
+      setOwn(merged, key, value);
+    }
+    this.evidence.measured(
+      "identity nodes read split objectAttributes as the shared map overlaid by the transient one, key by key, and rewrite neither bucket's map",
+      "docs/api/25-journey-runtime.md (split objectAttributes, 2026-11-25)",
+    );
+    return merged;
+  }
+  /**
+   * `ValidatedPasswordNode` with `validateInput: true` (doc 25, "Validated password", 2026-11-25): one
+   * `ValidatedCreatePasswordCallback`; a password failing the policy sends it again with the failed
+   * requirements, CHARACTER_SET before LENGTH_BASED, as JSON text; a validate-only submission sends
+   * it again with `validateOnly` true and writes nothing; an accepted password writes what
+   * `validateInput: false` writes.
+   */
+  private validatedPassword(
+    transient: Document,
+    submitted: CallbackEffect[],
+  ): NodeResult {
+    const policy = this.passwordPolicy;
+    if (!policy)
+      this.missing("ValidatedPasswordNode validateInput: true needs JourneyOptions.passwordPolicy");
+    if (Object.hasOwn(transient, "objectAttributes"))
+      this.missing("ValidatedPasswordNode over existing transient objectAttributes");
+    const callback = (failed: string[], validateOnly: boolean): CallbackEffect => ({
+      type: "ValidatedCreatePasswordCallback",
+      echoOn: false,
+      policies: {
+        policyRequirements: ["VALID_TYPE"],
+        fallbackPolicies: null,
+        name: "password",
+        policies: [
+          { policyRequirements: ["VALID_TYPE"], policyId: "valid-type", params: { types: ["string"] } },
+        ],
+        conditionalPolicies: null,
+      },
+      failedPolicies: failed,
+      validateOnly,
+      prompt: "Password",
+    });
+    this.evidence.measured(
+      "ValidatedPasswordNode with validateInput true sends a ValidatedCreatePasswordCallback (echoOn false, VALID_TYPE policies, failedPolicies, validateOnly, prompt Password) with an empty input and a validateOnly input",
+      PASSWORD_SOURCE,
+    );
+    if (!submitted.length) return { outcome: null, callbacks: [callback([], false)] };
+    const [answer] = submitted;
+    if (
+      submitted.length !== 1 ||
+      answer?.type !== "ValidatedCreatePasswordCallback" ||
+      typeof answer.value !== "string" ||
+      typeof answer.validateOnly !== "boolean"
+    )
+      this.missing("ValidatedPasswordNode callback submission");
+    const value = answer.value;
+    const failed: string[] = [];
+    if (policy.characterSets?.length) {
+      if (policy.characterSets.some((set) => !set.startsWith("0:")))
+        this.missing("ValidatedPasswordNode character set with a non-zero minimum count");
+      const minimum = policy.minCharacterSets ?? policy.characterSets.length;
+      const met = policy.characterSets.filter((set) =>
+        [...set.slice(2)].some((char) => value.includes(char)),
+      ).length;
+      if (met < minimum)
+        failed.push(
+          `{ "policyRequirement": "CHARACTER_SET", "params": { "allow-unclassified-characters": true, "character-set-ranges": [  ], "character-sets": [ ${policy.characterSets.map((set) => JSON.stringify(set)).join(", ")} ], "min-character-sets": ${minimum} } }`,
+        );
+    }
+    if (policy.minLength !== undefined && [...value].length < policy.minLength)
+      failed.push(
+        `{ "policyRequirement": "LENGTH_BASED", "params": { "max-password-length": 0, "min-password-length": ${policy.minLength} } }`,
+      );
+    if (answer.validateOnly) return { outcome: null, callbacks: [callback(failed, true)] };
+    if (failed.length) return { outcome: null, callbacks: [callback(failed, false)] };
+    setOwn(transient, "password", value);
+    setOwn(transient, "objectAttributes", { password: value });
+    this.evidence.measured(
+      "ValidatedPasswordNode writes transient password and objectAttributes {password}",
+      PASSWORD_SOURCE,
+    );
+    return { outcome: "outcome", callbacks: [] };
   }
   /** Shared objectAttributes a node merges into; a non-object one is unmeasured. */
   private sharedAttributes(shared: Document, type: string): Document {
@@ -126,14 +237,16 @@ export class JourneyNodes {
     if (
       ["UsernameCollectorNode", "PasswordCollectorNode", "ValidatedPasswordNode"].includes(type)
     ) {
-      if (type === "ValidatedPasswordNode" && config.validateInput !== false)
-        this.missing("ValidatedPasswordNode validateInput: true or unspecified");
+      if (type === "ValidatedPasswordNode" && typeof config.validateInput !== "boolean")
+        this.missing("ValidatedPasswordNode validateInput unspecified");
+      const validated = type === "ValidatedPasswordNode" && config.validateInput === true;
       // Measured only with passwordAttribute "password" (scripts/experiment-journey-collectors.sh).
       if (type === "ValidatedPasswordNode" && config.passwordAttribute !== "password")
         this.missing(
           `ValidatedPasswordNode passwordAttribute: ${typeof config.passwordAttribute === "string" ? config.passwordAttribute : "unspecified"}`,
         );
       const username = type === "UsernameCollectorNode";
+      if (validated) return this.validatedPassword(transient, submitted);
       if (!submitted.length) {
         this.evidence.assumed(
           "UsernameCollectorNode prompt defaults to User Name; PasswordCollectorNode prompt defaults to Password",
@@ -210,12 +323,26 @@ export class JourneyNodes {
       if (submitted.length && submitted.length !== config.attributesToCollect.length)
         this.missing("AttributeCollectorNode callback count");
       for (const [index, attribute] of (config.attributesToCollect as string[]).entries()) {
-        const property =
-          schema.properties && Object.hasOwn(schema.properties, attribute)
-            ? schema.properties[attribute]
-            : undefined;
+        const path = attribute.split("/");
+        let property: PropertyConfig | undefined,
+          level: unknown = schema.properties;
+        for (const [depth, segment] of path.entries()) {
+          property =
+            isDocument(level) && Object.hasOwn(level, segment)
+              ? (level[segment] as PropertyConfig)
+              : undefined;
+          if (depth < path.length - 1) {
+            if (property?.type !== "object")
+              this.missing(`AttributeCollectorNode schema: ${attribute}`);
+            level = property.properties;
+          }
+        }
         if (!property || property.type !== "string" || typeof property.title !== "string")
           this.missing(`AttributeCollectorNode string schema title: ${attribute}`);
+        if (path.length > 1)
+          this.evidence.assumed(
+            "AttributeCollectorNode treats a slash-path string attribute like a flat one; the path walk and nested storage were measured with a boolean property",
+          );
         const cb = submitted[index];
         if (
           cb &&
@@ -226,7 +353,7 @@ export class JourneyNodes {
           this.missing("AttributeCollectorNode callback submission");
         if (cb?.validateOnly === true) this.missing("AttributeCollectorNode validateOnly");
         const answer = cb?.value ?? "";
-        setOwn(attrs, attribute, answer);
+        setNested(attrs, path, answer);
         if (config.required === true && answer === "") invalid = true;
         else if (cb && answer === "")
           this.evidence.measured(
@@ -250,7 +377,14 @@ export class JourneyNodes {
       );
       if (!submitted.length || invalid) return { outcome: null, callbacks };
       const previous = this.sharedAttributes(shared, type);
-      setOwn(shared, "objectAttributes", { ...previous, ...attrs });
+      // Measured: the collected keys come out in alphabetical order whatever the collection order.
+      const ordered: Document = {};
+      for (const key of Object.keys(attrs).sort()) setOwn(ordered, key, attrs[key] as JsonValue);
+      this.evidence.measured(
+        "AttributeCollectorNode stores a slash path as nested objectAttributes and orders the collected top-level keys alphabetically",
+        "docs/api/25-journey-runtime.md (Attribute Collector slash paths, 2026-11-25)",
+      );
+      setOwn(shared, "objectAttributes", { ...previous, ...ordered });
       this.evidence.assumed(
         "AttributeCollectorNode merges collected attributes into existing shared objectAttributes",
       );
@@ -264,8 +398,6 @@ export class JourneyNodes {
     const resource =
       typeof config.identityResource === "string" ? config.identityResource : defaultResource;
     if (type === "CreateObjectNode") {
-      if (Object.hasOwn(shared, "objectAttributes") && Object.hasOwn(transient, "objectAttributes"))
-        this.missing("CreateObjectNode split objectAttributes across shared and transient");
       if (!attrs) this.missing("CreateObjectNode missing objectAttributes");
       const result = await this.call("create", [resource, null, attrs]);
       this.evidence.measured(
@@ -283,9 +415,6 @@ export class JourneyNodes {
     }
     if (!["IdentifyExistingUserNode", "PatchObjectNode"].includes(type))
       this.missing(`node type: ${type}`);
-    // Doc 25 measured every identity node with objectAttributes in one bucket only.
-    if (Object.hasOwn(shared, "objectAttributes") && Object.hasOwn(transient, "objectAttributes"))
-      this.missing(`${type} split objectAttributes across shared and transient`);
     if (type === "PatchObjectNode") {
       if (config.patchAsObject !== false)
         this.missing("PatchObjectNode patchAsObject: true or unspecified");

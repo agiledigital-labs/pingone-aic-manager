@@ -518,14 +518,14 @@ it.each(["validateOnly", "policy", "password"])(
     const input = flow(
       type,
       variant === "password"
-        ? { validateInput: true }
+        ? {}
         : { attributesToCollect: ["sn"], validateInputs: variant !== "validateOnly" },
       "",
     );
     const emu = make(input, {}, storage());
     const cause =
       variant === "password"
-        ? "ValidatedPasswordNode validateInput: true or unspecified"
+        ? "ValidatedPasswordNode validateInput unspecified"
         : variant === "policy"
           ? "AttributeCollectorNode policy evaluation; supply the IDM policy seam for managed writes"
           : "AttributeCollectorNode validateOnly";
@@ -1005,26 +1005,6 @@ it.each(["PatchObjectNode"])("conflicting identity sources are missing: %s", asy
     ),
   ).toMatchObject({ status: 501, emulation: { missing: [cause] } });
 });
-it.each(["CreateObjectNode", "PatchObjectNode", "IdentifyExistingUserNode"])(
-  "split objectAttributes is missing: %s",
-  async (type) => {
-    const cause = `${type} split objectAttributes across shared and transient`;
-    expectEmulationFailure(cause);
-    expect(
-      await request(
-        make(
-          flow(
-            type,
-            { patchAsObject: false },
-            "nodeState.putShared('objectAttributes',{userName:'invented'});nodeState.putTransient('objectAttributes',{password:'secret'});",
-          ),
-          {},
-          storage(),
-        ),
-      ),
-    ).toMatchObject({ status: 501, emulation: { missing: [cause] } });
-  },
-);
 it("Patch patchAsObject is missing", async () => {
   const cause = "PatchObjectNode patchAsObject: true or unspecified";
   expectEmulationFailure(cause);
@@ -1180,7 +1160,7 @@ const COLLECTORS = {
     attrs: { attributesToCollect: ["givenName", "sn"], validateInputs: false, required: true },
   },
 };
-it("a re-sent Page echoes attribute values only; Name and Password go out as first sent", async () => {
+it("a re-sent Page echoes Name and attribute values; Password goes out as first sent", async () => {
   const emu = make(
     collectorPage(
       [
@@ -1202,18 +1182,16 @@ it("a re-sent Page echoes attribute values only; Name and Password go out as fir
   const sent = first.body as WirePage,
     retry = rejected.body as WirePage;
   expect(JSON.stringify(retry)).not.toContain("super-secret-pw");
-  expect(retry.callbacks[0]).toEqual(sent.callbacks[0]);
+  expect(retry.callbacks[0]).toEqual({
+    ...sent.callbacks[0],
+    input: [{ name: "IDToken1", value: "invented" }],
+  });
   expect(retry.callbacks[3]).toEqual({
     type: "PasswordCallback",
     output: [{ name: "prompt", value: "Password" }],
     input: [{ name: "IDToken4", value: "" }],
   });
   expect(retry.callbacks[1]?.output.find((field) => field.name === "value")?.value).toBe("Given");
-  expect(rejected.provenance).toContainEqual({
-    kind: "assumed",
-    behavior:
-      "a re-sent Page repeats an accepted sibling's callbacks as first sent; measured for PasswordCallback only",
-  });
   // The re-sent page is what the snapshot expects back.
   const done = await request(
     emu,

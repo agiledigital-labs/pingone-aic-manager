@@ -188,6 +188,8 @@ final class AmHostBridge extends BaseFunction {
       "docs/api/12-script-bindings-matrix.md (httpClient.send body serialization)";
   private static final String NONJSON_SOURCE =
       "docs/api/12-script-bindings-matrix.md (§5 non-JSON values in an object body, 2026-11-04)";
+  private static final String FORM_SOURCE =
+      "docs/api/12-script-bindings-matrix.md (§6 the httpClient.send form option, 2026-11-25)";
   private static final String CREATE_SOURCE =
       "docs/api/12-script-bindings-matrix.md (openidm.create content with an undefined value,"
           + " 2026-11-04)";
@@ -563,6 +565,8 @@ final class AmHostBridge extends BaseFunction {
         Object item = desc.get("value", desc);
         if (!ScriptRuntime.toBoolean(desc.get("enumerable", desc))) {
           if (hidden.contains(String.valueOf(id)) && item instanceof Function) continue;
+          // The method guard hides __noSuchMethod__ on plain objects nested in a service's data.
+          if ("__noSuchMethod__".equals(String.valueOf(id)) && item instanceof Function) continue;
           throw shape("non-enumerable property", at);
         }
         if (array) {
@@ -683,6 +687,23 @@ final class AmHostBridge extends BaseFunction {
     }
   }
 
+  /** java.net.URLEncoder with UTF-8: the measured form encoding (docs/api/12 §6). */
+  private static String formEncode(String text) {
+    return java.net.URLEncoder.encode(text, java.nio.charset.StandardCharsets.UTF_8);
+  }
+
+  private static boolean hasLoneSurrogate(String text) {
+    for (int i = 0; i < text.length(); i++) {
+      char c = text.charAt(i);
+      if (Character.isHighSurrogate(c) && i + 1 < text.length() && Character.isLowSurrogate(text.charAt(i + 1))) {
+        i++;
+      } else if (Character.isSurrogate(c)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   private final class HttpSend extends BaseFunction {
     @Override
     public Object call(Context cx, Scriptable scope, Scriptable thisObj, Object[] args) {
@@ -706,11 +727,38 @@ final class AmHostBridge extends BaseFunction {
           list.get(1) instanceof Map
               ? (Map<String, Object>) list.get(1)
               : Collections.<String, Object>emptyMap();
-      // docs/api/12: the form-encoded option was not probed, and its body is not the JSON text.
-      if (sent.containsKey("form")) throw missing("httpClient.send form body text");
       Map<String, Object> wire = new LinkedHashMap<String, Object>();
       java.util.TreeSet<String> assumed = new java.util.TreeSet<String>();
-      if (sent.containsKey("body")) {
+      if (sent.containsKey("form")) {
+        // docs/api/12 §6: a form wins over a body and over the script's Content-Type, which AIC
+        // replaces with application/x-www-form-urlencoded; every value must be a string.
+        Object form = sent.get("form");
+        if (!(form instanceof Map)) throw missing("httpClient.send form that is not an object");
+        StringBuilder text = new StringBuilder();
+        for (Map.Entry<?, ?> entry : ((Map<?, ?>) form).entrySet()) {
+          if (!(entry.getValue() instanceof CharSequence)) {
+            throw missing(
+                "httpClient.send form value that is not a string: "
+                    + entry.getKey()
+                    + " (AIC throws a catchable InternalError for a number, null, undefined or array,"
+                    + " docs/api/12 §6)");
+          }
+          if (hasLoneSurrogate(entry.getKey() + "=" + entry.getValue())) {
+            assumed.add("httpClient form text with a lone surrogate");
+          }
+          if (text.length() > 0) text.append('&');
+          text.append(formEncode(String.valueOf(entry.getKey())))
+              .append('=')
+              .append(formEncode(entry.getValue().toString()));
+        }
+        wire.put("body", text.toString());
+        wire.put("contentType", "application/x-www-form-urlencoded");
+        calls.note(
+            "measured",
+            "httpClient.send form option: a flat object of strings goes out as application/x-www-form-urlencoded (space is +, * is literal, ~ and everything else outside A-Za-z0-9 . - _ is UTF-8 percent-encoded), replacing the script's Content-Type and winning over a body",
+            FORM_SOURCE);
+        assumed.add("httpClient form pair order is the object's key order; the receiver's parse hid it");
+      } else if (sent.containsKey("body")) {
         Object body = ScriptableObject.getProperty((ScriptableObject) options, "body");
         if (body instanceof Wrapper) body = ((Wrapper) body).unwrap();
         // Every docs/api/12 body measurement sent exactly this header.

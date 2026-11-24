@@ -66,6 +66,50 @@ shared versus transient can only be told apart by whether a key survives a
 callback round trip, which is how every "shared"/"transient" cell in this file
 was decided.
 
+### Page header, no-callback pages and extra children (verified 2026-11-25)
+
+Measured on the sandbox with throwaway trees (`kdemo-g-`), none left behind.
+
+| Question | Observed | Control |
+| --- | --- | --- |
+| A page whose only child is a callback-free scripted decision | Not shown: the script ran **once** (a counter it kept read `1` at the next node) and the response was the next node's callbacks; the page left by the script's outcome | The same counter, in a page with a collector, reads 2 after submit (rows above) |
+| `pageHeader` / `pageDescription` | Sent as top-level **`header`** and **`description`** strings beside `callbacks` (after it), taken from the localized map | A page with `{}` for both sends neither |
+| Several locales, no `Accept-Language` | `{en: "E", fr: "F"}` gave `"E"`; a sole `{fr: "F"}` gave `"F"`; an empty string omitted the field | The three maps differ only in their entries |
+| A rejected page re-sent | `header` and `description` repeat on the re-sent page | — |
+| `AcceptTermsAndConditionsNode` after a collector | A `TermsAndConditionsCallback` (version `5.0` here, the realm's terms) follows the `NameCallback`; `true` leaves, `false` re-sends the page with the collector's input echoed | Same page, only the answer changes |
+| `product-CaptchaNode` as the last child | A `ReCaptchaCallback` follows the collector's callback and the page outcomes are the node's `true`/`false`; a token the provider rejects left by `false`, **an empty token fails the journey with `401 Login failure`** | Empty versus non-empty token |
+| A rejected page's `NameCallback` | Re-sent with `input[0].value` set to the submitted name and no `value` output, beside the echoed attribute callbacks (measured with a rejected required attribute and with a declined terms child) | The password callback of the same page goes out empty |
+
+### Validated password (verified 2026-11-25)
+
+`ValidatedPasswordNode` with `validateInput: true`, `passwordAttribute: "password"`, alone as a tree's entry
+node, on the sandbox; the realm's policy there is a minimum length of 8 and one character each from digits,
+upper case and lower case.
+
+| Question | Observed | Control |
+| --- | --- | --- |
+| Callback | One `ValidatedCreatePasswordCallback`, outputs in order `echoOn` false, `policies` (`{policyRequirements: ["VALID_TYPE"], fallbackPolicies: null, name: "password", policies: [{policyRequirements: ["VALID_TYPE"], policyId: "valid-type", params: {types: ["string"]}}], conditionalPolicies: null}`), `failedPolicies` `[]`, `validateOnly` false, `prompt` `"Password"`; inputs `IDToken1` `""` and `IDToken1validateOnly` false | `validateInput: false` sends a plain `PasswordCallback` (above) |
+| A password that fails | `200` with the callback sent again; `failedPolicies` holds one **JSON text** per failed requirement, e.g. `{ "policyRequirement": "LENGTH_BASED", "params": { "max-password-length": 0, "min-password-length": 8 } }` and `{ "policyRequirement": "CHARACTER_SET", "params": { "allow-unclassified-characters": true, "character-set-ranges": [  ], "character-sets": [ "0:0123456789", "0:ABCDEFGHIJKLMNOPQRSTUVWXYZ", "0:abcdefghijklmnopqrstuvwxyz" ], "min-character-sets": 3 } }`; the input stays `""` | — |
+| Which requirement fails | `abc` and the empty string: `CHARACTER_SET` then `LENGTH_BASED`; `abcdefgh1` (8 long, two sets): `CHARACTER_SET` only; `Aa1` (three sets, 3 long): `LENGTH_BASED` only; a 120-character three-set password and one with accented letters passed | Each differs from its neighbour in one requirement |
+| A passing password | The node left by `outcome`; transient `password` and transient `objectAttributes {password}`, exactly as with `validateInput: false` | — |
+| `IDToken1validateOnly` true | The callback is sent **again** with `validateOnly` true, `failedPolicies` `[]` for `Aa1Aa1Aa1` and both requirements for `abc`; the node did not leave | The same password with the flag false left |
+
+### Attribute Collector slash paths (verified 2026-11-25)
+
+`AttributeCollectorNode` with `validateInputs: false`, `required: false`, on the sandbox. That realm's schema has
+no nested string property, so the path walk and the storage were measured on `preferences/remember`, the nested
+boolean it does have.
+
+| Question | Observed | Control |
+| --- | --- | --- |
+| Schema lookup | `attributesToCollect: ["preferences/remember"]` found `properties.preferences.properties.remember` (title `Trust this device`), so the lookup walks the path one segment at a time | — |
+| Callback `name` | The path as written, `preferences/remember` | A flat attribute (`givenName`) in the same node is named `givenName` |
+| Stored value | **Nested**: shared `objectAttributes` held `{"preferences":{"remember":true}}`, with no flat `preferences/remember` key | — |
+| Key order | `["preferences/remember","givenName"]` stored `{"givenName":…,"preferences":{…}}`, and the flat `["sn","givenName"]` stored `{"givenName":…,"sn":…}`: top-level keys are **alphabetical**, not in collection order | Both orders collected the same pair the other way round |
+
+A boolean property is a `BooleanAttributeInputCallback` with a boolean `value` and `IDToken1` input; that callback
+is not built by the emulator. A **string** slash path was not measured (no such property on the sandbox).
+
 ## Inner Tree
 
 Measured 2026-11-02 with `scripts/experiment-journey-inner-tree.sh`. Outer
@@ -89,6 +133,20 @@ failure node (`fail`).
 | `journey.innerJourney()` | `true` inside, `false` in the outer tree | — |
 | `journey.mustRun()` / `identityResource()` | `false` / `managed/alpha_user` in both | — |
 | An `innerTreeOnly: true` tree invoked directly by `authIndexValue` | `400 {"code":400,"reason":"Bad Request","message":"No Configuration found"}` | The outer trees (`innerTreeOnly: false`) in the same run started normally |
+
+Callbacks and nesting (measured 2026-11-25, sandbox, `kdemo-g-` trees): outer tree (writes shared `zzOS`,
+transient `zzOT`) → inner 1 (writes `zz1S`/`zz1T`) → inner 2 (writes `zz2S`/`zz2T`, then a
+`UsernameCollectorNode`) → back up to a dump in the outer tree. Each script read the keys, `journey.name()` and
+`journey.innerJourney()`.
+
+| Question | Observed | Control |
+| --- | --- | --- |
+| A collector inside an inner tree | Its `NameCallback` is the response to the first POST; the submission resumes **in the inner tree** (`journey.name()` is the inner tree's, `innerJourney()` true) and the journey went on to finish the outer tree | The same trees with the collector removed finish in one POST |
+| Nested inner trees | Work: outer → inner 1 → inner 2 returned `true` up each level. Shared state is visible at every depth and written back up (`zz2S` seen in inner 1 and the outer tree) | — |
+| Transient at depth | Inner 2 saw neither the outer's `zzOT` nor inner 1's `zz1T`; it saw its own `zz2T` | Inner 1 saw only `zz1T`, not `zzOT` |
+| Transient restored on return, no callback in between | Inner 1 read `zz1T` again after inner 2 ended, and the outer tree read `zzOT` after inner 1 ended | The same run with a callback inside inner 2: both read `null` on return, because a callback round trip drops transient state at **every** level |
+| `journey.name()` / `innerJourney()` | The innermost executing tree's name at each level; `true` in both inner trees, `false` outside | — |
+
 
 ## Identify Existing User
 
@@ -234,7 +292,7 @@ node that reads `objectAttributes` sees one map or the other, never their
 union. (Create Object and Patch Object above read transient-only and
 shared-only maps; a split map was not fed to them.)
 
-**Not measured:** `ValidatedPasswordNode` with `validateInput: true`; whether
+**Not measured:** whether
 `IDTokenNvalidateOnly: true` suppresses the write.
 
 ## Transient state across a callback-free boundary
@@ -618,21 +676,37 @@ treeName}`, `principal` `["<name>"]`, `realm` `/alpha`, `result` `SUCCESSFUL`,
 `topic` `authentication`, `transactionId` `<tx>/0` and the same `userId`. The
 node record's `nodeType` was `AnonymousUserNode`.
 
+## Split `objectAttributes` (verified 2026-11-25)
+
+Create Object, Patch Object and Identify Existing User each read the shared
+`objectAttributes` map **overlaid** by the transient one, key by key, the
+transient value winning. Measured on the sandbox with throwaway trees:
+
+- Create wrote the union (shared keys plus transient keys) to the new record
+  and wrote no state.
+- Patch found the user from the identity attribute held in either map and
+  applied the union.
+- Identify looked up the merged value, and wrote `userName`, `_id` and
+  `username` to the **shared** map only; neither map was otherwise rewritten.
+
+**Not measured:** a key held as an object in both maps (the emulator reports it
+missing rather than guessing a deep merge).
+
 ## Not yet measured
 
 None of these was exercised; do not build on them as measured:
 
-- Create Object / Patch Object fed a **split** `objectAttributes` (part
-  shared, part transient, as a Validated Password page leaves it); Patch
-  Object with `patchAsObject: true`, or with `ignoredFields`.
-- `ValidatedPasswordNode` with `validateInput: true` (expected to emit
-  `ValidatedCreatePasswordCallback`; not observed), and the effect of
-  `IDTokenNvalidateOnly: true` on any validated callback.
-- A Page node holding a node that is not a collector or scripted decision; a
-  scripted child that calls `action.suspend()` or `withHeader` inside a page.
+- Patch Object with `patchAsObject: true`, or with `ignoredFields`.
+- `ValidatedPasswordNode` with `validateInput: true` inside a Page, or with a
+  `maxLength` or a character-set minimum count other than `0`, or the effect of
+  `IDTokenNvalidateOnly: true` on a validated attribute callback.
+- A Page node holding a node other than the collectors, a scripted decision,
+  Terms and Conditions and Captcha; a scripted child that calls
+  `action.suspend()` or `withHeader` inside a page; a `pageHeader` with
+  several locales under an `Accept-Language` request.
 - `withLockoutMessage` on an account that is actually locked out.
-- Inner Tree with `displayErrorOutcome: true` when the inner tree throws; an
-  inner tree that sends callbacks; nested inner trees.
+- Inner Tree with `displayErrorOutcome: true` when the inner tree throws; a
+  Page inside an inner tree.
 - Replaying the `authId` of a step that led to **success** (whether a second
   session is minted).
 - Message Node, Choice Collector, Polling Wait, Email Suspend and other node
