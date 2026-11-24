@@ -23,7 +23,11 @@ export EXPERIMENT_PREFIX="${EXPERIMENT_PREFIX:-kdemo-g2}"
 
 python3 - <<'PY' 2>&1 | "$REDACT" --redact
 import json
-from experiment_journey_lib import Fixture, authenticate, log, SUCCESS, hidden
+from experiment_journey_lib import BASE, Fixture, authenticate, log, SUCCESS, hidden
+
+# The tenant's own token endpoint, with a client that does not exist: the answer is an error
+# either way, and its status says how the endpoint read the body.
+TOKEN = BASE + "/am/oauth2/realms/root/realms/alpha/access_token"
 
 fx = Fixture("hdr")
 
@@ -87,6 +91,9 @@ REQUEST_CASES = {
     "body-literal-json": 'u = "https://httpbin.org/post"; o = {method: "POST", headers: {"Content-Type": "application/json"}, body: "a=1&b=x"};',
     "body-stringify-json": 'u = "https://httpbin.org/post"; o = {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({a: 1})};',
     "body-cons-special": 'u = "https://httpbin.org/post"; o = {method: "POST", headers: {"Content-Type": "application/x-www-form-urlencoded"}, body: "q=\\"" + t + "\\\\\\u00e9"};',
+    "token-literal": 'u = "TOKEN"; o = {method: "POST", headers: {"Content-Type": "application/x-www-form-urlencoded"}, body: "grant_type=client_credentials&client_id=kdemo-g2-none"};',
+    "token-cons": 'u = "TOKEN"; o = {method: "POST", headers: {"Content-Type": "application/x-www-form-urlencoded"}, body: "grant_type=client_credentials&client_id=kdemo-g2-" + t.slice(0, 0) + "none"};',
+    "token-form": 'u = "TOKEN"; o = {method: "POST", form: {grant_type: "client_credentials", client_id: "kdemo-g2-none"}};',
     "ctype-cons": 'u = "https://httpbin.org/post"; o = {method: "POST", headers: {"Content-Type": "application/x-www-form-urlencoded" + t.slice(0, 0) + ""}, body: "a=1"};',
 }
 
@@ -111,12 +118,14 @@ if (callbacks.isEmpty()) {
         while (Date.now() < until) { /* httpbin rate-limits bursts */ }
       }
       out.status = resp.status;
-      var p = JSON.parse(resp.text());
+      var p;
+      try { p = JSON.parse(resp.text()); } catch (e) { p = {}; }
       out.echoed = p.headers ? (p.headers["X-Probe"] === undefined ? "<absent>" : p.headers["X-Probe"]) : "?";
       if (p.data !== undefined) { out.data = p.data; }
       if (p.form !== undefined) { out.form = JSON.stringify(p.form); }
       if (p.headers) { out.auth = p.headers["Authorization"]; out.xabc = p.headers["X-Abc"]; out.ctype = p.headers["Content-Type"] || "<none>"; out.len = p.headers["Content-Length"] || "<none>"; }
       out.url = p.url;
+      if (p.url === undefined) { out.text = resp.text().slice(0, 200); }
     } catch (e) {
       out.sendError = String(e).slice(0, 400);
     }
@@ -129,6 +138,7 @@ if (callbacks.isEmpty()) {
 
 try:
     for name, build in {**HEADER_CASES, **REQUEST_CASES}.items():
+        build = build.replace("TOKEN", TOKEN)
         s = fx.scripted(name, SRC.replace("BUILD", build), ["true"])
         tree = fx.tree(name, s, {s: ("ScriptedDecisionNode", name, {"true": SUCCESS})})
         st, body, _ = authenticate(tree)
@@ -139,7 +149,7 @@ try:
             log("    journey error:", json.dumps(shown))
             continue
         r = json.loads(v)
-        for k in ("buildError", "typeof", "ctor", "sendError", "sentOk", "status", "echoed", "data", "form", "ctype", "len", "auth", "xabc"):
+        for k in ("buildError", "typeof", "ctor", "sendError", "sentOk", "status", "echoed", "data", "form", "ctype", "len", "auth", "xabc", "text"):
             if k in r:
                 log(f"    {k}: {r[k]}")
 finally:

@@ -800,7 +800,12 @@ Two measured consequences that were found the hard way. A header built as
 `"Bearer " + token` fails on the tenant with the error above. A urlencoded
 token-request body built by concatenation arrives as a JSON string under
 `application/json` and the token endpoint answers **400**, where the same text
-through `.toString()`, or the `form` option (§6), works; the cause is the type
+through `.toString()`, or the `form` option (§6), works. Measured against the
+sandbox's own `/am/oauth2/realms/root/realms/alpha/access_token` with a client
+that does not exist: the literal body and the `form` option both reach client
+authentication (`400 {"error":"invalid_client", ...}`), and the concatenated
+body is turned away before it (`400 {"error":"invalid_request",
+"error_description":"Invalid Content Type"}`). The cause is the type
 of the string, not the content type the script set. The script's own header is
 not what decides, which is why the failure looks like a wrong header.
 
