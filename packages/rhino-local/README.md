@@ -2942,15 +2942,16 @@ and `idleTimeout` are not modelled. The emulator's Username and Password
 collectors accept an empty answer where the tenant re-prompts (measured with a
 Page of collectors in front of `DataStoreDecisionNode`).
 
-Attribute policy evaluation/validateOnly, validated-password validation,
-a key held as an object in both split objectAttributes maps, conflicting identity
+Attribute policy evaluation/validateOnly, validated-password validation inside
+a Page or beyond the `JourneyOptions.passwordPolicy` fields (`minLength`,
+`characterSets` as `"0:<chars>"`, `minCharacterSets`), a key held as an object in both split objectAttributes maps, conflicting identity
 sources for Patch, a null identity source, `httpClient.send` with no URL, Identify with no identity value at all, Patch with neither an
 identity value nor objectAttributes, a non-object shared objectAttributes under
 AttributeCollector or Identify, `ValidatedPasswordNode` over an existing
 transient objectAttributes, a `ValidatedUsernameNode` Page child, callbacks
 posted without an authId to an entry node other than a scripted decision, a
-non-array `outcomes` configuration, Patch patchAsObject/ignoredFields, Page
-headers/descriptions and nested Pages remain fatal missing behavior when
+non-array `outcomes` configuration, Patch patchAsObject/ignoredFields and
+nested Pages remain fatal missing behavior when
 reached. Policy evaluation is not copied
 into the journey layer: managed writes use the existing IDM policy seam.
 

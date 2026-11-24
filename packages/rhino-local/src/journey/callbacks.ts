@@ -16,6 +16,7 @@ const SUPPORTED = [
   "StringAttributeInputCallback",
   "TermsAndConditionsCallback",
   "ReCaptchaCallback",
+  "ValidatedCreatePasswordCallback",
 ];
 export function toWire(
   callbacks: CallbackEffect[],
@@ -43,7 +44,10 @@ export function toWire(
                     : "",
         },
       ];
-    if (callback.type === "StringAttributeInputCallback")
+    if (
+      callback.type === "StringAttributeInputCallback" ||
+      callback.type === "ValidatedCreatePasswordCallback"
+    )
       out.input?.push({ name: `IDToken${index + 1}validateOnly`, value: false });
     return out;
   });
@@ -80,13 +84,16 @@ export function fromWire(
       callback.input[0].value !== undefined
     )
       effect.value = callback.input[0].value;
-    if (callback.type === "StringAttributeInputCallback") {
+    if (
+      callback.type === "StringAttributeInputCallback" ||
+      callback.type === "ValidatedCreatePasswordCallback"
+    ) {
       if (
         !Array.isArray(callback.input) ||
         !isDocument(callback.input[1]) ||
         typeof callback.input[1].value !== "boolean"
       )
-        absent("StringAttributeInputCallback validateOnly input shape");
+        absent(`${callback.type} validateOnly input shape`);
       effect.validateOnly = callback.input[1].value;
     }
     return effect;

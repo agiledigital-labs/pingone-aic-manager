@@ -80,6 +80,20 @@ Measured on the sandbox with throwaway trees (`kdemo-g-`), none left behind.
 | `product-CaptchaNode` as the last child | A `ReCaptchaCallback` follows the collector's callback and the page outcomes are the node's `true`/`false`; a token the provider rejects left by `false`, **an empty token fails the journey with `401 Login failure`** | Empty versus non-empty token |
 | A rejected page's `NameCallback` | Re-sent with `input[0].value` set to the submitted name and no `value` output, beside the echoed attribute callbacks (measured with a rejected required attribute and with a declined terms child) | The password callback of the same page goes out empty |
 
+### Validated password (verified 2026-11-25)
+
+`ValidatedPasswordNode` with `validateInput: true`, `passwordAttribute: "password"`, alone as a tree's entry
+node, on the sandbox; the realm's policy there is a minimum length of 8 and one character each from digits,
+upper case and lower case.
+
+| Question | Observed | Control |
+| --- | --- | --- |
+| Callback | One `ValidatedCreatePasswordCallback`, outputs in order `echoOn` false, `policies` (`{policyRequirements: ["VALID_TYPE"], fallbackPolicies: null, name: "password", policies: [{policyRequirements: ["VALID_TYPE"], policyId: "valid-type", params: {types: ["string"]}}], conditionalPolicies: null}`), `failedPolicies` `[]`, `validateOnly` false, `prompt` `"Password"`; inputs `IDToken1` `""` and `IDToken1validateOnly` false | `validateInput: false` sends a plain `PasswordCallback` (above) |
+| A password that fails | `200` with the callback sent again; `failedPolicies` holds one **JSON text** per failed requirement, e.g. `{ "policyRequirement": "LENGTH_BASED", "params": { "max-password-length": 0, "min-password-length": 8 } }` and `{ "policyRequirement": "CHARACTER_SET", "params": { "allow-unclassified-characters": true, "character-set-ranges": [  ], "character-sets": [ "0:0123456789", "0:ABCDEFGHIJKLMNOPQRSTUVWXYZ", "0:abcdefghijklmnopqrstuvwxyz" ], "min-character-sets": 3 } }`; the input stays `""` | — |
+| Which requirement fails | `abc` and the empty string: `CHARACTER_SET` then `LENGTH_BASED`; `abcdefgh1` (8 long, two sets): `CHARACTER_SET` only; `Aa1` (three sets, 3 long): `LENGTH_BASED` only; a 120-character three-set password and one with accented letters passed | Each differs from its neighbour in one requirement |
+| A passing password | The node left by `outcome`; transient `password` and transient `objectAttributes {password}`, exactly as with `validateInput: false` | — |
+| `IDToken1validateOnly` true | The callback is sent **again** with `validateOnly` true, `failedPolicies` `[]` for `Aa1Aa1Aa1` and both requirements for `abc`; the node did not leave | The same password with the flag false left |
+
 ## Inner Tree
 
 Measured 2026-11-02 with `scripts/experiment-journey-inner-tree.sh`. Outer
@@ -248,7 +262,7 @@ node that reads `objectAttributes` sees one map or the other, never their
 union. (Create Object and Patch Object above read transient-only and
 shared-only maps; a split map was not fed to them.)
 
-**Not measured:** `ValidatedPasswordNode` with `validateInput: true`; whether
+**Not measured:** whether
 `IDTokenNvalidateOnly: true` suppresses the write.
 
 ## Transient state across a callback-free boundary
@@ -526,9 +540,9 @@ missing rather than guessing a deep merge).
 None of these was exercised; do not build on them as measured:
 
 - Patch Object with `patchAsObject: true`, or with `ignoredFields`.
-- `ValidatedPasswordNode` with `validateInput: true` (expected to emit
-  `ValidatedCreatePasswordCallback`; not observed), and the effect of
-  `IDTokenNvalidateOnly: true` on any validated callback.
+- `ValidatedPasswordNode` with `validateInput: true` inside a Page, or with a
+  `maxLength` or a character-set minimum count other than `0`, or the effect of
+  `IDTokenNvalidateOnly: true` on a validated attribute callback.
 - A Page node holding a node other than the collectors, a scripted decision,
   Terms and Conditions and Captcha; a scripted child that calls
   `action.suspend()` or `withHeader` inside a page; a `pageHeader` with

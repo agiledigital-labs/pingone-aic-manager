@@ -816,3 +816,114 @@ describe("G3: product-CaptchaNode as the last page child", () => {
     expect(done.status).toBe(401);
   });
 });
+
+describe("G10: ValidatedPasswordNode with validateInput true", () => {
+  const POLICY = {
+    minLength: 8,
+    characterSets: ["0:0123456789", "0:ABCDEFGHIJKLMNOPQRSTUVWXYZ", "0:abcdefghijklmnopqrstuvwxyz"],
+    minCharacterSets: 3,
+  };
+  const vp = (options: JourneyOptions = { passwordPolicy: POLICY }) =>
+    new JourneyEmulator(
+      new JourneyConfig({
+        realm: "alpha",
+        trees: {
+          invented: {
+            entryNodeId: "vp",
+            nodes: {
+              vp: { nodeType: "ValidatedPasswordNode", connections: { outcome: "dump" } },
+              dump: { nodeType: "ScriptedDecisionNode", connections: { true: SUCCESS } },
+            },
+          },
+        },
+        nodes: {
+          ValidatedPasswordNode: { vp: { passwordAttribute: "password", validateInput: true } },
+          ScriptedDecisionNode: { dump: { script: "dump", outcomes: ["true"] } },
+        },
+        scripts: {
+          dump: decision(
+            `if (callbacks.isEmpty()) { callbacksBuilder.hiddenValueCallback("r", String(nodeState.get("password")) + "|" + JSON.stringify(nodeState.get("objectAttributes"))); } else { action.goTo("true"); }`,
+          ),
+        },
+      }),
+      runner,
+      new IdmEmulator(new IdmConfig({ sync: { mappings: [] }, managed: { objects: [] } }), runner),
+      options,
+    );
+  const submit = async (emu: JourneyEmulator, password: string, validateOnly = false) => {
+    const first = await post(emu);
+    const body = structuredClone(first.body) as {
+      callbacks: { input: { value: JsonValue }[] }[];
+    };
+    const input = body.callbacks[0]?.input;
+    if (!input?.[0] || !input[1]) throw new Error("callback input shape");
+    input[0].value = password;
+    input[1].value = validateOnly;
+    return { first, next: await post(emu, body as unknown as JsonValue) };
+  };
+  const failedOf = (body: JsonValue): string[] =>
+    JSON.parse(
+      JSON.stringify(
+        (
+          body as { callbacks: { output: { name: string; value: JsonValue }[] }[] }
+        ).callbacks[0]?.output.find((o) => o.name === "failedPolicies")?.value,
+      ),
+    ).map((raw: string) => (JSON.parse(raw) as { policyRequirement: string }).policyRequirement);
+
+  it("sends a ValidatedCreatePasswordCallback with the measured shape", async () => {
+    const first = await post(vp());
+    expect(first.body).toMatchObject({
+      callbacks: [
+        {
+          type: "ValidatedCreatePasswordCallback",
+          output: [
+            { name: "echoOn", value: false },
+            {
+              name: "policies",
+              value: { policyRequirements: ["VALID_TYPE"], name: "password" },
+            },
+            { name: "failedPolicies", value: [] },
+            { name: "validateOnly", value: false },
+            { name: "prompt", value: "Password" },
+          ],
+          input: [
+            { name: "IDToken1", value: "" },
+            { name: "IDToken1validateOnly", value: false },
+          ],
+        },
+      ],
+    });
+  });
+  // Each case differs from its neighbours in exactly the requirement it breaks.
+  it.each([
+    ["abc", ["CHARACTER_SET", "LENGTH_BASED"]],
+    ["", ["CHARACTER_SET", "LENGTH_BASED"]],
+    ["abcdefgh1", ["CHARACTER_SET"]],
+    ["Aa1", ["LENGTH_BASED"]],
+  ])("a rejected password %j sends the page again naming %j", async (password, failed) => {
+    const { next } = await submit(vp(), password);
+    expect(failedOf(next.body as JsonValue)).toEqual(failed);
+    // The rejected password is never echoed back.
+    expect(
+      (next.body as { callbacks: { input: { value: JsonValue }[] }[] }).callbacks[0]?.input[0]
+        ?.value,
+    ).toBe("");
+  });
+  it("accepts a password that meets the policy and writes transient state", async () => {
+    const { next } = await submit(vp(), "Aa1Aa1Aa1");
+    expect(hiddenOf(next.body as JsonValue)).toBe('Aa1Aa1Aa1|{"password":"Aa1Aa1Aa1"}');
+  });
+  it("a validate-only submission is sent again with validateOnly true and writes nothing", async () => {
+    const good = await submit(vp(), "Aa1Aa1Aa1", true);
+    expect(failedOf(good.next.body as JsonValue)).toEqual([]);
+    expect(JSON.stringify(good.next.body)).toContain('"name":"validateOnly","value":true');
+    const bad = await submit(vp(), "abc", true);
+    expect(failedOf(bad.next.body as JsonValue)).toEqual(["CHARACTER_SET", "LENGTH_BASED"]);
+  });
+  it("needs the realm password policy", async () => {
+    expectEmulationFailure(
+      "ValidatedPasswordNode validateInput: true needs JourneyOptions.passwordPolicy",
+    );
+    expect((await post(vp({}))).status).toBe(501);
+  });
+});

@@ -120,3 +120,17 @@ export type HttpMock = (
       headers?: Record<string, string>;
     }>
   | { status: number; body?: JsonValue; headers?: Record<string, string> };
+
+/**
+ * The realm password policy a Validated Password node with `validateInput: true` evaluates. The
+ * tenant reads it from IDM, which the emulator does not; the shapes below are what the tenant
+ * reported for its own policy (docs/api/25, "Validated password", 2026-11-25).
+ */
+export type PasswordPolicy = {
+  /** `LENGTH_BASED` min-password-length. */
+  readonly minLength?: number;
+  /** `CHARACTER_SET` character-sets, each `"0:<characters>"`: satisfied by one character of the set. */
+  readonly characterSets?: readonly string[];
+  /** `CHARACTER_SET` min-character-sets. */
+  readonly minCharacterSets?: number;
+};

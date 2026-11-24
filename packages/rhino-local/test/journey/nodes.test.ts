@@ -518,14 +518,14 @@ it.each(["validateOnly", "policy", "password"])(
     const input = flow(
       type,
       variant === "password"
-        ? { validateInput: true }
+        ? {}
         : { attributesToCollect: ["sn"], validateInputs: variant !== "validateOnly" },
       "",
     );
     const emu = make(input, {}, storage());
     const cause =
       variant === "password"
-        ? "ValidatedPasswordNode validateInput: true or unspecified"
+        ? "ValidatedPasswordNode validateInput unspecified"
         : variant === "policy"
           ? "AttributeCollectorNode policy evaluation; supply the IDM policy seam for managed writes"
           : "AttributeCollectorNode validateOnly";

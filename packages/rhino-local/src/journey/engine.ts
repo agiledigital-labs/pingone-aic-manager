@@ -26,6 +26,7 @@ import type {
   AuthenticateResult,
   HttpMock,
   NodeDocument,
+  PasswordPolicy,
   SessionDelta,
   TermsAndConditions,
   TreeDocument,
@@ -66,6 +67,8 @@ export type JourneyOptions = {
   cookieName?: string;
   /** The realm's Terms and Conditions, which Accept Terms and Conditions presents. */
   termsAndConditions?: TermsAndConditions;
+  /** The realm password policy Validated Password evaluates when `validateInput` is true. */
+  passwordPolicy?: PasswordPolicy;
   maxTransitions?: number;
   timeoutMs?: number;
   /**
@@ -227,7 +230,7 @@ export class JourneyEmulator {
       now: nowNs ? () => Number(nowNs() / 1_000_000n) : Date.now,
       declared: (nodeId) => options.declaredOutcomes?.[nodeId],
       ...(options.termsAndConditions ? { terms: options.termsAndConditions } : {}),
-    });
+    }, options.passwordPolicy);
     for (const tree of Object.values(config.trees))
       for (const [id, node] of Object.entries(tree.nodes)) {
         if (
