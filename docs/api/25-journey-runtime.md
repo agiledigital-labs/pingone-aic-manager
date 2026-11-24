@@ -403,6 +403,12 @@ with `200`). Its `AM-TREE-LOGIN-COMPLETED` has `result: "SUCCESSFUL"`,
 `nodeExtraLogging`, `principal: ["<username>"]` and
 `userId: "id=<universal id>,ou=user,o=alpha,ou=services,ou=am-config"`, where
 the universal id is the identified user's `_id`, or the anonymous user's name.
+Between the node record and the tree record the same request writes an
+`am-activity` `AM-SESSION-CREATED`: `component: "Session"`,
+`operation: "CREATE"`, `topic: "activity"`, `objectId` equal to the journey's
+`trackingIds[0]`, and `runAs` and `userId` both the DN above. The order across
+sources was ACCESS-ATTEMPT, NODE-LOGIN-COMPLETED, SESSION-CREATED,
+TREE-LOGIN-COMPLETED, ACCESS-OUTCOME; rhino-local emits the same.
 A journey that reaches Success with no identified user returns `500` with an
 empty body and was not read back.
 

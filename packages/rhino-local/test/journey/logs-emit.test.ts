@@ -117,6 +117,7 @@ it("a three node journey writes its records in the tenant's order across two rou
     "am-authentication:AM-NODE-LOGIN-COMPLETED",
     "am-core:INFO", // session hook lines, measured on a failed tree and assumed for a success
     "am-core:INFO",
+    "am-activity:AM-SESSION-CREATED",
     "am-authentication:AM-TREE-LOGIN-COMPLETED",
     "am-access:AM-ACCESS-OUTCOME",
   ]);
@@ -531,4 +532,23 @@ it("a successful tree record carries the measured principal and userId", async (
   expect(p.principal).toEqual(["user-a@example.com"]);
   expect(p.userId).toBe("id=00000000-0000-4000-8000-0000000000aa,ou=user,o=alpha,ou=services,ou=am-config");
   expect(Object.keys(info(tree[0]!)).sort()).toEqual(["authLevel", "ipAddress", "treeName"]);
+  // The session record sits between the node record and the tree record, and names the journey.
+  const events = records.filter((r) => r.source !== "am-core").map((r) => payload(r).eventName);
+  expect(events).toEqual([
+    "AM-ACCESS-ATTEMPT",
+    "AM-NODE-LOGIN-COMPLETED",
+    "AM-SESSION-CREATED",
+    "AM-TREE-LOGIN-COMPLETED",
+    "AM-ACCESS-OUTCOME",
+  ]);
+  const session = records.find((r) => payload(r).eventName === "AM-SESSION-CREATED")!;
+  expect(session.source).toBe("am-activity");
+  expect(payload(session)).toMatchObject({
+    component: "Session",
+    topic: "activity",
+    operation: "CREATE",
+    objectId: p.trackingIds[0],
+    runAs: p.userId,
+    userId: p.userId,
+  });
 });

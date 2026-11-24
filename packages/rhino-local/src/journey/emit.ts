@@ -151,8 +151,8 @@ export class RequestLog {
   }
 
   private audit(
-    source: "am-access" | "am-authentication",
-    topic: "access" | "authentication",
+    source: "am-access" | "am-activity" | "am-authentication",
+    topic: "access" | "activity" | "authentication",
     fields: Fields,
   ): void {
     this.write(source, {
@@ -385,6 +385,19 @@ export class RequestLog {
    */
   treeSucceeded(tree: string, authLevel: unknown, username: string, universalId?: string): void {
     this.sessionHook();
+    const dn = `id=${universalId ?? username},ou=user,o=${this.realm},ou=services,ou=am-config`;
+    // Measured 2026-11-25: the session's creation is an am-activity record between the last node
+    // record and the tree record; its `objectId` is the journey's tracking id, and `runAs` and
+    // `userId` name the user's DN.
+    this.audit("am-activity", "activity", {
+      component: "Session",
+      eventName: "AM-SESSION-CREATED",
+      objectId: this.trackingId(),
+      operation: "CREATE",
+      runAs: dn,
+      trackingIds: [this.trackingId()],
+      userId: dn,
+    });
     this.audit("am-authentication", "authentication", {
       entries: [
         {
@@ -399,7 +412,7 @@ export class RequestLog {
       principal: [username],
       result: "SUCCESSFUL",
       trackingIds: [this.trackingId()],
-      userId: `id=${universalId ?? username},ou=user,o=${this.realm},ou=services,ou=am-config`,
+      userId: dn,
     });
   }
 

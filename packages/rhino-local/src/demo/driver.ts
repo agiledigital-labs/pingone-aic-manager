@@ -245,7 +245,8 @@ const ENGINE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}
 /**
  * The engine numbers its record ids from a random instance uuid. Swap that
  * prefix for the journey's own, derived from the seed, so a seed fixes the
- * records. Only `_id` and `trackingIds` carry it.
+ * records. `_id`, `trackingIds` and a session record's `objectId` (which is
+ * the tracking id) carry it.
  */
 function stableIds(inner: LogSink, uuid: string): LogSink {
   const swap = (v: unknown): unknown => {
@@ -258,6 +259,7 @@ function stableIds(inner: LogSink, uuid: string): LogSink {
       if (typeof p === "string") return inner.emit(record);
       const out: Record<string, unknown> = { ...p };
       if ("_id" in out) out["_id"] = swap(out["_id"]);
+      if ("objectId" in out) out["objectId"] = swap(out["objectId"]);
       if (Array.isArray(out["trackingIds"])) out["trackingIds"] = out["trackingIds"].map(swap);
       inner.emit({ ...record, payload: out });
     },
