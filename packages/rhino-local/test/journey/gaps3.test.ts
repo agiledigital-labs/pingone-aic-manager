@@ -218,3 +218,83 @@ describe("persistent cookie", () => {
     expect((await read(emu, `${value}.extra`)).status).toBe(501);
   });
 });
+
+// ---------------------------------------------------------------------------------------------
+// ESV wrappers on a node-designer node's properties (batch 5 B5-6).
+describe("ESV wrappers on custom node properties", () => {
+  const DESIGNER = "designer-0123456789abcdef0123456789abcdef";
+  const type = {
+    outcomes: ["true", "false"],
+    script: "outcome = String(properties.toggle === true && properties.limit === 7 && properties.label === 'a-x-b');",
+    properties: {
+      toggle: { type: "BOOLEAN", required: true },
+      limit: { type: "NUMBER", required: false },
+      label: { type: "STRING", required: false },
+    },
+  };
+  const journey = (node: Record<string, unknown>, esv: Record<string, string | null> = {}) =>
+    make(
+      {
+        realm: "alpha",
+        trees: {
+          invented: {
+            entryNodeId: "n",
+            nodes: {
+              n: { nodeType: DESIGNER, connections: { true: "yes", false: "no" } },
+              yes: { nodeType: "ScriptedDecisionNode", connections: {} },
+              no: { nodeType: "ScriptedDecisionNode", connections: {} },
+            },
+          },
+        },
+        nodes: {
+          [DESIGNER]: { n: node },
+          ScriptedDecisionNode: { yes: { script: "yes", outcomes: [] }, no: { script: "no", outcomes: [] } },
+        },
+        scripts: { yes: script(report("true")), no: script(report("false")) },
+        customNodeTypes: { [DESIGNER]: type },
+      },
+      { esv },
+    );
+  const ok = { limit: { $int: "7" }, label: "a-&{esv.invented.part}-b" };
+  const esv = { "esv.invented.toggle": "true", "esv.invented.part": "x" };
+  const branch = async (emu: JourneyEmulator) => dump((await run(emu, "invented")).body).branch;
+
+  it("a $bool wrapper reads the configured ESV as a boolean", async () => {
+    expect(await branch(journey({ ...ok, toggle: { $bool: "&{esv.invented.toggle}" } }, esv))).toBe("true");
+    // Discriminating: "false" is a non-empty string, so a reader that leaves the wrapper's text as
+    // the value, or coerces it by truthiness, would still take true here.
+    const off = journey({ ...ok, toggle: { $bool: "&{esv.invented.toggle}" } }, { ...esv, "esv.invented.toggle": "false" });
+    expect(await branch(off)).toBe("false");
+  });
+
+  it("$bool follows parseBoolean: a literal in any case is true, any other text is false", async () => {
+    const take = async (text: string) => branch(journey({ ...ok, toggle: { $bool: text } }, esv));
+    expect(await take("TRUE")).toBe("true");
+    expect(await take("true")).toBe("true");
+    expect(await take("maybe")).toBe("false");
+    expect(await take("1")).toBe("false");
+  });
+
+  it("a $int wrapper on a NUMBER property reads a number; a non-integer is missing", async () => {
+    const good = journey({ toggle: { $bool: "true" }, limit: { $int: "&{esv.invented.limit}" }, label: "a-x-b" }, { "esv.invented.limit": "7" });
+    expect(await branch(good)).toBe("true");
+    expectEmulationFailure("ESV placeholder resolved to a non-integer");
+    const bad = await run(
+      journey({ toggle: { $bool: "true" }, limit: { $int: "&{esv.invented.limit}" } }, { "esv.invented.limit": "1.5" }),
+      "invented",
+    );
+    expect(bad.status).toBe(501);
+  });
+
+  it("a bare placeholder in a BOOLEAN property is missing: the tenant refuses it when the node is written", async () => {
+    expectEmulationFailure("custom node property toggle typed BOOLEAN holding a string");
+    const result = await run(journey({ ...ok, toggle: "&{esv.invented.toggle}" }, esv), "invented");
+    expect(result.status).toBe(501);
+  });
+
+  it("an unconfigured placeholder is missing, not a default", async () => {
+    expectEmulationFailure("ESV placeholder not configured: esv.invented.toggle");
+    const result = await run(journey({ ...ok, toggle: { $bool: "&{esv.invented.toggle}" } }, { "esv.invented.part": "x" }), "invented");
+    expect(result.status).toBe(501);
+  });
+});

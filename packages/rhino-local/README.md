@@ -2965,6 +2965,12 @@ empty answer. Stubs whose outcome comes from `declaredOutcomes`: push nodes,
 `PollingWaitNode`, `product-Saml2Node`, the OTP senders and a few display
 nodes.
 
+ESV placeholders in node configuration (`&{esv.…}`, bare or wrapped as
+`{"$string": …}`, `{"$int": …}` or `{"$bool": …}`) resolve from
+`JourneyOptions.esv` for the emulated node types and for custom node
+properties; `$bool` follows Java's `parseBoolean` (doc 25, "ESV placeholders in
+custom node properties"). An unconfigured ESV is `missing`.
+
 Custom Node Designer types: put the type definition in
 `JourneyConfigInput.customNodeTypes`, keyed `designer-<serviceName>`
 (`outcomes`, `errorOutcome`, `inputs`, `outputs`, `script`, `properties`). The

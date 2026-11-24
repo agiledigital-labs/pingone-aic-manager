@@ -824,6 +824,12 @@ export function customNodeSource(
       if (spec.multivalued === true) properties[name] = [];
       continue;
     }
+    // A bare placeholder in a BOOLEAN or NUMBER property is refused at write time (measured), so a
+    // value of another type than the property's was never stored: refuse rather than coerce.
+    const wanted = { BOOLEAN: "boolean", NUMBER: "number", STRING: "string" }[String(spec.type)];
+    const given = spec.multivalued === true ? undefined : typeof value;
+    if (wanted !== undefined && given !== undefined && given !== wanted)
+      missing(`custom node property ${name} typed ${String(spec.type)} holding a ${given}`);
     properties[name] = value as JsonValue;
   }
   const allowed = JSON.stringify(def.outcomes);

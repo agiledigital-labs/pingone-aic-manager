@@ -825,3 +825,28 @@ None of these was exercised; do not build on them as measured:
   tree, or with a configuration other than the one listed there.
 - Any of this in realm `bravo` or under a `noSession` / `transactionalOnly`
   tree.
+
+### ESV placeholders in custom node properties (2026-11-25)
+
+Measured with `scripts/experiment-journey-esv-placeholders.sh` (`kdemo-g3-`
+type and nodes, deleted; it reads one ESV the sandbox already holds of each
+type and creates none). A node-designer type with a BOOLEAN, a STRING and a
+NUMBER property, its instances `PUT` with a placeholder, and the script
+reporting `typeof properties.<name>`:
+
+| Instance value | Result |
+| --- | --- |
+| BOOLEAN `{"$bool": "&{esv.<bool ESV>}"}` | stored; the script sees a **boolean** equal to the ESV |
+| BOOLEAN `{"$bool": "true"}`, `"TRUE"`, `"false"` | boolean `true`, `true`, `false` |
+| BOOLEAN `{"$bool": "maybe"}` | stored; boolean **`false`** (any text but `true`, any case) |
+| NUMBER `{"$int": "&{esv.<int ESV>}"}` and `{"$int": "7"}` | stored; a **number** |
+| NUMBER `{"$int": "abc"}`, `{"$int": "1.5"}` | `PUT` refused `500` with an empty body |
+| STRING `{"$string": "&{…}"}`, bare `"&{…}"`, embedded `"a-&{…}-b"` | stored; the script sees the substituted **string** (a bool ESV reads `"true"`) |
+| BOOLEAN or NUMBER with a **bare** `"&{…}"` | `PUT` refused `400 Invalid attribute` |
+| Any placeholder naming an ESV that is not defined | `PUT` refused `400` (`Unable to evaluate the placeholder…`) |
+
+So the wrapper names the property's type (`$bool`, `$int`, `$string`) and a
+bare placeholder is only legal in a STRING property. The emulator reads all
+three wrappers in a custom node's properties and in the built-in nodes it
+emulates, from `JourneyOptions.esv`; a bare placeholder in a BOOLEAN or NUMBER
+property, and a property holding another type than it declares, are `missing`.

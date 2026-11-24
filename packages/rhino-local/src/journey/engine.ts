@@ -178,7 +178,7 @@ function libraryBodies(config: JourneyConfig): Record<string, string> {
 const PLACEHOLDER = /&\{esv\.([^}|]+)(?:\|[^}]*)?\}/g;
 /**
  * A node's configuration with its ESV placeholders resolved from the configured ESVs. The tenant
- * wraps some fields as `{"$string": "&{esv.x}"}` / `{"$int": ...}` (docs/api/09-journeys.md): the
+ * wraps some fields as `{"$string": "&{esv.x}"}` / `{"$int": ...}` / `{"$bool": ...}` (docs/api/09-journeys.md): the
  * wrapper is read through, and a literal in one stays itself. A placeholder with no configured
  * value is missing behaviour: guessing one would make a field read as text it never held.
  */
@@ -201,10 +201,14 @@ function resolveEsv(
     if (keys.length === 1 && keys[0] === "$string" && typeof (value as Document).$string === "string")
       return text((value as { $string: string }).$string);
     if (keys.length === 1 && keys[0] === "$int" && typeof (value as Document).$int === "string") {
-      const resolved = Number(text((value as { $int: string }).$int));
-      if (!Number.isInteger(resolved)) missing("ESV placeholder resolved to a non-integer");
-      return resolved;
+      const written = text((value as { $int: string }).$int).trim();
+      // The tenant refuses a non-integer at write time (500, measured), so none reaches a run.
+      if (!/^-?\d+$/.test(written)) missing("ESV placeholder resolved to a non-integer");
+      return Number(written);
     }
+    // Measured on a node-designer BOOLEAN property: Java's parseBoolean, so any text but "true" in any case is false.
+    if (keys.length === 1 && keys[0] === "$bool" && typeof (value as Document).$bool === "string")
+      return text((value as { $bool: string }).$bool).trim().toLowerCase() === "true";
     return Object.fromEntries(keys.map((key) => [key, walk((value as Document)[key])]));
   };
   return walk(config) as NodeDocument;
@@ -845,7 +849,8 @@ export class JourneyEmulator {
     if (type.startsWith("designer-")) {
       const def = this.config.customNodeTypes[type];
       if (!def) this.missing(`custom node type: ${type}`);
-      const built = customNodeSource(def, config, (name) => this.missing(name));
+      const resolved = resolveEsv(config, this.options.esv ?? {}, (name) => this.missing(name));
+      const built = customNodeSource(def, resolved, (name) => this.missing(name));
       this.evidence.measured(
         "a custom node runs its type's script with the instance's properties bound; a throw, or an outcome the type does not list, takes Script Error when the type has an error outcome, else fails the journey with 401 Login failure; a missing required property fails it with 401",
         "docs/api/25-journey-runtime.md (custom node types, 2026-11-25)",
