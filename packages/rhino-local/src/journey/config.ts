@@ -21,11 +21,13 @@ export class JourneyConfig {
   readonly trees: JourneyConfigInput["trees"];
   readonly nodes: JourneyConfigInput["nodes"];
   readonly scripts: JourneyConfigInput["scripts"];
+  readonly customNodeTypes: NonNullable<JourneyConfigInput["customNodeTypes"]>;
   constructor(input: JourneyConfigInput) {
     record(input, "input");
     if (typeof input.realm !== "string" || !/^[a-zA-Z0-9_-]+$/.test(input.realm))
       throw new TypeError("Invalid journey configuration: realm must be a simple realm name");
     for (const key of ["trees", "nodes", "scripts"] as const) record(input[key], key);
+    if (input.customNodeTypes !== undefined) record(input.customNodeTypes, "customNodeTypes");
     for (const [name, tree] of Object.entries(input.trees)) {
       record(tree, `trees/${name}`);
       record(tree.nodes, `trees/${name}/nodes`);
@@ -78,6 +80,7 @@ export class JourneyConfig {
     this.trees = snapshot.trees;
     this.nodes = snapshot.nodes;
     this.scripts = snapshot.scripts;
+    this.customNodeTypes = snapshot.customNodeTypes ?? {};
     Object.freeze(this);
   }
   tree(name: string): TreeDocument | undefined {

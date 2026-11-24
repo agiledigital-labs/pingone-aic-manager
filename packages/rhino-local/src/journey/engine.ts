@@ -20,12 +20,19 @@ import { JourneyNodes, EMULATED, type NodeResult } from "./nodes.ts";
 import { JourneyConfig } from "./config.ts";
 import { journeyPreamble } from "./script.ts";
 import { JourneyLogs, type JourneyLogOptions, type RequestLog } from "./emit.ts";
-import { EXTRA_OUTCOMES, STUB_TYPES } from "./extra-nodes.ts";
+import {
+  EXTRA_OUTCOMES,
+  STUB_TYPES,
+  customNodeSource,
+  customOutcomes,
+  extraOutcomes,
+} from "./extra-nodes.ts";
 import type {
   AuthenticateRequest,
   AuthenticateResult,
   HttpMock,
   NodeDocument,
+  ScriptDocument,
   SessionDelta,
   TermsAndConditions,
   TreeDocument,
@@ -135,6 +142,13 @@ export function listOutcomes(
     if (!child) missing(`PageNode declared outcome child configuration: ${last._id}`);
     return listOutcomes(config, last.nodeType, child, missing);
   }
+  if (type.startsWith("designer-")) {
+    const def = config.customNodeTypes[type];
+    if (!def) missing(`custom node type: ${type}`);
+    return customOutcomes(def);
+  }
+  const dynamic = extraOutcomes(type, node);
+  if (dynamic) return dynamic;
   return Object.hasOwn(OUTCOMES, type) ? OUTCOMES[type] : undefined;
 }
 function mergeSession(before: SessionDelta | undefined, next: SessionDelta): SessionDelta {
@@ -480,7 +494,9 @@ export class JourneyEmulator {
           status: 200,
           body: {
             tokenId,
-            successUrl: "/enduser/?realm=/alpha",
+            successUrl: Object.hasOwn(state.shared, "successUrl")
+              ? (state.shared.successUrl as JsonValue)
+              : "/enduser/?realm=/alpha",
             realm: "/alpha",
           },
           ...(session
@@ -591,10 +607,11 @@ export class JourneyEmulator {
     submitted: CallbackEffect[],
     request: AuthenticateRequest,
     log?: RequestLog,
+    synthetic?: ScriptDocument,
   ): Promise<NodeResult> {
     const currentTree = this.tree(frame.tree),
       inner = state.frames.length > 1;
-    for (const key of ["inputs", "outputs"]) {
+    for (const key of synthetic ? [] : ["inputs", "outputs"]) {
       const selectors = config[key];
       if (
         selectors !== undefined &&
@@ -603,7 +620,8 @@ export class JourneyEmulator {
         this.missing(`ScriptedDecisionNode ${key} filtering`);
     }
     const script =
-      typeof config.script === "string" ? this.config.script(config.script) : undefined;
+      synthetic ??
+      (typeof config.script === "string" ? this.config.script(config.script) : undefined);
     if (!script) this.missing(`script configuration: ${String(config.script)}`);
     if (script.evaluatorVersion !== "2.0")
       this.missing(`script evaluatorVersion: ${script.evaluatorVersion}`);
@@ -747,6 +765,25 @@ export class JourneyEmulator {
     if (type === "ScriptedDecisionNode")
       return this.scripted(config, state, frame, submitted, request, log);
     if (type === "PageNode") return this.page(config, state, frame, submitted, request, log);
+    if (type.startsWith("designer-")) {
+      const def = this.config.customNodeTypes[type];
+      if (!def) this.missing(`custom node type: ${type}`);
+      const built = customNodeSource(def, config, (name) => this.missing(name));
+      this.evidence.measured(
+        "a custom node runs its type's script with the instance's properties bound; a throw, or an outcome the type does not list, takes Script Error when the type has an error outcome, else fails the journey with 401 Login failure; a missing required property fails it with 401",
+        "docs/api/25-journey-runtime.md (custom node types, 2026-11-25)",
+      );
+      this.evidence.assumed(
+        "a custom node's outputs list does not restrict its writes and an undeclared outcome without an error outcome fails like a throw; unmeasured",
+      );
+      if ("abort" in built)
+        return { outcome: null, callbacks: [], abort: this.error(401, "Login failure") };
+      return this.scripted({ script: type }, state, frame, submitted, request, log, {
+        script: Buffer.from(built.source).toString("base64"),
+        evaluatorVersion: "2.0",
+        name: typeof def.displayName === "string" ? def.displayName : type,
+      });
+    }
     if (EMULATED.includes(type)) {
       const before = [state.shared.objectAttributes, frame.transient.objectAttributes];
       const result = await this.nodes.run(
@@ -757,6 +794,7 @@ export class JourneyEmulator {
         submitted,
         this.tree(frame.tree).identityResource ?? `managed/${this.config.realm}_user`,
         id,
+        request.cookies,
       );
       if (result.session) state.session = mergeSession(state.session, result.session);
       // Doc 25 probes: objectAttributes a node writes prints in Java-map form in the next script.

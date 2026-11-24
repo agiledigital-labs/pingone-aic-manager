@@ -11,6 +11,8 @@ import {
   type JourneyOptions,
 } from "../../src/journey/index.ts";
 import type { JsonValue } from "../../src/protocol.ts";
+import type { LogRecord } from "../../src/logs/record.ts";
+import type { CustomNodeType } from "../../src/journey/extra-nodes.ts";
 let runner: RhinoRunner;
 beforeAll(async () => {
   runner = await RhinoRunner.spawn();
@@ -77,7 +79,8 @@ function flow(
     `callbacksBuilder.hiddenValueCallback('state',JSON.stringify({branch:${JSON.stringify(branch)},keys:nodeState.keys().toArray?nodeState.keys().toArray().sort():null,` +
     `id:nodeState.get('_id'),username:nodeState.get('username'),otp:nodeState.get('oneTimePassword'),` +
     `ts:nodeState.get('oneTimePasswordTimestamp'),retries:nodeState.get('retries'),terms:nodeState.get('termsAccepted'),` +
-    `termsVersion:nodeState.get('termsVersion'),pass:callbacks.isEmpty()?1:2}));`;
+    `termsVersion:nodeState.get('termsVersion'),authLevel:nodeState.get('authLevel'),k1:nodeState.get('k1'),` +
+    `oa:nodeState.get('objectAttributes')?String(nodeState.get('objectAttributes')):null,kOut:nodeState.get('kdemoOut'),pass:callbacks.isEmpty()?1:2}));`;
   return {
     realm: "alpha",
     trees: {
@@ -707,4 +710,498 @@ it.each([
   expect(types(again.body)).toEqual(["NameCallback", "PasswordCallback"]);
   const ok = await request(emu, answers(again.body, ["alice", "pw-1"]));
   expect(dump(ok.body).username).toBe("alice");
+});
+
+const wire = (body: JsonValue) => (body as Wire).callbacks;
+const answersAt = (body: JsonValue, index: number, value: JsonValue): JsonValue => {
+  const copy = structuredClone(body) as { callbacks: { input: { value: JsonValue }[] }[] };
+  const input = copy.callbacks[index]?.input[0];
+  if (!input) throw new Error("no callback input");
+  input.value = value;
+  return copy as JsonValue;
+};
+
+// AnonymousUserNode / SetSuccessUrlNode (docs/api/25 "Built-in node types", 2026-11-25).
+it.each([
+  ["a configured name", { anonymousUserName: "guest-1" }, "guest-1"],
+  // Discriminating: the default is the word anonymous, not an empty or absent name.
+  ["the default name", {}, "anonymous"],
+] as const)("AnonymousUserNode writes %s as username", async (_n, cfg, name) => {
+  const result = await request(make(flow("AnonymousUserNode", cfg, "")));
+  expect(dump(result.body)).toMatchObject({ branch: "outcome", username: name });
+});
+it("a journey that ends at AnonymousUserNode succeeds with the default success URL", async () => {
+  const result = await request(
+    make(flow("AnonymousUserNode", {}, "", ["outcome"], { success: true })),
+  );
+  expect(result.status).toBe(200);
+  expect(result.body).toMatchObject({ successUrl: "/enduser/?realm=/alpha", realm: "/alpha" });
+});
+it.each([
+  [
+    "a configured URL",
+    { successUrl: "https://app.example.com/after" },
+    "https://app.example.com/after",
+  ],
+  // Discriminating: no URL configured is null in the response, not the default URL.
+  ["no URL", {}, null],
+] as const)("SetSuccessUrlNode with %s", async (_n, cfg, url) => {
+  const result = await request(
+    make(
+      flow("SetSuccessUrlNode", cfg, put({ username: "alice" }), ["outcome"], { success: true }),
+    ),
+  );
+  expect(result.status).toBe(200);
+  expect((result.body as { successUrl: unknown }).successUrl).toBe(url);
+});
+
+// SetStateNode, ModifyAuthLevelNode, AuthLevelDecisionNode.
+it("SetStateNode writes literal strings and overwrites an existing key", async () => {
+  const result = await request(
+    make(
+      flow(
+        "SetStateNode",
+        { attributes: { k1: "v1", username: "has ${username}" } },
+        put({ username: "alice" }),
+      ),
+    ),
+  );
+  // Discriminating: a templating implementation would print "has alice".
+  expect(dump(result.body)).toMatchObject({ k1: "v1", username: "has ${username}" });
+});
+it.each([
+  [5, 0, 5],
+  // Discriminating: it adds to the level already there, and a negative increment subtracts.
+  [3, 4, 7],
+  [-2, 0, -2],
+] as const)("ModifyAuthLevelNode increment %i over %i", async (inc, from, to) => {
+  const result = await request(
+    make(
+      flow(
+        "ModifyAuthLevelNode",
+        { authLevelIncrement: inc },
+        `nodeState.putShared('authLevel',${from});`,
+      ),
+    ),
+  );
+  expect(dump(result.body)).toMatchObject({ branch: "outcome", authLevel: to });
+});
+it.each([
+  [0, 0, "true"],
+  [5, 5, "true"], // at the requirement: true (not strictly greater)
+  [5, 4, "false"],
+  [5, 6, "true"],
+  [1, 0, "false"],
+  [0, -1, "false"],
+  [-1, -1, "true"],
+  [-1, -2, "false"],
+] as const)("AuthLevelDecisionNode requirement %i, level %i is %s", async (req, level, branch) => {
+  const result = await request(
+    make(
+      flow(
+        "AuthLevelDecisionNode",
+        { authLevelRequirement: req },
+        `nodeState.putShared('authLevel',${level});`,
+        ["true", "false"],
+      ),
+    ),
+  );
+  expect(dump(result.body).branch).toBe(branch);
+});
+
+// MessageNode.
+it("MessageNode sends the text and a Yes/No confirmation, and answer 0 is true", async () => {
+  const emu = make(
+    flow(
+      "MessageNode",
+      { message: { en: "Hello" }, messageYes: { en: "Go" }, messageNo: { en: "Stop" } },
+      "",
+      ["true", "false"],
+    ),
+  );
+  const first = await request(emu);
+  expect(wire(first.body)).toEqual([
+    {
+      type: "TextOutputCallback",
+      output: [
+        { name: "message", value: "Hello" },
+        { name: "messageType", value: "0" },
+      ],
+    },
+    {
+      type: "ConfirmationCallback",
+      output: [
+        { name: "prompt", value: "" },
+        { name: "messageType", value: 0 },
+        { name: "options", value: ["Go", "Stop"] },
+        { name: "optionType", value: -1 },
+        { name: "defaultOption", value: 1 },
+      ],
+      input: [{ name: "IDToken2", value: 0 }],
+    },
+  ]);
+  const yes = await request(emu, answersAt(first.body, 1, 0));
+  expect(dump(yes.body).branch).toBe("true");
+});
+it.each([
+  [1, "false"],
+  // Discriminating: any index but 0 is the negative answer, and the string "0" is yes.
+  [7, "false"],
+  ["0", "true"],
+] as const)("MessageNode answer %s takes %s", async (value, branch) => {
+  const emu = make(flow("MessageNode", {}, "", ["true", "false"]));
+  const first = await request(emu);
+  expect(JSON.stringify(wire(first.body))).toContain('"Default message"');
+  const next = await request(emu, answersAt(first.body, 1, value));
+  expect(dump(next.body).branch).toBe(branch);
+});
+
+// ChoiceCollectorNode.
+const CHOICES = { choices: ["red", "green", "blue"], defaultChoice: "green", prompt: "Pick one" };
+it("ChoiceCollectorNode sends the choices with the default's index", async () => {
+  const first = await request(
+    make(flow("ChoiceCollectorNode", CHOICES, "", ["red", "green", "blue"])),
+  );
+  expect(wire(first.body)).toEqual([
+    {
+      type: "ChoiceCallback",
+      output: [
+        { name: "prompt", value: "Pick one" },
+        { name: "choices", value: ["red", "green", "blue"] },
+        { name: "defaultChoice", value: 1 },
+      ],
+      input: [{ name: "IDToken1", value: 1 }],
+    },
+  ]);
+});
+it.each([
+  [0, "red"],
+  [2, "blue"],
+  ["1", "green"], // the index may arrive as a string
+] as const)("ChoiceCollectorNode answer %s takes %s", async (value, branch) => {
+  const emu = make(flow("ChoiceCollectorNode", CHOICES, "", ["red", "green", "blue"]));
+  const first = await request(emu);
+  expect(dump((await request(emu, answerWith(first.body, value))).body).branch).toBe(branch);
+});
+it.each([3, -1, "x"] as const)("ChoiceCollectorNode answer %s fails with 401", async (value) => {
+  const emu = make(flow("ChoiceCollectorNode", CHOICES, "", ["red", "green", "blue"]));
+  const first = await request(emu);
+  expect(await request(emu, answerWith(first.body, value))).toMatchObject({ status: 401 });
+});
+it("ChoiceCollectorNode: a default that is not a choice is index 0, and no prompt is a 401", async () => {
+  const stray = await request(
+    make(
+      flow("ChoiceCollectorNode", { ...CHOICES, defaultChoice: "zzz" }, "", [
+        "red",
+        "green",
+        "blue",
+      ]),
+    ),
+  );
+  expect(JSON.stringify(wire(stray.body))).toContain('{"name":"defaultChoice","value":0}');
+  const { prompt: _p, ...noPrompt } = CHOICES;
+  const none = await request(
+    make(flow("ChoiceCollectorNode", noPrompt, "", ["red", "green", "blue"])),
+  );
+  expect(none).toMatchObject({ status: 401, body: LOGIN_FAILURE });
+});
+
+// ValidatedUsernameNode (validateInput: false only).
+const VU = { usernameAttribute: "userName", validateInput: false, autocompleteValues: [] };
+it("ValidatedUsernameNode (no validation) writes username and objectAttributes.userName", async () => {
+  const emu = make(flow("ValidatedUsernameNode", VU, ""));
+  const first = await request(emu);
+  expect(wire(first.body).map((cb) => cb.type)).toEqual(["NameCallback"]);
+  const next = await request(emu, answerWith(first.body, "ab"));
+  expect(dump(next.body)).toMatchObject({ branch: "outcome", username: "ab" });
+  expect(String(dump(next.body).oa)).toContain("ab");
+});
+it("ValidatedUsernameNode (no validation) takes an empty answer and writes nothing", async () => {
+  // Discriminating: unlike UsernameCollectorNode, which re-sends its callback.
+  const emu = make(flow("ValidatedUsernameNode", VU, ""));
+  const first = await request(emu);
+  const next = await request(emu, answerWith(first.body, ""));
+  expect(dump(next.body)).toMatchObject({ branch: "outcome", username: null, oa: null });
+});
+it("ValidatedUsernameNode with validation is missing unless its outcome is declared", async () => {
+  const cause =
+    "ValidatedUsernameNode validateInput: true; declare its outcome in JourneyOptions.declaredOutcomes";
+  expectEmulationFailure(cause);
+  const input = flow("ValidatedUsernameNode", { ...VU, validateInput: true }, "");
+  expect(await request(make(input))).toMatchObject({
+    status: 501,
+    emulation: { missing: [cause] },
+  });
+  const declared = make(input, { declaredOutcomes: { node: "outcome" } });
+  expect(dump((await request(declared)).body).branch).toBe("outcome");
+});
+
+// OneTimePasswordCollectorDecisionNode.
+const otpSeed = (otp: string | null, agoSeconds: number | null) =>
+  (otp === null ? "" : `nodeState.putShared('oneTimePassword','${otp}');`) +
+  (agoSeconds === null
+    ? ""
+    : `nodeState.putShared('oneTimePasswordTimestamp',Math.floor(new Date().getTime()/1000)-${agoSeconds});`);
+it.each([
+  ["the right password", "123456", 10, "123456", "true"],
+  ["a wrong password", "123456", 10, "654321", "false"],
+  // Discriminating: leading zeros are significant, so a number comparison would call this right.
+  ["a password with its leading zero dropped", "012345", 10, "12345", "false"],
+  ["an expired password", "123456", 400, "123456", "false"],
+  ["a password still inside the window", "123456", 290, "123456", "true"],
+  ["no password in state", null, 10, "123456", "false"],
+  ["no timestamp in state", "123456", null, "123456", "false"],
+] as const)("OneTimePasswordCollectorDecisionNode: %s", async (_n, otp, ago, answer, branch) => {
+  const emu = make(
+    flow("OneTimePasswordCollectorDecisionNode", { passwordExpiryTime: 5 }, otpSeed(otp, ago), [
+      "true",
+      "false",
+    ]),
+  );
+  const first = await request(emu);
+  expect(wire(first.body)).toEqual([
+    {
+      type: "PasswordCallback",
+      output: [{ name: "prompt", value: "One Time Password" }],
+      input: [{ name: "IDToken1", value: "" }],
+    },
+  ]);
+  expect(dump((await request(emu, answerWith(first.body, answer))).body).branch).toBe(branch);
+});
+it("OneTimePasswordCollectorDecisionNode re-sends on an empty answer and honours a one minute window", async () => {
+  const emu = make(
+    flow("OneTimePasswordCollectorDecisionNode", { passwordExpiryTime: 1 }, otpSeed("123456", 90), [
+      "true",
+      "false",
+    ]),
+  );
+  const first = await request(emu);
+  const empty = await request(emu, answerWith(first.body, ""));
+  expect(wire(empty.body).map((cb) => cb.type)).toEqual(["PasswordCallback"]);
+  // 90 s old against a 1 minute window: expired. (A 5 minute window accepts it, above.)
+  expect(dump((await request(emu, answerWith(empty.body, "123456"))).body).branch).toBe("false");
+});
+
+// PersistentCookieDecisionNode, reading the cookie SetPersistentCookieNode issued.
+const COOKIE_KEY = Buffer.from("invented-persistent-key-0123456789").toString("base64");
+const COOKIE = { persistentCookieName: "inventedCookie", hmacSigningKey: COOKIE_KEY, maxLife: 3 };
+function cookieJourney(name: string, idm: IdmEmulator) {
+  const report = (branch: string) =>
+    `callbacksBuilder.hiddenValueCallback('state',JSON.stringify({branch:'${branch}',username:nodeState.get('username')}));`;
+  const emu = new JourneyEmulator(
+    new JourneyConfig({
+      realm: "alpha",
+      trees: {
+        setter: {
+          entryNodeId: "seed",
+          nodes: {
+            seed: { nodeType: "ScriptedDecisionNode", connections: { next: "set" } },
+            set: { nodeType: "SetPersistentCookieNode", connections: { outcome: SUCCESS } },
+          },
+        },
+        reader: {
+          entryNodeId: "read",
+          identityResource: "managed/alpha_user",
+          nodes: {
+            read: {
+              nodeType: "PersistentCookieDecisionNode",
+              connections: { true: "yes", false: "no" },
+            },
+            yes: { nodeType: "ScriptedDecisionNode", connections: {} },
+            no: { nodeType: "ScriptedDecisionNode", connections: {} },
+          },
+        },
+      },
+      nodes: {
+        ScriptedDecisionNode: {
+          seed: { script: "seed", outcomes: ["next"] },
+          yes: { script: "yes", outcomes: [] },
+          no: { script: "no", outcomes: [] },
+        },
+        SetPersistentCookieNode: { set: COOKIE },
+        PersistentCookieDecisionNode: {
+          read: { ...COOKIE, idleTimeout: 5, enforceClientIp: false },
+        },
+      },
+      scripts: {
+        seed: script(`nodeState.putShared('username','${name}');action.goTo('next');`),
+        yes: script(report("true")),
+        no: script(report("false")),
+      },
+    }),
+    runner,
+    idm,
+    { cookieName: "sessionCookie" },
+  );
+  return emu;
+}
+async function issued(emu: JourneyEmulator): Promise<string> {
+  const set = await emu.request({
+    method: "POST",
+    path: "authenticate",
+    query: { authIndexType: "service", authIndexValue: "setter" },
+    body: {},
+  });
+  const cookie = set.cookies?.[0];
+  expect(cookie?.name).toBe("inventedCookie");
+  return cookie?.value ?? "";
+}
+const read = (emu: JourneyEmulator, cookies: Record<string, string>) =>
+  emu.request({
+    method: "POST",
+    path: "authenticate",
+    query: { authIndexType: "service", authIndexValue: "reader" },
+    body: {},
+    cookies,
+  });
+it("PersistentCookieDecisionNode takes true for its own cookie and false for the altered, absent and foreign", async () => {
+  const emu = cookieJourney("someone", await users());
+  const value = await issued(emu);
+  const ok = await read(emu, { inventedCookie: value });
+  expect(dump(ok.body)).toMatchObject({ branch: "true", username: "someone" });
+  // Discriminating: an implementation that only checks a cookie is present would take true for these.
+  const altered = `${value.slice(0, -3)}${value.endsWith("AAA") ? "BBB" : "AAA"}`;
+  expect(dump((await read(emu, { inventedCookie: altered })).body).branch).toBe("false");
+  expect(dump((await read(emu, {})).body).branch).toBe("false");
+  expect(dump((await read(emu, { otherCookie: value })).body).branch).toBe("false");
+  expect(await read(emu, { inventedCookie: "notajwt" })).toMatchObject({ status: 401 });
+});
+it("PersistentCookieDecisionNode writes the identity _id for a user the store holds", async () => {
+  const emu = cookieJourney("alice", await users());
+  const value = await issued(emu);
+  expect(dump((await read(emu, { inventedCookie: value })).body)).toMatchObject({
+    branch: "true",
+    username: ALICE,
+  });
+});
+
+// Stubs.
+it.each([
+  ["PushResultVerifierNode", {}, "TRUE"],
+  ["PushWaitNode", {}, "EXITED"],
+  ["PushRegistrationNode", {}, "timeoutOutcome"],
+  ["product-Saml2Node", {}, "NO_ACCOUNT"],
+  ["PollingWaitNode", { exitable: true }, "EXITED"],
+  ["PushAuthenticationSenderNode", { mandatory: false }, "SKIPPED"],
+] as const)("%s is a stub that takes its declared outcome", async (type, cfg, outcome) => {
+  const emu = make(flow(type, cfg, "", [outcome]), { declaredOutcomes: { node: outcome } });
+  expect(dump((await request(emu)).body).branch).toBe(outcome);
+});
+it("a stub with no declared outcome is missing, and its vocabulary follows its configuration", async () => {
+  const cause =
+    "PushAuthenticationSenderNode needs infrastructure the harness cannot model; declare its outcome in JourneyOptions.declaredOutcomes";
+  expectEmulationFailure(cause);
+  const input = flow("PushAuthenticationSenderNode", { mandatory: true }, "", ["SENT"]);
+  expect(await request(make(input))).toMatchObject({
+    status: 501,
+    emulation: { missing: [cause] },
+  });
+  // Discriminating: SKIPPED is not an outcome of a mandatory sender, so declaring it ends the journey.
+  const skipped = make(input, { declaredOutcomes: { node: "SKIPPED" } });
+  expect(await request(skipped)).toMatchObject({ status: 401 });
+});
+
+// Custom (node designer) node types (docs/api/25 "Custom node types", 2026-11-25).
+const DESIGNER = "designer-0123456789abcdef0123456789abcdef";
+const SIZE: CustomNodeType = {
+  displayName: "Size",
+  outcomes: ["big", "small"],
+  errorOutcome: true,
+  inputs: [],
+  outputs: [],
+  script: "outcome = properties.limit > 2 ? 'big' : 'small';",
+  properties: { limit: { type: "NUMBER", required: true, multivalued: false } },
+};
+function custom(def: CustomNodeType, node: Record<string, unknown>, branches: string[]) {
+  const input = flow(DESIGNER, node, "", branches);
+  return { ...input, customNodeTypes: { [DESIGNER]: def } };
+}
+it.each([
+  // Discriminating: the instance's property decides, so a hard-coded outcome fails one of the two.
+  [3, "big"],
+  [1, "small"],
+] as const)("a custom node with limit %i takes %s", async (limit, branch) => {
+  const result = await request(make(custom(SIZE, { limit }, ["big", "small"])));
+  expect(dump(result.body).branch).toBe(branch);
+});
+it("a custom node missing a required property fails the journey with 401", async () => {
+  expect(await request(make(custom(SIZE, {}, ["big", "small"])))).toMatchObject({ status: 401 });
+});
+const RICH: CustomNodeType = {
+  outcomes: ["a", "b"],
+  errorOutcome: true,
+  inputs: ["*"],
+  outputs: ["*"],
+  script:
+    "var u = nodeState.get('username');" +
+    "nodeState.putShared('kdemoOut', 'got:' + u + ':' + properties.label + ':' + typeof properties.flag + ':' + properties.tags.length);" +
+    "if (properties.fail) { throw 'boom'; }" +
+    "outcome = properties.pick;",
+  properties: {
+    label: { type: "STRING" },
+    flag: { type: "BOOLEAN" },
+    tags: { type: "STRING", multivalued: true },
+    fail: { type: "BOOLEAN" },
+    pick: { type: "STRING" },
+  },
+};
+it.each([
+  [
+    "properties and state",
+    { label: "L1", flag: true, tags: ["x", "y"], pick: "b" },
+    "b",
+    "got:null:L1:boolean:2",
+  ],
+  // Discriminating: absent properties are undefined, and an absent multivalued one is an empty array.
+  ["absent properties", { pick: "a" }, "a", "got:null:undefined:undefined:0"],
+  // A throw takes the error outcome and keeps what the script wrote before it.
+  ["a throw", { fail: true, pick: "a" }, "Script Error", "got:null:undefined:undefined:0"],
+  [
+    "an outcome the type does not list",
+    { pick: "zzz" },
+    "Script Error",
+    "got:null:undefined:undefined:0",
+  ],
+  ["no outcome assigned", {}, "Script Error", "got:null:undefined:undefined:0"],
+] as const)("a custom node script: %s", async (_n, node, branch, out) => {
+  const result = await request(make(custom(RICH, node, ["a", "b", "Script Error"])));
+  expect(dump(result.body)).toMatchObject({ branch, kOut: out });
+});
+it("a custom node without an error outcome fails the journey with 401 when its script throws", async () => {
+  const quiet = { ...RICH, errorOutcome: false };
+  expect(await request(make(custom(quiet, { fail: true, pick: "a" }, ["a", "b"])))).toMatchObject({
+    status: 401,
+  });
+});
+it("a custom node type the config lacks is missing", async () => {
+  const cause = `custom node type: ${DESIGNER}`;
+  expectEmulationFailure(cause);
+  const { customNodeTypes: _c, ...bare } = custom(SIZE, { limit: 3 }, ["big", "small"]);
+  expect(await request(make(bare))).toMatchObject({ status: 501, emulation: { missing: [cause] } });
+});
+
+// Node records name the type as measured: the built-in type string, and designer-<serviceName>.
+const recordsOf = (records: LogRecord[]) =>
+  records
+    .map((r) => r.payload as { eventName?: string; entries?: { info: Record<string, unknown> }[] })
+    .filter((p) => p.eventName === "AM-NODE-LOGIN-COMPLETED")
+    .map((p) => p.entries?.[0]?.info.nodeType);
+it.each([
+  ["AnonymousUserNode", {}, "AnonymousUserNode"],
+  ["SetSuccessUrlNode", {}, "SetSuccessUrlNode"],
+] as const)("the node record of %s carries its nodeType", async (type, cfg, expected) => {
+  const records: LogRecord[] = [];
+  const emu = make(flow(type, cfg, put({ username: "alice" }), ["outcome"], { success: true }), {
+    logSink: { emit: (record: LogRecord) => records.push(record) },
+  });
+  expect((await request(emu)).status).toBe(200);
+  expect(recordsOf(records)).toEqual(["ScriptedDecisionNode", expected]);
+});
+it("the node record of a custom node carries designer-<serviceName>", async () => {
+  const records: LogRecord[] = [];
+  const emu = make(custom(SIZE, { limit: 3 }, ["big", "small"]), {
+    logSink: { emit: (record: LogRecord) => records.push(record) },
+  });
+  await request(emu);
+  expect(recordsOf(records)).toContain(DESIGNER);
 });

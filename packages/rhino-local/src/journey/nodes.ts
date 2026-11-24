@@ -109,9 +109,19 @@ export class JourneyNodes {
     submitted: CallbackEffect[],
     defaultResource: string,
     id: string,
+    cookies?: Readonly<Record<string, string>>,
   ): Promise<NodeResult> {
     if (EXTRA_TYPES.includes(type))
-      return this.extra.run(type, id, config, shared, transient, submitted, defaultResource);
+      return this.extra.run(
+        type,
+        id,
+        config,
+        shared,
+        transient,
+        submitted,
+        defaultResource,
+        cookies,
+      );
     const done = (outcome: string): NodeResult => ({ outcome, callbacks: [] });
     if (
       ["UsernameCollectorNode", "PasswordCollectorNode", "ValidatedPasswordNode"].includes(type)

@@ -2931,11 +2931,29 @@ carrying the tenant's `400` text.
   the outcome must come from `declaredOutcomes` (undeclared is `missing`).
   `reCaptchaV3` is not modelled. `JourneyOptions.now` replaces the clock.
 
+Also implemented from the second batch (doc 25 sections of the same date):
+`AnonymousUserNode`, `SetSuccessUrlNode`, `SetStateNode`, `ModifyAuthLevelNode`,
+`AuthLevelDecisionNode`, `MessageNode`, `ChoiceCollectorNode` (new
+`ConfirmationCallback` and `ChoiceCallback` support),
+`ValidatedUsernameNode` (`validateInput: false` only; `true` must be declared),
+`OneTimePasswordCollectorDecisionNode` and `PersistentCookieDecisionNode`
+(reads the request cookie). Username and Password collectors re-prompt on an
+empty answer. Stubs whose outcome comes from `declaredOutcomes`: push nodes,
+`PollingWaitNode`, `product-Saml2Node`, the OTP senders and a few display
+nodes.
+
+Custom Node Designer types: put the type definition in
+`JourneyConfigInput.customNodeTypes`, keyed `designer-<serviceName>`
+(`outcomes`, `errorOutcome`, `inputs`, `outputs`, `script`, `properties`). The
+script runs with `properties`, `nodeState` and `outcome` bound; a throw or
+unlisted outcome takes `Script Error` when `errorOutcome` is set. Not modelled:
+the `inputs` read restriction, and `outputs` (also unrestrictive on the tenant).
+The OTP expiry boundary, cookie expiry and `idleTimeout`, and `ValidatedPasswordNode`
+or Page children for the new nodes are unmeasured or unsupported.
+
 Gaps in this set: Captcha and Terms and Conditions are not accepted as Page
 children, and the persistent cookie's `secretLabelIdentifier` signing, claims
-and `idleTimeout` are not modelled. The emulator's Username and Password
-collectors accept an empty answer where the tenant re-prompts (measured with a
-Page of collectors in front of `DataStoreDecisionNode`).
+and `idleTimeout` are not modelled.
 
 Attribute policy evaluation/validateOnly, validated-password validation,
 split objectAttributes passed to Create/Patch/Identify, conflicting identity
