@@ -55,6 +55,9 @@ const MEASURED_UTILS = [
 const overlay = (roots: string[], maps: { shared: boolean; transient: boolean }) => `
 (function (host, roots, measuredUtils, maps) {
   host('install', __rhinoLocal, action);
+  // Script logger lines go to the bridge, which holds them in Java: they survive a
+  // throw, which no harvest does, and the author cannot rebind them.
+  __rhinoLocal.logs = { push: host('log') };
   // Every rhino-local diagnostic goes through this global; in a journey it is
   // missing behaviour, decided in Java by which function ran, not by error text.
   __rhinoLocalFail = host('unsupported');

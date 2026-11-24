@@ -23,6 +23,11 @@ export type NodeResult = {
   outcome: string | null;
   callbacks: CallbackEffect[];
   abort?: Omit<AuthenticateResult, "provenance">;
+  /**
+   * The script's `auditEntryDetail` (string or map), for the node's completion record. A Page's
+   * scripted child's is dropped: assignment inside a Page child is unmeasured.
+   */
+  audit?: JsonValue;
 };
 const SOURCE = "docs/api/25-journey-runtime.md (measurement agent, 2026-11-02)";
 const PRECEDENCE_SOURCE =
