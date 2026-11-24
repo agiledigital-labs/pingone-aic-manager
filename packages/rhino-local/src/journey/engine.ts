@@ -216,6 +216,14 @@ function resolveEsv(
   };
   return walk(config) as NodeDocument;
 }
+/** Session properties AM owns: measured for the first four, listed by SetSessionPropertiesNode's validation for the rest. */
+const SESSION_OWNED_MEASURED = ["UserId", "AuthLevel", "Service", "Locale"];
+const SESSION_OWNED = [
+  ...SESSION_OWNED_MEASURED,
+  ...["clientType", "FullLoginURL", "Principals", "XUSRef", "amlbcookie", "loginURL", "logoutHooks"],
+  ...["HostName", "UserToken", "IndexType", "webhooks", "UserProfile", "CharSet", "authInstant"],
+  ...["Host", "AMCtxId", "OidcSid", "sun.am.UniversalIdentifier", "Organization", "Principal"],
+];
 function mergeSession(before: SessionDelta | undefined, next: SessionDelta): SessionDelta {
   return {
     ...before,
@@ -752,6 +760,7 @@ export class JourneyEmulator {
           scriptName: script.name ?? config.script ?? "script",
           scriptId: config.script ?? "script",
           ...(state.existingSession ? { existingSession: state.existingSession } : {}),
+          ...(state.session?.properties ? { priorSessionProperties: state.session.properties } : {}),
           javaMaps: {
             shared: Boolean(state.javaMap),
             transient: Boolean(frame.javaMap),
@@ -799,6 +808,7 @@ export class JourneyEmulator {
       effects: {
         sharedState: { final: Document };
         transientState: { final: Document };
+        sessionProperties: Record<string, string>;
         callbacks: CallbackEffect[];
         outcome: string | null;
         javaMapObjectAttributes: { shared: boolean; transient: boolean };
@@ -823,6 +833,11 @@ export class JourneyEmulator {
     // alongside them survives is unmeasured.
     if (result.errorMessage !== null && result.effects.callbacks.length)
       this.missing("action.withErrorMessage with queued callbacks");
+    const sessionAbort = this.scriptSessionProperties(result.effects.sessionProperties, state);
+    if (sessionAbort) {
+      if (inner) this.missing("inner tree script exception");
+      return { outcome: null, callbacks: [], abort: sessionAbort };
+    }
     state.shared = result.effects.sharedState.final;
     frame.transient = result.effects.transientState.final;
     state.javaMap = result.effects.javaMapObjectAttributes.shared;
@@ -835,6 +850,45 @@ export class JourneyEmulator {
         ? {}
         : { audit: result.auditEntryDetail.value }),
     };
+  }
+  /**
+   * What a script's `putSessionProperty` / `removeSessionProperty` leave on the session the
+   * journey makes (docs/api/25-journey-runtime.md, Session properties from scripts, 2026-11-25).
+   * Returns the abort when the script put a property AM owns.
+   */
+  private scriptSessionProperties(
+    final: Record<string, string>,
+    state: State,
+  ): Omit<AuthenticateResult, "provenance"> | undefined {
+    const incoming = state.existingSession ?? {};
+    const prior = state.session?.properties ?? {};
+    const next: Record<string, string> = {};
+    for (const [key, value] of Object.entries(final)) {
+      if (incoming[key] === value && prior[key] === undefined) continue;
+      if (prior[key] === value) {
+        next[key] = value;
+        continue;
+      }
+      if (SESSION_OWNED_MEASURED.includes(key)) {
+        this.measured(
+          "putSessionProperty of a property AM owns fails the journey with 401 Login failure",
+        );
+        return this.error(401, "Login failure");
+      }
+      if (SESSION_OWNED.includes(key))
+        this.missing(`putSessionProperty of a property AM owns: ${key}`);
+      next[key] = value;
+    }
+    for (const key of Object.keys(incoming))
+      if (!Object.hasOwn(final, key) && prior[key] === undefined)
+        this.missing("removeSessionProperty of a property on the incoming session");
+    if (Object.keys(next).length || Object.keys(prior).length) {
+      this.measured(
+        "a script's putSessionProperty reaches the session the journey makes (values as strings, later writes win, removeSessionProperty drops an earlier node's property, kept across a callback round trip)",
+      );
+      state.session = { ...state.session, properties: next };
+    }
+    return undefined;
   }
   private async execute(
     type: string,

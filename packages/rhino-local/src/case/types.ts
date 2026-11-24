@@ -395,6 +395,12 @@ export interface Given {
    * evaluators (docs/api/12-script-bindings-matrix.md).
    */
   existingSession?: Record<string, string>;
+  /**
+   * Properties an earlier node of the same journey put on the session being built. Not part of
+   * `existingSession` (the incoming session); a later script's `removeSessionProperty` can drop
+   * them (measured 2026-11-25, docs/api/25-journey-runtime.md, Session properties from scripts).
+   */
+  priorSessionProperties?: Record<string, string>;
   /** A null entry explicitly declares an absent ESV. */
   esv?: Record<string, string | null>;
   /** Treat undeclared properties as absent on AM, or throw (the default). */

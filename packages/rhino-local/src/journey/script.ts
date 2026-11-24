@@ -16,6 +16,8 @@ export type ScriptState = {
   scriptName: string;
   scriptId: string;
   existingSession?: Record<string, string>;
+  /** Properties earlier nodes of this journey put on the session being built. */
+  priorSessionProperties?: Record<string, string>;
   headers?: Record<string, string[]>;
   cookies?: Record<string, string>;
   parameters?: Record<string, string[]>;
@@ -103,7 +105,8 @@ const overlay = (roots: string[], maps: { shared: boolean; transient: boolean })
       }
     });
   }
-  refuse(action, 'action', ['goTo', 'withErrorMessage', 'withLockoutMessage', 'toString']);
+  refuse(action, 'action', ['goTo', 'withErrorMessage', 'withLockoutMessage', 'putSessionProperty',
+    'removeSessionProperty', 'toString']);
   action.withErrorMessage = host('errorMessage');
   action.withLockoutMessage = host('chain');
   // The measured next-gen factory does not expose the legacy bucket getters.
@@ -160,6 +163,7 @@ export function journeyPreamble(state: ScriptState): CasePreamble {
       ? { libraries: state.libraries }
       : {}),
     ...(state.existingSession ? { existingSession: state.existingSession } : {}),
+    ...(state.priorSessionProperties ? { priorSessionProperties: state.priorSessionProperties } : {}),
     bindings: {
       journey: {
         name: state.tree,

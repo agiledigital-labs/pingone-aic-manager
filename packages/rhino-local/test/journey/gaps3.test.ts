@@ -651,3 +651,79 @@ describe("DataStoreDecisionNode ignores accountStatus", () => {
       expect(await verdict(status, "wrong")).toBe("false");
   });
 });
+
+// ---------------------------------------------------------------------------------------------
+// action.putSessionProperty in next-gen decision scripts (batch 3 G17, batch 5 B5-5). Doc 25,
+// "Session properties from scripts".
+describe("session properties from scripts", () => {
+  const chain = (bodies: string[], callbackAfter = false): JourneyConfigInput => {
+    const ids = bodies.map((_, i) => `s${i}`);
+    if (callbackAfter) ids.push("wait");
+    return {
+      realm: "alpha",
+      trees: {
+        invented: {
+          entryNodeId: ids[0] as string,
+          identityResource: "managed/alpha_user",
+          nodes: Object.fromEntries(
+            ids.map((id, i) => [id, { nodeType: "ScriptedDecisionNode", connections: { true: ids[i + 1] ?? SUCCESS } }]),
+          ),
+        },
+      },
+      nodes: {
+        ScriptedDecisionNode: Object.fromEntries(ids.map((id) => [id, { script: id, outcomes: ["true"] }])),
+      },
+      scripts: {
+        ...Object.fromEntries(
+          bodies.map((body, i) => [`s${i}`, script((i === 0 ? "nodeState.putShared('username','alice');" : "") + body + "action.goTo('true');")]),
+        ),
+        wait: script(`if (callbacks.isEmpty()) { callbacksBuilder.hiddenValueCallback('w','x'); } else { action.goTo('true'); }`),
+      },
+    };
+  };
+  const finish = async (input: JourneyConfigInput) => {
+    const emu = make(input, {}, await users());
+    let result = await run(emu, "invented");
+    if ("callbacks" in (result.body as object)) result = await run(emu, "invented", { body: result.body });
+    return result;
+  };
+
+  it("puts properties on the session of a successful journey, as strings, chained", async () => {
+    const result = await finish(chain([`action.putSessionProperty('a', '1').putSessionProperty('b', 5);`]));
+    expect(result.status).toBe(200);
+    // Discriminating: a number value arrives as the string "5" (measured), not the number.
+    expect(result.session?.properties).toEqual({ a: "1", b: "5" });
+  });
+
+  it("a later script overwrites an earlier script's key and can remove another of its keys", async () => {
+    const result = await finish(
+      chain([
+        `action.putSessionProperty('a', 'first'); action.putSessionProperty('b', 'keep');`,
+        `action.putSessionProperty('a', 'second'); action.removeSessionProperty('b');`,
+      ]),
+    );
+    // Discriminating: if the second script could not see the first's keys, 'b' would survive.
+    expect(result.session?.properties).toEqual({ a: "second" });
+  });
+
+  it("put then remove in one script leaves nothing, and no session object is invented", async () => {
+    const result = await finish(chain([`action.putSessionProperty('a', '1'); action.removeSessionProperty('a');`]));
+    expect(result.status).toBe(200);
+    expect(result.session?.properties ?? {}).toEqual({});
+  });
+
+  it("keeps a property across a callback round trip", async () => {
+    const result = await finish(chain([`action.putSessionProperty('a', 'kept');`], true));
+    expect(result.session?.properties).toEqual({ a: "kept" });
+  });
+
+  it.each(["UserId", "AuthLevel", "Service", "Locale"])("putting %s, which AM owns, fails the journey with 401 Login failure", async (name) => {
+    const result = await finish(chain([`action.putSessionProperty('${name}', 'x');`]));
+    expect(result).toMatchObject({ status: 401, body: { message: "Login failure" } });
+  });
+
+  it("putting an AM-owned property not measured for scripts is missing", async () => {
+    expectEmulationFailure("putSessionProperty of a property AM owns: Host");
+    expect((await finish(chain([`action.putSessionProperty('Host', 'x');`]))).status).toBe(501);
+  });
+});

@@ -878,6 +878,27 @@ nodes. Probe: `scripts/experiment-journey-datastore-status.sh`. All objects `kde
   the ones above says so itself.
 - Not measured: whether a later node (session creation) refuses an inactive account after a `true`.
 
+## Session properties from scripts (2026-11-25)
+
+`action.putSessionProperty` / `removeSessionProperty` in a next-gen scripted decision node, measured on the sandbox with
+throwaway `kdemo-g3-` trees and users (all deleted; get-after 404). A script identified a user and called the methods,
+the journey succeeded, and a second journey given the first's session cookie dumped `existingSession`. Probe:
+`scripts/experiment-journey-session-property.sh`.
+
+| Case | Measured |
+| ---- | -------- |
+| `goTo("true").putSessionProperty("A","1").putSessionProperty("B","2")` | Both on the session |
+| Put then remove the same key in one script | Absent |
+| Script 1 puts A and B, script 2 puts A again and removes B | A is the second value, B is absent: a later node sees and can remove an earlier node's property, and the last write wins |
+| A number value (`5`) | The string `"5"` |
+| Put, then a later node waits on a callback, then success | Kept |
+| Put `UserId`, `AuthLevel`, `Service` or `Locale` | The journey fails `401 Login failure` with no session |
+| Put `UserId`, then a node that sends a callback | `401` straight away: the callback was never sent, so the failure is at the put, not at session creation |
+
+Not measured: the other AM-owned names for a script (the emulator refuses them as `missing`; the 24-name list is
+`SetSessionPropertiesNode`'s validation above), `removeSessionProperty` of a property on the incoming session (`missing`),
+`withMaxIdleTime` / `withMaxSessionTime` on the action (still refused), and a property put in an inner tree.
+
 ## Not yet measured
 
 None of these was exercised; do not build on them as measured:

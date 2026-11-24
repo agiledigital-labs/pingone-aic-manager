@@ -1038,6 +1038,16 @@ final class AmHostBridge extends BaseFunction {
           .append("\":")
           .append(map);
     }
+    Object session = ScriptableObject.getProperty(runtime, "sessionProperties");
+    if (session != Scriptable.NOT_FOUND
+        && (!(session instanceof ScriptableObject) || session instanceof NativeArray)) {
+      throw missing("journey session properties container");
+    }
+    out.append(",\"sessionProperties\":");
+    out.append(
+        session == Scriptable.NOT_FOUND
+            ? "{}"
+            : new Encoder(cx, "journey session property: ", null).write(session, "").text());
     out.append(",\"callbacks\":");
     out.append(new Encoder(cx, "journey callbacks value: ", null).write(queued, "callbacks").text());
     out.append(",\"javaMapObjectAttributes\":{").append(maps).append("}}");
