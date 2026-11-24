@@ -2794,8 +2794,10 @@ such header, a string or top-level non-object body, `\r`/`\b`/`\f`, a C1
 control, a lone low surrogate, a
 fraction or an integer past 1e6, or a number the script engine holds as a Java
 Integer (written as an integer, which is measured for `s.length`, `indexOf` and
-`size()` results and assumed for a `JSON.parse` result). A `form` request is
-missing, because its body is not the JSON text. `objectAttributes` that a node
+`size()` results and assumed for a `JSON.parse` result). A `form` request goes out
+urlencoded as Java's `URLEncoder` writes it, with the content type AIC sets, and the
+mock's third argument carries it as `contentType` (docs/api/12 §6); a
+non-string value is missing. `objectAttributes` that a node
 wrote, or that crossed a callback round trip, reaches the next script as a Java
 map (`get`/`put` work); its printed form is measured, the methods are inferred
 and labelled assumed.

@@ -1041,6 +1041,7 @@ export class JourneyEmulator {
     try {
       response = await this.options.http(url, options, {
         bodyText: wire.body ?? "",
+        ...(typeof wire.contentType === "string" ? { contentType: wire.contentType } : {}),
       });
     } catch (error) {
       throw new EmulationFailure(

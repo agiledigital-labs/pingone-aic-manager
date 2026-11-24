@@ -177,3 +177,62 @@ describe("G1: ESV placeholders in node configuration", () => {
     expect(result.status).toBe(501);
   });
 });
+
+describe("G12: httpClient.send form option", () => {
+  const send = async (form: string, extra = "") => {
+    const seen: { url: string; options: Record<string, JsonValue>; bodyText: string; type?: string }[] =
+      [];
+    const emu = make(
+      `var r = httpClient.send("https://service.example.com/token", {method: "POST", ${extra} form: ${form}}).get();
+       nodeState.putShared("username", "u");
+       action.goTo(r.status === 200 ? "true" : "false");`,
+      {},
+      {
+        http: (url, options, wire) => {
+          seen.push({
+            url,
+            options,
+            bodyText: wire.bodyText,
+            ...(wire.contentType ? { type: wire.contentType } : {}),
+          });
+          return { status: 200, body: {} };
+        },
+      },
+    );
+    return { result: await start(emu), seen };
+  };
+
+  it("sends the pairs urlencoded with the content type AIC sets", async () => {
+    const { result, seen } = await send(`{grant_type: "client_credentials", scope: "a b"}`);
+    expect(result.status).toBe(200);
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toMatchObject({
+      bodyText: "grant_type=client_credentials&scope=a+b",
+      type: "application/x-www-form-urlencoded",
+    });
+  });
+
+  it("encodes as Java's URLEncoder does: the measured characters where a plausible encoder differs", async () => {
+    // Measured lengths (docs/api/12 §6): `*` stays literal, `~` is %7E, `%` is %25, space is +.
+    const { seen } = await send(`{"k e&y": "v=1&z", p: "a+b", s: "*~%41/?#", u: "\\u00e9\\ud83d\\ude00"}`);
+    expect(seen[0]?.bodyText).toBe(
+      "k+e%26y=v%3D1%26z&p=a%2Bb&s=*%7E%2541%2F%3F%23&u=%C3%A9%F0%9F%98%80",
+    );
+  });
+
+  it("a form replaces the script's Content-Type and wins over a body", async () => {
+    const { seen } = await send(`{a: "1"}`, `headers: {"Content-Type": "text/plain"}, body: {x: 1},`);
+    expect(seen[0]).toMatchObject({ bodyText: "a=1", type: "application/x-www-form-urlencoded" });
+  });
+
+  it("an empty form is an empty body, still urlencoded", async () => {
+    const { seen } = await send(`{}`);
+    expect(seen[0]).toMatchObject({ bodyText: "", type: "application/x-www-form-urlencoded" });
+  });
+
+  it("a number value is refused where AIC throws, never stringified", async () => {
+    expectEmulationFailure(/httpClient\.send form value that is not a string: n.*/);
+    const { result } = await send(`{n: 1}`);
+    expect(result.status).toBe(501);
+  });
+});

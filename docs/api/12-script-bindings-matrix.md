@@ -646,8 +646,8 @@ if (typeof value === "undefined") {
 }
 ```
 
-Both behaviours were observed on the next-gen engine. Not probed: the `form`
-(form-encoded) option and the legacy `httpClient`.
+Both behaviours were observed on the next-gen engine. The `form` option is §6;
+the legacy `httpClient` was not probed.
 
 ### 3. A top-level `undefined` body is sent as `null` (verified 2026-11-04)
 
@@ -728,6 +728,38 @@ and, for a function, sends source-derived data and the script's variable names
 to the receiver. The non-finite numbers become strings rather than JSON's
 `null`. A `java.util.Date` is the one date type that arrives as a usable value.
 Convert before sending: `date.toISOString()` or `date.getTime()`.
+
+### 6. The `form` option (verified 2026-11-25)
+
+Same shape as §3 to §5: a next-gen journey decision node, one tree per case,
+`POST https://httpbin.org/post`, `options = {method: "POST", form: {...}}`. The
+echo returns the form it parsed and the headers it received, and
+`Content-Length` is the byte length of the body, which is how encodings that
+parse to the same value were told apart. The probe is a throwaway
+`kdemo-g-` fixture set, deleted by name and re-listed empty.
+
+| `options` | Received | `Content-Length` |
+| --- | --- | --- |
+| `form: {a: "1", b: "x y"}` | `Content-Type: application/x-www-form-urlencoded` (no charset), `a=1`, `b=x y` | 9, which is `a=1&b=x+y`: space is `+`, not `%20` (11) |
+| keys and values `"k e&y": "v=1&z"`, `p: "a+b"`, `u: "é"`, `s: "/?#"` | all four parsed back exactly | 46, equal to the standard encoding with `&` `=` `+` `/` `?` `#` and the key's space and `&` escaped |
+| `a: "*"`, `a: "~"` | parsed back | 3 and 5: `*` stays literal, `~` is `%7E` (Java's `URLEncoder`, not RFC 3986's unreserved set) |
+| `a: "%41"` | `%41` back | 7: `%` is `%25` |
+| `a: "\ud83d\ude00"` (astral) | the emoji back | 14: four UTF-8 bytes, `%F0%9F%98%80` |
+| `headers: {"Content-Type": "text/plain"}, form: {a: "1"}` | `application/x-www-form-urlencoded` | 3: the script's header is **replaced** |
+| `body: {x: 1}, form: {a: "1"}` | only `a=1` | 3: the form **wins**, the body is not sent |
+| `form: {}` | `application/x-www-form-urlencoded`, empty | 0 |
+| `headers: {"Content-Type": "application/x-www-form-urlencoded"}, body: "a=1&b=x+y"` (control) | same as the first row | 9 |
+| `form: {n: 1, f: 1.5, t: true, z: null}` | **throws, catchable**: `InternalError: class java.lang.Double cannot be cast to class java.lang.String ...` | nothing sent |
+| `form: {a: "1", u: undefined}` | **throws**: `InternalError: Cannot invoke "String.length()" because "s" is null` | nothing sent |
+| `form: {a: ["p", "q"]}` | **throws**: `InternalError: class org.mozilla.javascript.NativeArray cannot be cast to class java.lang.String ...` | nothing sent |
+
+Every value must be a string; there is no stringification and no repeated key
+for an array. Not measured: the order of the pairs on the wire (the echo parses
+them), a lone surrogate, a `null` value on its own (the case that held one threw
+on the number before it), and a non-object `form`. rhino-local encodes with
+`URLEncoder` (UTF-8), keeps the object's key order, labels both of those
+assumed, and refuses a non-string value as missing behaviour instead of
+reproducing the `InternalError` text, which carries class-loader names.
 
 ### `openidm.create` content with an `undefined` value (verified 2026-11-04)
 

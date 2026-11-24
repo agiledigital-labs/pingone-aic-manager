@@ -1399,20 +1399,6 @@ it.each([
   );
   expect(result).toMatchObject({ status: 501, emulation: { missing: [cause] } });
 });
-it("an HTTP form body is missing: its text is not the JSON body (docs/api/12: form not probed)", async () => {
-  const cause = "httpClient.send form body text";
-  expectEmulationFailure(cause);
-  const result = await request(
-    make(
-      "httpClient.send('https://service.example.com/x',{method:'POST',form:{a:'b'}}).get();" +
-        SUCCEED,
-      ["true", "false"],
-      { true: SUCCESS, false: FAILURE },
-      { http: async () => ({ status: 200, body: {} }) },
-    ),
-  );
-  expect(result).toMatchObject({ status: 501, emulation: { missing: [cause] } });
-});
 it("withErrorMessage alongside queued callbacks is missing", async () => {
   const cause = "action.withErrorMessage with queued callbacks";
   expectEmulationFailure(cause);
