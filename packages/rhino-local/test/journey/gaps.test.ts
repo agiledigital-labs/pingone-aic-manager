@@ -1115,3 +1115,16 @@ describe("G4: inner trees that wait for the user, and nest", () => {
     });
   });
 });
+
+describe("G8: success with no identified user is tenant behaviour", () => {
+  it("answers an empty 500 when Success is reached with no username, as the tenant does", async () => {
+    const emu = make(`action.goTo("true");`);
+    const none = await post(emu);
+    expect(none.status).toBe(500);
+    expect(none.body).toBeNull();
+    // The control: the same tree with a shared username succeeds.
+    const some = await post(make(`nodeState.putShared("username", "someone"); action.goTo("true");`));
+    expect(some.status).toBe(200);
+    expect(some.body).toMatchObject({ successUrl: expect.any(String) });
+  });
+});
