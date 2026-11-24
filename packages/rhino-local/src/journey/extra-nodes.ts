@@ -4,7 +4,8 @@
  * CAPTCHA stub. Each is read from the node JSON as the tenant stores it and measured on a tenant
  * (docs/api/25-journey-runtime.md, "Built-in node types", 2026-11-25).
  */
-import { createHmac, randomInt } from "node:crypto";
+import { randomInt } from "node:crypto";
+import { mintCookie, readCookie } from "./cookie.ts";
 import type { CallbackEffect } from "../case/types.ts";
 import { EmulationFailure } from "../emulation.ts";
 import { isDocument, own, setOwn } from "../idm/document.ts";
@@ -86,6 +87,7 @@ export function extraOutcomes(type: string, node: NodeDocument): readonly string
 }
 
 const SOURCE = "docs/api/25-journey-runtime.md (built-in node types, 2026-11-25)";
+const COOKIE_SOURCE = "docs/api/25-journey-runtime.md (Persistent cookie value, 2026-11-25)";
 const SYSTEM_PROPERTIES = [
   "clientType",
   "FullLoginURL",
@@ -294,16 +296,17 @@ export class ExtraNodes {
       };
     }
     const now = this.ctx.now();
-    const part = (value: JsonValue): string =>
-      Buffer.from(JSON.stringify(value)).toString("base64url");
-    const signing = `${part({ alg: "HS256", typ: "JWT" })}.${part({
-      sub: typeof shared.username === "string" ? shared.username : null,
-      iat: Math.floor(now / 1000),
-      exp: Math.floor(now / 1000) + Math.round(maxLife * 3600),
-    })}`;
-    const value = `${signing}.${createHmac("sha256", Buffer.from(key, "base64")).update(signing).digest("base64url")}`;
-    evidence.assumed(
-      "SetPersistentCookieNode value is an HS256 JWT over username, iat and exp; its real claims are unmeasured",
+    const value = mintCookie(
+      {
+        sub: typeof shared.username === "string" ? shared.username : null,
+        iat: Math.floor(now / 1000),
+        exp: Math.floor(now / 1000) + Math.round(maxLife * 3600),
+      },
+      key,
+    );
+    evidence.measured(
+      "SetPersistentCookieNode's value is an HS256 JWS (typ JWT, cty JWT) over a five-part encrypted JWE; the emulator's inner part is its own A128CBC-HS256 seal over sub, iat and exp, which are the emulator's claim names (the tenant's are unreadable)",
+      COOKIE_SOURCE,
     );
     evidence.assumed(
       "SetPersistentCookieNode idleTimeout has no measured effect and is not modelled",
@@ -682,21 +685,18 @@ export class ExtraNodes {
     );
     const value = cookies?.[name];
     if (value === undefined) return { outcome: "false", callbacks: [] };
-    const parts = value.split(".");
-    if (parts.length !== 3)
+    const reading = readCookie(value, key);
+    evidence.measured(
+      "PersistentCookieDecisionNode: a value with no dot (or empty), or whose signed payload has none, aborts with 401; two parts, another signing key, or an inner part that does not open take false; the inner part, not the signing key, names the user",
+      COOKIE_SOURCE,
+    );
+    if (reading.kind === "unmeasured")
+      this.ctx.missing(`PersistentCookieDecisionNode over ${reading.what}`);
+    if (reading.kind === "abort")
       return { outcome: null, callbacks: [], abort: structuredClone(LOGIN_FAILURE) };
-    const expected = createHmac("sha256", Buffer.from(key, "base64"))
-      .update(`${parts[0]}.${parts[1]}`)
-      .digest("base64url");
-    if (expected !== parts[2]) return { outcome: "false", callbacks: [] };
-    let claims: unknown;
-    try {
-      claims = JSON.parse(Buffer.from(parts[1] ?? "", "base64url").toString("utf8"));
-    } catch {
-      return { outcome: "false", callbacks: [] };
-    }
-    if (!isDocument(claims) || typeof claims.sub !== "string" || typeof claims.exp !== "number")
-      return { outcome: "false", callbacks: [] };
+    if (reading.kind === "false") return { outcome: "false", callbacks: [] };
+    const claims = reading.claims;
+    if (claims.sub === null) return { outcome: "false", callbacks: [] };
     evidence.assumed(
       "PersistentCookieDecisionNode's rule for an expired cookie, and idleTimeout, are unmeasured; a cookie past its exp is taken as false",
     );

@@ -451,7 +451,13 @@ export class JourneyEmulator {
         "initial ambient state assumes shared realm/authLevel 0 and transient maxAuthenticationSessionDuration 300000; duration value and bucket are unmeasured",
       );
       const cookieName = this.options.cookieName;
-      if (Object.keys(request.cookies ?? {}).length && !cookieName)
+      // Cookies reach nodes and scripts whatever their names. Without `cookieName` the emulator cannot say
+      // which one is the session's, so it refuses only a request that carries a known session's value.
+      const sessionValues = Object.keys(this.options.sessions ?? {});
+      if (
+        !cookieName &&
+        Object.values(request.cookies ?? {}).some((value) => sessionValues.includes(value))
+      )
         this.missing("session cookie name not supplied");
       const cookie = cookieName ? request.cookies?.[cookieName] : undefined;
       if (cookie) {

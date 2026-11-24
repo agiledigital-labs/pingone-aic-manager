@@ -565,8 +565,8 @@ same answers).
 | `useSecureCookie: false` | `Secure` was **still set** (the platform forces it) | `true`: set |
 | `sameSite` | `LAX`, `STRICT`, `NONE` came back as `lax`, `strict`, `none` | — |
 
-Not measured: the value's claims (it looks like a signed JWT), the effect of
-`idleTimeout`, and signing through a secret label.
+The value's shape is under "Persistent cookie value" below. Not measured: the
+effect of `idleTimeout`, and signing through a secret label.
 
 ### One Time Password Generator (`listOutcomes`: `["outcome"]`)
 
@@ -673,6 +673,41 @@ A valid cookie takes `true` and writes shared `username` = the IDM user's
 one, the wrong key or the wrong cookie name take `false`; "notajwt" is `401`.
 `enforceClientIp: true` with the same IP and `idleTimeout` 0 or 1 on a fresh
 cookie still took `true`; expiry and idle behaviour are otherwise unmeasured.
+
+### Persistent cookie value (2026-11-25)
+
+Measured with `scripts/experiment-journey-persistent-cookie.sh` (`kdemo-g3-`
+objects, deleted; a made-up key, never an ESV). `SetPersistentCookieNode`'s
+value is **a compact JWS whose payload is the base64url of a five-part compact
+JWE**: outer header `{"typ":"JWT","cty":"JWT","alg":"HS256"}`, inner header
+`{"typ":"JWT","enc":"A128CBC-HS256","alg":"RSA1_5"}`, about 1.5 KB in all. The
+inner part is encrypted under the tenant's own key, so a caller cannot read or
+forge it. `hmacSigningKey` as a plain base64 string and as `{"$string": "<same
+literal>"}` both mint, and the two cookies have the same shape.
+
+Replayed against a `PersistentCookieDecisionNode` holding the same key:
+
+| Request cookie | Result |
+| --- | --- |
+| The minted value | `true`; shared `username` = the user's `_id` |
+| Another cookie name | `false` |
+| The node holds another key | `false` |
+| Outer re-signed with the same key (control) | `true`, same user |
+| Outer re-signed with the **inner part of another user's cookie** | `true`, **the other user's `_id`**: the identity is in the encrypted part, the signing key only vouches for the outer |
+| One ciphertext byte of the inner part flipped, outer re-signed | `false` |
+| Hand-signed: payload is plain JSON claims (right key, with or without `cty`) | **`401 Login failure`** |
+| Hand-signed: payload is five dotted garbage parts | `false` |
+| Two dotted parts | `false` |
+| Empty value, or no dot | `401 Login failure` |
+
+Not measured: the inner claim names, the expiry rule (the cookie's `Expires`
+is the only known bound), `idleTimeout`, and a value with other dot counts.
+The emulator models the outer JWS exactly and an inner five-part JWE of the
+same cipher under a key of its own, so a cookie it issued is read back by any
+emulator and a hand-signed one is refused as above; it does not model the RSA
+key wrap, and the claim names inside (`sub`, `iat`, `exp`) are its own.
+Without `cookieName` in the options a request cookie reaches the nodes; it is
+refused only when its value is a configured session's.
 
 ### Custom (Node Designer) node types (2026-11-25)
 
