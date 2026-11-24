@@ -59,7 +59,9 @@ export class JourneyConfig {
             ? input.nodes[ref.nodeType]?.[ref._id]
             : undefined;
         const outcomes =
-          ref.nodeType === "InnerTreeEvaluatorNode" ? ["true", "false"] : config?.outcomes;
+          ref.nodeType === "InnerTreeEvaluatorNode" || ref.nodeType === "MessageNode"
+            ? ["true", "false"]
+            : config?.outcomes;
         if (Array.isArray(outcomes) && outcomes.length > 1)
           throw new RangeError(
             "400 Invalid config: Only the last node in a page can have more than one outcome",

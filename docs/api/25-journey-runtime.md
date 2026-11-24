@@ -802,6 +802,41 @@ transient value winning. Measured on the sandbox with throwaway trees:
 **Not measured:** a key held as an object in both maps (the emulator reports it
 missing rather than guessing a deep merge).
 
+## Nodes as Page children (2026-11-25)
+
+Measured on the sandbox with throwaway journeys, each node run standalone and as a
+`PageNode` child alone, after a `UsernameCollectorNode` and before one.
+
+| Node | Callbacks as a child | Answer | State written |
+| ---- | -------------------- | ------ | ------------- |
+| `MessageNode` | `TextOutputCallback` (messageType `"0"`) + `ConfirmationCallback` (options yes/no, default 1), same as standalone | index 0 gives `true`; 1 and 5 give `false` | none |
+| `ValidatedUsernameNode` (`validateInput: false`) | one `NameCallback`, prompt `User Name` | any text; empty writes nothing and the node still leaves by `outcome` | shared `username` and `objectAttributes.userName` |
+| `GetAuthenticatorAppNode` | `TextOutputCallback` (messageType `"4"`) + `ConfirmationCallback` with one option, the continue label | any index (0, 1, 7) leaves by `outcome` | none |
+
+- Outcomes: `MessageNode` `true`/`false`, `GetAuthenticatorAppNode` `outcome`.
+- `GetAuthenticatorAppNode` message: a script
+  `document.getElementById("callback_0").innerHTML="<center>MSG</center>"`;
+  `callback_0` is constant whatever the page position. `{{appleLink}}` expands
+  to `<a target='_blank' href='LINK'>Apple App Store</a>`, `{{googleLink}}` to
+  `<a target='_blank' href='LINK'>Google Play Store</a>`. With config `{}` the
+  message is `Get the app from the {{appleLink}} or on {{googleLink}}` and the
+  links are the PingID store pages; the continue label defaults to `Continue`.
+- Page rules: a `MessageNode` before another child is refused on PUT (400
+  `Only the last node in a page can have more than one outcome`);
+  `ValidatedUsernameNode` and `GetAuthenticatorAppNode` (one outcome) may be
+  non-last.
+- Two `NameCallback` children: `username` is the later child's answer;
+  `objectAttributes.userName` is written only by `ValidatedUsernameNode`.
+- A page whose only children are display nodes (`MessageNode`,
+  `GetAuthenticatorAppNode`) leaves no `pageNodeCallbacks` in shared state.
+- Where `pageNodeCallbacks` exists the tenant's value is a map of callback index
+  to child index (`{ "0": 0, "1": 1 }`); the emulator still stores a wire array
+  there. That shape is assumed, now known to differ; a script reading it is
+  unmodelled.
+- Not modelled, loud `missing`: `ValidatedUsernameNode` with `validateInput:
+  true` as a child; `GetAuthenticatorAppNode` messages with other wildcards
+  (`{{appleLabel}}`, `{{googleLabel}}`) or a quote, backslash or line break.
+
 ## Not yet measured
 
 None of these was exercised; do not build on them as measured:

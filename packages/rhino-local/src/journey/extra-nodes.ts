@@ -32,6 +32,7 @@ export const EXTRA_OUTCOMES: Readonly<Record<string, readonly string[]>> = Objec
   AuthLevelDecisionNode: ["true", "false"],
   MessageNode: ["true", "false"],
   ValidatedUsernameNode: ["outcome"],
+  GetAuthenticatorAppNode: ["outcome"],
   OneTimePasswordCollectorDecisionNode: ["true", "false"],
   PersistentCookieDecisionNode: ["true", "false"],
   // Stubs (below): vocabularies as listOutcomes reports them with the type's template configuration.
@@ -87,6 +88,10 @@ export function extraOutcomes(type: string, node: NodeDocument): readonly string
 }
 
 const SOURCE = "docs/api/25-journey-runtime.md (built-in node types, 2026-11-25)";
+const PAGE_CHILD_SOURCE = "docs/api/25-journey-runtime.md (Nodes as Page children, 2026-11-25)";
+const APP_MESSAGE = "Get the app from the {{appleLink}} or on {{googleLink}}";
+const APPLE_LINK = "https://apps.apple.com/app/pingid/id891247102";
+const GOOGLE_LINK = "https://play.google.com/store/apps/details?id=prod.com.pingidentity.pingid";
 const COOKIE_SOURCE = "docs/api/25-journey-runtime.md (Persistent cookie value, 2026-11-25)";
 const SYSTEM_PROPERTIES = [
   "clientType",
@@ -555,6 +560,65 @@ export class ExtraNodes {
     return { outcome: index === 0 ? "true" : "false", callbacks: [] };
   }
 
+  /**
+   * Measured standing alone and as a Page child (doc 25, "Nodes as Page children", 2026-11-25): a
+   * TextOutputCallback of type "4" (a script) holding the message, then a ConfirmationCallback with the one
+   * continue option; any answer takes the one outcome and no state is written.
+   */
+  private getAuthenticatorApp(config: NodeDocument, submitted: CallbackEffect[]): NodeResult {
+    const first = (key: string, fallback: string): string => {
+      const map = config[key];
+      if (map === undefined) return fallback;
+      if (!isDocument(map)) this.ctx.missing(`GetAuthenticatorAppNode ${key} configuration`);
+      const value = Object.values(map)[0];
+      if (value === undefined) return fallback;
+      if (typeof value !== "string") this.ctx.missing(`GetAuthenticatorAppNode ${key} value type`);
+      return value;
+    };
+    const link = (key: "appleLink" | "googleLink", fallback: string): string => {
+      const value = config[key] === undefined ? fallback : config[key];
+      if (typeof value !== "string" || /['"\\\s]/.test(value))
+        this.ctx.missing(`GetAuthenticatorAppNode ${key} that is not a plain URL`);
+      return value;
+    };
+    const template = first("message", APP_MESSAGE);
+    if (/\{\{(?!appleLink\}\}|googleLink\}\})/.test(template) || /["\\\r\n]/.test(template))
+      this.ctx.missing("GetAuthenticatorAppNode message with a wildcard other than the two links, or a quote, backslash or line break");
+    const html = template
+      .replaceAll("{{appleLink}}", `<a target='_blank' href='${link("appleLink", APPLE_LINK)}'>Apple App Store</a>`)
+      .replaceAll("{{googleLink}}", `<a target='_blank' href='${link("googleLink", GOOGLE_LINK)}'>Google Play Store</a>`);
+    this.ctx.evidence.measured(
+      'GetAuthenticatorAppNode sends a TextOutputCallback (messageType "4") of the script document.getElementById("callback_0").innerHTML="<center>…</center>" with {{appleLink}} and {{googleLink}} expanded to anchors labelled Apple App Store and Google Play Store, and a ConfirmationCallback with the one continueLabel option; any answer takes outcome and no state is written',
+      PAGE_CHILD_SOURCE,
+    );
+    this.ctx.evidence.assumed(
+      "GetAuthenticatorAppNode uses the first entry of each language map; the {{appleLabel}} and {{googleLabel}} wildcards are unmeasured",
+    );
+    if (!submitted.length)
+      return {
+        outcome: null,
+        callbacks: [
+          {
+            type: "TextOutputCallback",
+            message: `document.getElementById("callback_0").innerHTML="<center>${html}</center>"`,
+            messageType: "4",
+          },
+          {
+            type: "ConfirmationCallback",
+            prompt: "",
+            messageType: 0,
+            options: [first("continueLabel", "Continue")],
+            optionType: -1,
+            defaultOption: 0,
+          },
+        ],
+      };
+    const answer = submitted.length === 2 ? submitted[1] : undefined;
+    if (answer?.type !== "ConfirmationCallback" || typeof answer.value !== "number")
+      this.ctx.missing("GetAuthenticatorAppNode callback submission");
+    return { outcome: "outcome", callbacks: [] };
+  }
+
   private choice(config: NodeDocument, submitted: CallbackEffect[]): NodeResult {
     const choices = config.choices;
     if (!Array.isArray(choices) || !choices.length || choices.some((c) => typeof c !== "string"))
@@ -748,6 +812,8 @@ export class ExtraNodes {
         return this.authLevel(config, shared, true);
       case "MessageNode":
         return this.message(config, submitted);
+      case "GetAuthenticatorAppNode":
+        return this.getAuthenticatorApp(config, submitted);
       case "ChoiceCollectorNode":
         return this.choice(config, submitted);
       case "ValidatedUsernameNode":

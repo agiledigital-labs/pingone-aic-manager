@@ -127,6 +127,9 @@ const PAGE_CHILDREN: readonly string[] = [
   "ValidatedPasswordNode",
   "AcceptTermsAndConditionsNode",
   "product-CaptchaNode",
+  "ValidatedUsernameNode",
+  "MessageNode",
+  "GetAuthenticatorAppNode",
 ];
 /**
  * A node's stored outcome vocabulary, as doc 25's listOutcomes table reports it;
@@ -956,6 +959,9 @@ export class JourneyEmulator {
         this.missing(`PageNode child type: ${child.nodeType}`);
       const childConfig = this.config.node(child.nodeType, child._id);
       if (!childConfig) this.missing(`PageNode child configuration: ${child._id}`);
+      // Measured with validateInput false only: the policy callback of `true` is not modelled anywhere.
+      if (child.nodeType === "ValidatedUsernameNode" && childConfig.validateInput !== false)
+        this.missing("ValidatedUsernameNode validateInput: true as a PageNode child");
       const count = previous?.counts[index] ?? 0;
       const own = previous ? submitted.slice(offset, offset + count) : [];
       offset += count;
@@ -1016,10 +1022,16 @@ export class JourneyEmulator {
         return { outcome, callbacks: [] };
       }
       state.page = { counts, effects: structuredClone(collected) };
-      state.shared.pageNodeCallbacks = toWire(collected, (name) => this.missing(name)) as JsonValue;
-      this.evidence.assumed(
-        "pageNodeCallbacks stores the merged callback wire array; only shared presence and lifetime are measured",
-      );
+      // Measured: a page whose only child is a Message or Get Authenticator App node leaves no
+      // pageNodeCallbacks at all (doc 25, "Nodes as Page children").
+      const display = config.nodes.length === 1 && isDocument(config.nodes[0]) &&
+        ["MessageNode", "GetAuthenticatorAppNode"].includes(String(config.nodes[0].nodeType));
+      if (!display) {
+        state.shared.pageNodeCallbacks = toWire(collected, (name) => this.missing(name)) as JsonValue;
+        this.evidence.assumed(
+          "pageNodeCallbacks stores the merged callback wire array; only shared presence and lifetime are measured (the tenant's value reads as a map of callback index to child index)",
+        );
+      }
       if (
         config.nodes.some((child) => isDocument(child) && child.nodeType === "ScriptedDecisionNode")
       )

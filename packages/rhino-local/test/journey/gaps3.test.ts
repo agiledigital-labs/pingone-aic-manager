@@ -298,3 +298,165 @@ describe("ESV wrappers on custom node properties", () => {
     expect(result.status).toBe(501);
   });
 });
+
+// ---------------------------------------------------------------------------------------------
+// Nodes as Page children: ValidatedUsernameNode, MessageNode, GetAuthenticatorAppNode (batch 3 G18,
+// G21; batch 4 G25, G29). Doc 25, "Nodes as Page children".
+describe("nodes as page children", () => {
+  type Child = { type: string; config: Record<string, unknown> };
+  const dumpOf = (branch: string) =>
+    `callbacksBuilder.hiddenValueCallback('state',JSON.stringify({branch:'${branch}',username:nodeState.get('username'),` +
+    `oa:nodeState.get('objectAttributes')?String(nodeState.get('objectAttributes')):null,` +
+    `keys:nodeState.keys().toArray().sort()}));`;
+  function pageInput(children: Child[], outcomes: string[]): JourneyConfigInput {
+    const refs = children.map((child, index) => ({ _id: `c${index}`, nodeType: child.type }));
+    const nodes: Record<string, Record<string, Record<string, unknown>>> = {
+      PageNode: { page: { nodes: refs } },
+      ScriptedDecisionNode: Object.fromEntries(outcomes.map((o) => [`d-${o}`, { script: `d-${o}`, outcomes: [] }])),
+    };
+    children.forEach((child, index) => {
+      nodes[child.type] ??= {};
+      (nodes[child.type] as Record<string, unknown>)[`c${index}`] = child.config;
+    });
+    return {
+      realm: "alpha",
+      trees: {
+        invented: {
+          entryNodeId: "page",
+          nodes: {
+            page: { nodeType: "PageNode", connections: Object.fromEntries(outcomes.map((o) => [o, `d-${o}`])) },
+            ...Object.fromEntries(outcomes.map((o) => [`d-${o}`, { nodeType: "ScriptedDecisionNode", connections: {} }])),
+          },
+        },
+      },
+      nodes,
+      scripts: Object.fromEntries(outcomes.map((o) => [`d-${o}`, script(dumpOf(o))])),
+    };
+  }
+  type Wire = { callbacks: { type: string; output: { name: string; value: JsonValue }[]; input: { name: string; value: JsonValue }[] }[] };
+  const answer = (body: JsonValue, values: Record<number, JsonValue>): JsonValue => {
+    const copy = structuredClone(body) as Wire;
+    for (const [index, value] of Object.entries(values)) {
+      const input = copy.callbacks[Number(index)]?.input[0];
+      if (!input) throw new Error(`no input at ${index}`);
+      input.value = value;
+    }
+    return copy as unknown as JsonValue;
+  };
+  const types = (body: JsonValue) => (body as Wire).callbacks.map((cb) => cb.type);
+  const out = (body: JsonValue, index: number, name: string) =>
+    (body as Wire).callbacks[index]?.output.find((field) => field.name === name)?.value;
+  const inputName = (body: JsonValue, index: number) => (body as Wire).callbacks[index]?.input[0]?.name;
+  async function submit(children: Child[], outcomes: string[], values: Record<number, JsonValue>) {
+    const emu = make(pageInput(children, outcomes));
+    const first = await run(emu, "invented");
+    const second = await run(emu, "invented", { body: answer(first.body, values) });
+    return { first, second, state: second.status === 200 && "callbacks" in (second.body as object) ? dump(second.body) : undefined };
+  }
+  const NAME: Child = { type: "UsernameCollectorNode", config: {} };
+  const APP: Child = {
+    type: "GetAuthenticatorAppNode",
+    config: {
+      continueLabel: { en: "Continue" },
+      message: { en: "Get the app {{appleLink}} {{googleLink}}" },
+      appleLink: "https://apps.example.com/app/x",
+      googleLink: "https://play.example.com/store/x",
+    },
+  };
+  const MESSAGE: Child = {
+    type: "MessageNode",
+    config: { message: { en: "Hello" }, messageYes: { en: "Go" }, messageNo: { en: "Stop" } },
+  };
+  const VALIDATED: Child = {
+    type: "ValidatedUsernameNode",
+    config: { usernameAttribute: "userName", validateInput: false, autocompleteValues: [] },
+  };
+
+  it("GetAuthenticatorAppNode sends the script message and a continue option; any answer takes outcome", async () => {
+    const emu = make(pageInput([APP], ["outcome"]));
+    const first = await run(emu, "invented");
+    expect(types(first.body)).toEqual(["TextOutputCallback", "ConfirmationCallback"]);
+    expect(out(first.body, 0, "messageType")).toBe("4");
+    expect(out(first.body, 0, "message")).toBe(
+      `document.getElementById("callback_0").innerHTML="<center>Get the app <a target='_blank' href='https://apps.example.com/app/x'>Apple App Store</a> <a target='_blank' href='https://play.example.com/store/x'>Google Play Store</a></center>"`,
+    );
+    expect(out(first.body, 1, "options")).toEqual(["Continue"]);
+    // Discriminating: an out-of-range index is still accepted (measured with 1 and 7), so a wrong
+    // implementation validating the index like the Choice collector would fail here.
+    for (const value of [0, 7]) {
+      const next = await run(emu, "invented", { body: answer(first.body, { 1: value }) });
+      expect(dump(next.body).branch).toBe("outcome");
+    }
+  });
+
+  it("GetAuthenticatorAppNode with no configuration shows the default message and links", async () => {
+    const first = await run(make(pageInput([{ type: "GetAuthenticatorAppNode", config: {} }], ["outcome"])), "invented");
+    expect(out(first.body, 0, "message")).toBe(
+      `document.getElementById("callback_0").innerHTML="<center>Get the app from the <a target='_blank' href='https://apps.apple.com/app/pingid/id891247102'>Apple App Store</a> or on <a target='_blank' href='https://play.google.com/store/apps/details?id=prod.com.pingidentity.pingid'>Google Play Store</a></center>"`,
+    );
+    expect(out(first.body, 1, "options")).toEqual(["Continue"]);
+  });
+
+  it("GetAuthenticatorAppNode with a wildcard it does not model is missing", async () => {
+    expectEmulationFailure(
+      "GetAuthenticatorAppNode message with a wildcard other than the two links, or a quote, backslash or line break",
+    );
+    const bad = { type: "GetAuthenticatorAppNode", config: { message: { en: "Get {{appleLabel}}" } } };
+    expect((await run(make(pageInput([bad], ["outcome"])), "invented")).status).toBe(501);
+  });
+
+  it("a Page of a collector then the app node numbers the confirmation by position and leaves by outcome", async () => {
+    const { first, state } = await submit([NAME, APP], ["outcome"], { 0: "someone", 2: 0 });
+    expect(types(first.body)).toEqual(["NameCallback", "TextOutputCallback", "ConfirmationCallback"]);
+    expect([0, 2].map((i) => inputName(first.body, i))).toEqual(["IDToken1", "IDToken3"]);
+    expect(state).toMatchObject({ branch: "outcome", username: "someone" });
+  });
+
+  it("a Page whose only child is the app node or a Message node leaves no pageNodeCallbacks; with a collector it does", async () => {
+    expect((await submit([APP], ["outcome"], { 1: 0 })).state?.keys).not.toContain("pageNodeCallbacks");
+    expect((await submit([MESSAGE], ["true", "false"], { 1: 0 })).state?.keys).not.toContain("pageNodeCallbacks");
+    expect((await submit([NAME, MESSAGE], ["true", "false"], { 0: "x", 2: 0 })).state?.keys).toContain("pageNodeCallbacks");
+  });
+
+  it("a MessageNode child sends its text and options; answer 0 takes true, any other index false", async () => {
+    const { first, state } = await submit([NAME, MESSAGE], ["true", "false"], { 0: "someone", 2: 0 });
+    expect(types(first.body)).toEqual(["NameCallback", "TextOutputCallback", "ConfirmationCallback"]);
+    expect(out(first.body, 2, "options")).toEqual(["Go", "Stop"]);
+    expect(state).toMatchObject({ branch: "true", username: "someone" });
+    // Discriminating: both the "No" index and an out-of-range one take false (measured), not a refusal.
+    for (const value of [1, 5])
+      expect((await submit([NAME, MESSAGE], ["true", "false"], { 0: "someone", 2: value })).state?.branch).toBe("false");
+  });
+
+  it("a MessageNode that is not the last child is refused when the page is configured", () => {
+    expect(() => new JourneyConfig(pageInput([MESSAGE, NAME], ["outcome"]))).toThrow(
+      "Only the last node in a page can have more than one outcome",
+    );
+    // Control: the same two nodes the other way round are accepted.
+    expect(() => new JourneyConfig(pageInput([NAME, MESSAGE], ["true", "false"]))).not.toThrow();
+  });
+
+  it("ValidatedUsernameNode as a child writes username and objectAttributes.userName; the later writer wins username", async () => {
+    const after = await submit([NAME, VALIDATED], ["outcome"], { 0: "first", 1: "second" });
+    expect(types(after.first.body)).toEqual(["NameCallback", "NameCallback"]);
+    expect(after.state).toMatchObject({ branch: "outcome", username: "second" });
+    expect(String(after.state?.oa)).toContain("second");
+    // Discriminating: with the validated node first, the collector writes username last but never
+    // objectAttributes, so the two keys then name different answers; an implementation in which
+    // either node always wins would give the same answer in both orders.
+    const before = await submit([VALIDATED, NAME], ["outcome"], { 0: "first", 1: "second" });
+    expect(before.state).toMatchObject({ branch: "outcome", username: "second" });
+    expect(String(before.state?.oa)).toContain("first");
+  });
+
+  it("an empty answer to a ValidatedUsernameNode child writes nothing and the page still leaves", async () => {
+    const { state } = await submit([VALIDATED], ["outcome"], { 0: "" });
+    expect(state).toMatchObject({ branch: "outcome", username: null, oa: null });
+  });
+
+  it("ValidatedUsernameNode with validateInput true as a child is missing", async () => {
+    expectEmulationFailure("ValidatedUsernameNode validateInput: true as a PageNode child");
+    const strict = { type: VALIDATED.type, config: { ...VALIDATED.config, validateInput: true } };
+    expect((await run(make(pageInput([strict], ["outcome"])), "invented")).status).toBe(501);
+  });
+});

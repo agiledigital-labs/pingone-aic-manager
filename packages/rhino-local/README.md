@@ -2965,6 +2965,11 @@ empty answer. Stubs whose outcome comes from `declaredOutcomes`: push nodes,
 `PollingWaitNode`, `product-Saml2Node`, the OTP senders and a few display
 nodes.
 
+`ValidatedUsernameNode` (with `validateInput: false`), `MessageNode` and
+`GetAuthenticatorAppNode` run standalone and as `PageNode` children, as measured
+(doc 25, "Nodes as Page children"). A `MessageNode` must be the last child, and a
+display-only page leaves no `pageNodeCallbacks`.
+
 ESV placeholders in node configuration (`&{esv.…}`, bare or wrapped as
 `{"$string": …}`, `{"$int": …}` or `{"$bool": …}`) resolve from
 `JourneyOptions.esv` for the emulated node types and for custom node
