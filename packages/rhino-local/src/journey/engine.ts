@@ -88,6 +88,12 @@ export type JourneyOptions = {
    * node decided and however the tree wires "false". Not an AM behaviour; absent, nothing changes.
    */
   failAt?: (node: { tree: string; nodeId: string }) => boolean;
+  /**
+   * The environment's ESVs by full name (`esv.some.name`). `systemEnv.getProperty` reads them, and
+   * so do `&{esv.…}` placeholders in the node configuration the emulator reads. A name that is
+   * not here reads as `null` in a script, as on the tenant.
+   */
+  esv?: Readonly<Record<string, string | null>>;
 };
 const OUTCOMES: Readonly<Record<string, readonly string[]>> = Object.freeze({
   UsernameCollectorNode: ["outcome"],
@@ -137,6 +143,50 @@ export function listOutcomes(
   }
   return Object.hasOwn(OUTCOMES, type) ? OUTCOMES[type] : undefined;
 }
+/** The config's LIBRARY scripts keyed by script name, decoded; a script with no name cannot be required. */
+function libraryBodies(config: JourneyConfig): Record<string, string> {
+  const out: Record<string, string> = Object.create(null) as Record<string, string>;
+  for (const script of Object.values(config.scripts)) {
+    if (script.context !== "LIBRARY" || typeof script.name !== "string") continue;
+    if (typeof script.script !== "string") continue;
+    out[script.name] = Buffer.from(script.script, "base64").toString("utf8");
+  }
+  return out;
+}
+const PLACEHOLDER = /&\{esv\.([^}|]+)(?:\|[^}]*)?\}/g;
+/**
+ * A node's configuration with its ESV placeholders resolved from the configured ESVs. The tenant
+ * wraps some fields as `{"$string": "&{esv.x}"}` / `{"$int": ...}` (docs/api/09-journeys.md): the
+ * wrapper is read through, and a literal in one stays itself. A placeholder with no configured
+ * value is missing behaviour: guessing one would make a field read as text it never held.
+ */
+function resolveEsv(
+  config: NodeDocument,
+  esv: Readonly<Record<string, string | null>>,
+  missing: (name: string) => never,
+): NodeDocument {
+  const text = (value: string): string =>
+    value.replace(PLACEHOLDER, (_all, name: string) => {
+      const found = Object.hasOwn(esv, `esv.${name}`) ? esv[`esv.${name}`] : undefined;
+      if (typeof found !== "string") missing(`ESV placeholder not configured: esv.${name}`);
+      return found;
+    });
+  const walk = (value: unknown): unknown => {
+    if (typeof value === "string") return text(value);
+    if (Array.isArray(value)) return value.map(walk);
+    if (value === null || typeof value !== "object") return value;
+    const keys = Object.keys(value);
+    if (keys.length === 1 && keys[0] === "$string" && typeof (value as Document).$string === "string")
+      return text((value as { $string: string }).$string);
+    if (keys.length === 1 && keys[0] === "$int" && typeof (value as Document).$int === "string") {
+      const resolved = Number(text((value as { $int: string }).$int));
+      if (!Number.isInteger(resolved)) missing("ESV placeholder resolved to a non-integer");
+      return resolved;
+    }
+    return Object.fromEntries(keys.map((key) => [key, walk((value as Document)[key])]));
+  };
+  return walk(config) as NodeDocument;
+}
 function mergeSession(before: SessionDelta | undefined, next: SessionDelta): SessionDelta {
   return {
     ...before,
@@ -156,6 +206,8 @@ export class JourneyEmulator {
   private failures = new EmulationFailureJournal();
   private key = randomBytes(32);
   private snapshots = new Map<string, State>();
+  /** LIBRARY scripts by name: `require(name)` resolves a library by its script name. */
+  private readonly libraries: Record<string, string>;
   private completed = new Set<string>();
   private logs: JourneyLogs | undefined;
   constructor(
@@ -167,6 +219,7 @@ export class JourneyEmulator {
     this.config = config;
     this.runner = runner;
     this.idm = idm;
+    this.libraries = libraryBodies(config);
     const nowNs = options.now;
     this.nodes = new JourneyNodes(idm, this.evidence, (name) => this.missing(name), {
       now: nowNs ? () => Number(nowNs() / 1_000_000n) : Date.now,
@@ -661,6 +714,8 @@ export class JourneyEmulator {
             shared: Boolean(state.javaMap),
             transient: Boolean(frame.javaMap),
           },
+          libraries: this.libraries,
+          esv: { ...this.options.esv },
           ...(request.headers ? { headers: { ...request.headers } } : {}),
           ...(request.cookies ? { cookies: { ...request.cookies } } : {}),
           parameters: Object.fromEntries(
@@ -753,10 +808,11 @@ export class JourneyEmulator {
       return this.scripted(config, state, frame, submitted, request, log);
     if (type === "PageNode") return this.page(config, state, frame, submitted, request, log);
     if (EMULATED.includes(type)) {
+      const resolved = resolveEsv(config, this.options.esv ?? {}, (name) => this.missing(name));
       const before = [state.shared.objectAttributes, frame.transient.objectAttributes];
       const result = await this.nodes.run(
         type,
-        config,
+        resolved,
         state.shared,
         frame.transient,
         submitted,

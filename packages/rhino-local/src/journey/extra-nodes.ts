@@ -69,7 +69,12 @@ export function validateExtraNode(type: string, node: NodeDocument): void {
         "400 Data validation failed for the attribute, One Time Password Length",
       );
   }
-  if (type === "RetryLimitDecisionNode" && node.retryLimit !== undefined) {
+  // `{"$int": "&{esv.…}"}` is how the tenant stores an ESV-backed limit; it resolves at run time.
+  if (
+    type === "RetryLimitDecisionNode" &&
+    node.retryLimit !== undefined &&
+    !(isDocument(node.retryLimit) && typeof node.retryLimit.$int === "string")
+  ) {
     if (
       typeof node.retryLimit !== "number" ||
       !Number.isInteger(node.retryLimit) ||
