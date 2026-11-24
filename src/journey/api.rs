@@ -625,6 +625,178 @@ mod tests {
         );
     }
 
+    fn page_tree() -> Value {
+        json!({
+            "_id": "Example",
+            "nodes": {
+                "page": {"nodeType": "PageNode"},
+                "zafter": {"nodeType": "SetSuccessUrlNode"}
+            }
+        })
+    }
+
+    fn page_config() -> Value {
+        json!({"_id": "page", "nodes": [
+            {"_id": "user", "nodeType": "UsernameCollectorNode", "displayName": "u"},
+            {"_id": "script", "nodeType": "ScriptedDecisionNode", "displayName": "s"}
+        ]})
+    }
+
+    #[tokio::test]
+    async fn a_page_pulls_with_its_children_and_a_pageless_tree_is_unchanged() {
+        let fetch = |node_type: String, id: String| {
+            let seen = (node_type, id);
+            async move {
+                match seen.1.as_str() {
+                    "page" => Ok(page_config()),
+                    other => Ok(json!({"_id": other})),
+                }
+            }
+        };
+        let export = assemble_export_with(page_tree(), fetch).await.unwrap();
+        let mut ids: Vec<&String> = export.nodes.keys().collect();
+        ids.sort();
+        assert_eq!(ids, ["page", "script", "user", "zafter"]);
+
+        // The control: no page in the tree, so no child reads and the same
+        // map the tree alone names.
+        let tree = json!({"nodes": {"a": {"nodeType": "SetSuccessUrlNode"}}});
+        let mut requests = Vec::new();
+        let export = assemble_export_with(tree, |node_type, id| {
+            requests.push((node_type, id.clone()));
+            async move { Ok(json!({"_id": id})) }
+        })
+        .await
+        .unwrap();
+        assert_eq!(export.nodes.len(), 1);
+        assert_eq!(
+            requests,
+            [("SetSuccessUrlNode".to_string(), "a".to_string())]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failed_child_read_fails_the_export_and_an_absent_child_does_not() {
+        let fetch = |busy: bool| {
+            move |_: String, id: String| async move {
+                match id.as_str() {
+                    "page" => Ok(page_config()),
+                    "user" => Err(Error::Api {
+                        status: 404,
+                        body: "Not Found".into(),
+                    }),
+                    "script" if busy => Err(Error::Api {
+                        status: 503,
+                        body: "unavailable".into(),
+                    }),
+                    other => Ok(json!({"_id": other})),
+                }
+            }
+        };
+        let error = assemble_export_with(page_tree(), fetch(true))
+            .await
+            .expect_err("an unread child is not an absent one")
+            .to_string();
+        assert!(error.contains("ScriptedDecisionNode/script"), "{error}");
+        assert!(!error.contains("user"), "{error}");
+        let export = assemble_export_with(page_tree(), fetch(false))
+            .await
+            .unwrap();
+        assert!(!export.nodes.contains_key("user"));
+        assert!(export.nodes.contains_key("script"));
+    }
+
+    #[test]
+    fn push_writes_a_pages_children_before_the_page() {
+        let nodes = [
+            ("page", page_config()),
+            ("zafter", json!({"_id": "zafter"})),
+            ("user", json!({})),
+            ("script", json!({})),
+        ];
+        let export = JourneyExport {
+            tree: page_tree(),
+            nodes: nodes.into_iter().map(|(k, v)| (k.to_string(), v)).collect(),
+        };
+        let (writes, absent) = push_plan(&export).unwrap();
+        let order: Vec<&str> = writes.iter().map(|(id, _)| id.as_str()).collect();
+        assert_eq!(order, ["user", "script", "page", "zafter"]);
+        assert_eq!(writes[0].1, "UsernameCollectorNode");
+        assert!(absent.is_empty());
+    }
+
+    #[test]
+    fn push_of_an_export_without_children_still_writes_the_page() {
+        // An export an older aic wrote: the page, not its children.
+        let export = JourneyExport {
+            tree: page_tree(),
+            nodes: [("page", page_config()), ("zafter", json!({}))]
+                .into_iter()
+                .map(|(k, v)| (k.to_string(), v))
+                .collect(),
+        };
+        let (writes, absent) = push_plan(&export).unwrap();
+        let order: Vec<&str> = writes.iter().map(|(id, _)| id.as_str()).collect();
+        assert_eq!(order, ["page", "zafter"]);
+        let missing: Vec<&str> = absent.iter().map(|(id, _)| id.as_str()).collect();
+        assert_eq!(missing, ["user", "script"]);
+    }
+
+    #[test]
+    fn a_pageless_push_plan_is_the_trees_own_order() {
+        let tree = json!({"nodes": {"b": {"nodeType": "X"}, "a": {"nodeType": "Y"}}});
+        let export = JourneyExport {
+            tree: tree.clone(),
+            nodes: [("a", json!({})), ("b", json!({}))]
+                .into_iter()
+                .map(|(k, v)| (k.to_string(), v))
+                .collect(),
+        };
+        let expected: Vec<(String, String)> = node_refs(&tree).unwrap();
+        assert_eq!(push_plan(&export).unwrap().0, expected);
+    }
+
+    #[test]
+    fn page_children_refuses_a_child_it_cannot_address() {
+        assert!(page_children("PageNode", &json!({"nodes": [{"_id": "x"}]})).is_err());
+        assert!(page_children("PageNode", &json!({"nodes": "x"})).is_err());
+        assert!(page_children("PageNode", &json!({})).unwrap().is_empty());
+        // Only a page has children, whatever else carries a `nodes` key.
+        let config = page_config();
+        assert!(
+            page_children("InnerTreeEvaluatorNode", &config)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn a_child_listed_twice_or_by_a_cycle_is_written_once() {
+        let looping = json!({"nodes": [
+            {"_id": "page", "nodeType": "PageNode"},
+            {"_id": "user", "nodeType": "UsernameCollectorNode"},
+            {"_id": "user", "nodeType": "UsernameCollectorNode"}
+        ]});
+        let export = JourneyExport {
+            tree: page_tree(),
+            nodes: [
+                ("page", looping),
+                ("zafter", json!({})),
+                ("user", json!({})),
+            ]
+            .into_iter()
+            .map(|(k, v)| (k.to_string(), v))
+            .collect(),
+        };
+        let order: Vec<String> = push_plan(&export)
+            .unwrap()
+            .0
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
+        assert_eq!(order, ["user", "page", "zafter"]);
+    }
+
     #[test]
     fn strip_server_fields_removes_only_top_level_id_and_rev() {
         let value = json!({

@@ -1393,7 +1393,12 @@ on `endpoint/<name>` runs that endpoint's script.
 ## `aic journey` — authentication trees
 
 Realm-scoped. Journeys pull/push as JSON exports (tree + all its nodes) under
-the workspace.
+the workspace. A page node's child nodes are part of the journey: they sit in
+the export's `nodes` map beside the page, `push` writes them before the page
+(AM refuses a page naming a child that does not exist), `status`/`diff` compare
+them, `using-script` looks inside pages, and `delete` removes them with the tree.
+An export pulled by an older `aic` holds the page without its children; pull
+again to get them.
 
 ```bash
 aic journey list [--realm alpha] [--json]              # journey names

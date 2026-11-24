@@ -472,6 +472,36 @@ mod tests {
         assert_eq!(missing_nodes(&partial), vec!["c"]);
     }
 
+    fn paged(with_children: bool) -> Value {
+        let mut nodes = json!({"p": {"_id": "p", "nodes": [
+            {"_id": "k", "nodeType": "UsernameCollectorNode", "displayName": "user"}]}});
+        if with_children {
+            nodes["k"] = json!({"_id": "k", "_rev": "1"});
+        }
+        json!({"tree": {"nodes": {"p": {"nodeType": "PageNode"}}}, "nodes": nodes})
+    }
+
+    #[test]
+    fn a_page_child_is_missing_when_the_copy_carries_the_page_alone() {
+        assert!(missing_nodes(&paged(true)).is_empty());
+        assert_eq!(missing_nodes(&paged(false)), vec!["k"]);
+    }
+
+    #[test]
+    fn a_changed_page_child_is_named_from_its_pages_listing() {
+        let mut remote = paged(true);
+        remote["nodes"]["k"]["x"] = json!(1);
+        let parts = changed_parts(&paged(true), &remote);
+        assert_eq!(
+            parts,
+            vec![Part::Node {
+                id: "k".into(),
+                node_type: Some("UsernameCollectorNode".into()),
+                display_name: Some("user".into()),
+            }]
+        );
+    }
+
     #[test]
     fn a_node_listed_by_another_journey_is_reported_as_shared() {
         let owners = std::collections::BTreeMap::from([

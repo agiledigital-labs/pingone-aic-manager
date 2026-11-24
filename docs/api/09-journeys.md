@@ -40,6 +40,34 @@ and a `SetSuccessUrlNode`). The tree's script survives and needs its own
 | Read      | `GET`  | `/am/json{realm-path}/realm-config/authentication/authenticationtrees/nodes/{nodeType}/{nodeId}`          |                                                                                                                                  |
 | Upsert    | `PUT`  | `/am/json{realm-path}/realm-config/authentication/authenticationtrees/nodes/{nodeType}/{nodeId}`          | Plain `PUT` works for create and update; no `If-Match` required. Create returned 201, update returned 200 (verified 2026-06-14). |
 
+### Page nodes and their children (verified 2026-11-25)
+
+A `PageNode` config lists its children — `nodes: [{_id, nodeType, nodeVersion,
+displayName}]` — and each child is an ordinary node object at
+`…/authenticationtrees/nodes/<nodeType>/<id>`. **The tree's own `nodes` map does
+not list them**, so a reader that walks only the tree sees the page and none of
+what it holds. Measured against the sandbox with a throwaway journey (a page of
+a username collector, a password collector and a scripted decision node):
+
+- A `PUT` of the page before its children exist is
+  `400 Invalid config: Node does not exist: <child id>`. Children are written
+  first, then the page, then the tree.
+- A page cannot hold a page: `400 Invalid config: Illegal child node type:
+  PageNode`.
+- Deleting a tree deletes the page **and its children** — all four answered
+  `404` afterwards, so `journey delete` needs no node deletes. Deleting a page
+  node likewise deleted the child it held.
+- `aic journey pull` before this was handled returned `(1 nodes)`, the page
+  alone; the children were in no export or snapshot, so a change to one was
+  invisible to `status`/`diff`/the §5 drift check and was never pushed.
+
+`aic journey` now treats a page's children as part of the journey: they are
+pulled into the same flat `nodes` map as every other node (the export layout is
+unchanged), pushed before the page that names them, compared by `status`/`diff`
+and found by `using-script`. An export written before this lists a page without
+its children; `status` notes that, and `push` still writes the page and warns
+for each child it has no config for.
+
 ### Redirect validation
 
 | Op                     | Method | Path                                                         | Notes                                                                                                                                       |
@@ -257,7 +285,9 @@ aic journey push <name>
 
 The workspace file is a JSON object with `{ "tree": object, "nodes": object }`.
 `tree` is the authentication tree document. `nodes` is a map keyed by node UUID,
-where each value is that node's separately fetched configuration.
+where each value is that node's separately fetched configuration. A page's
+children are in `nodes` too, though the tree does not list them (see
+[Page nodes and their children](#page-nodes-and-their-children-verified-2026-11-25)).
 
 To author a new node:
 
@@ -433,7 +463,8 @@ unsupported.
 
 A `ScriptedDecisionNode` (or any `*ScriptedNode`) holds the script's UUID in its
 config. To find which journeys reference a given script, walk every tree's
-`nodes` and inspect node configs. Useful for the "won't-break-anything" check
+`nodes` and inspect node configs — and read each `PageNode`, whose scripted
+children the tree does not list. Useful for the "won't-break-anything" check
 before deleting a script.
 
 ## Examples
@@ -930,6 +961,15 @@ it in the confirming-read comparison rather than normalizing it away.
 
 ## Verified against
 
+- Date: 2026-11-25 — page children, realm `alpha`: throwaway journey with a
+  `PageNode` holding a username collector, a password collector and a scripted
+  decision node. Page `PUT` before its children was a 400 naming the missing
+  child; a page inside a page was a 400; deleting the tree answered `404` for
+  the page and all three children; a pull with the fixed `aic` returned all
+  four nodes, a delete-then-push from that export recreated the journey and a
+  re-pull was identical modulo `_rev`, and a change to a child made on the
+  tenant showed in `status`/`diff` and blocked an unforced push. Objects
+  deleted afterwards. No reproduce script — scratch files only.
 - Date: 2026-11-03 — `goto` / success URL, realm `alpha`: throwaway tree
   (scripted decision → success, and scripted decision → `SetSuccessUrlNode` →
   success) driven with eleven `goto`/script combinations, then
