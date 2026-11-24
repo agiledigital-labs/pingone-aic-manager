@@ -2972,13 +2972,16 @@ Captcha (as the last child) and Terms and Conditions are accepted as Page
 children, a Page sends its `pageHeader` and `pageDescription` as `header` and
 `description`, and a Page whose children queue no callbacks passes through.
 
+Identify Existing User with no identity value (none, empty, or only nulls) takes `false` and
+writes nothing, as measured (docs/api/25).
+
 Gaps in this set: the persistent cookie's `secretLabelIdentifier` signing, claims
 and `idleTimeout` are not modelled.
 
 Attribute policy evaluation/validateOnly, validated-password validation inside
 a Page or beyond the `JourneyOptions.passwordPolicy` fields (`minLength`,
 `characterSets` as `"0:<chars>"`, `minCharacterSets`), a key held as an object in both split objectAttributes maps, conflicting identity
-sources for Patch, a null identity source, `httpClient.send` with no URL, Identify with no identity value at all, Patch with neither an
+sources for Patch, a null identity source for Patch, `httpClient.send` with no URL, Patch with neither an
 identity value nor objectAttributes, a non-object shared objectAttributes under
 AttributeCollector or Identify, `ValidatedPasswordNode` over an existing
 transient objectAttributes, a `ValidatedUsernameNode` Page child, callbacks

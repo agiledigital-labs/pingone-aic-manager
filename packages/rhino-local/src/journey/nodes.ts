@@ -41,6 +41,8 @@ const PRECEDENCE_SOURCE =
   "docs/api/25-journey-runtime.md (Identify Existing User precedence, 2026-11-04)";
 const BLANK_SOURCE =
   "docs/api/25-journey-runtime.md (A blank or null lookup value, and letter case, 2026-11-04)";
+const EMPTY_SOURCE =
+  "docs/api/25-journey-runtime.md (Identify Existing User with no identity value, 2026-11-25)";
 /** Writes `value` at a slash path, creating the intermediate objects (a sibling path shares them). */
 function setNested(target: Document, path: string[], value: JsonValue): void {
   const [head, ...rest] = path;
@@ -439,7 +441,15 @@ export class JourneyNodes {
       // null, and a miss never falls back.
       const present = objectValue !== undefined && objectValue !== null;
       lookup = present ? objectValue : username;
-      if (lookup === null) this.missing(`${type} null identity source`);
+      if (lookup === undefined || lookup === null) {
+        // Doc 25 (2026-11-25): no usable identity value is a miss, never an error; nothing is
+        // written. A null username with no usable objectAttributes value is the same.
+        this.evidence.measured(
+          "IdentifyExistingUserNode with no identity value (no username and no objectAttributes[identityAttribute], or only nulls) takes false and writes no state",
+          EMPTY_SOURCE,
+        );
+        return done("false");
+      }
       if (present && username !== undefined)
         this.evidence.measured(
           "IdentifyExistingUserNode looks up objectAttributes[identityAttribute] alone when present, ignoring username",
@@ -463,9 +473,7 @@ export class JourneyNodes {
       lookup = objectValue ?? username;
     }
     if (lookup === undefined) {
-      // Measured for Patch only (doc 25: shared _id plus objectAttributes {sn} is FAILURE).
-      if (type === "IdentifyExistingUserNode")
-        this.missing("IdentifyExistingUserNode with no identity value");
+      // Patch (doc 25: shared _id plus objectAttributes {sn} is FAILURE). Identify returned above.
       if (!attrs) this.missing("PatchObjectNode missing objectAttributes");
       this.evidence.measured(
         "PatchObjectNode ignores _id, uses identity attribute or username, and aborts on no match",

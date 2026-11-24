@@ -226,6 +226,34 @@ Leading and trailing spaces in `objectAttributes.mail` are ignored the same way
 (`true`), while a space inside the value is a miss (`false`) — verified
 2026-11-04, `scripts/experiment-journey-escaping-query.sh`.
 
+### No identity value at all (2026-11-25)
+
+Measured with `scripts/experiment-journey-identity-empty.sh` (`kdemo-g2-` objects,
+deleted by name, re-listed empty). Same node config (`identityAttribute: "mail"`,
+`identifier: "userName"`); one throwaway user existed with a known `mail`. A seed
+script wrote exactly the keys shown, one dump node per outcome reported what the
+node left.
+
+| Seed | Outcome | State after |
+| --- | --- | --- |
+| `objectAttributes = {mail: <existing>}` (control) | `true` | `_id` and `username` written, as above |
+| `objectAttributes = {mail: <nobody>}` (control) | `false` | no `_id`, `username` null |
+| nothing | **`false`** | no `_id`, no `username`, no `objectAttributes` created |
+| `objectAttributes = {}` | `false` | no `_id`, no `username` |
+| `objectAttributes = {sn: "x"}` | `false` | no `_id`, no `username` |
+| `username = ""` | `false` | no `_id`; `username` stays `""` |
+| `username = null` | `false` | no `_id`, no `username` |
+| `objectAttributes = {mail: null}` | `false` | no `_id` |
+| `objectAttributes = {mail: null}`, `username = null` | `false` | no `_id` |
+| transient `objectAttributes = {mail: null}` | `false` | no `_id` |
+| the same "nothing" with `identityAttribute: "userName"` | `false` | no `_id` |
+
+So the node never errors for want of an identity value: no value, an empty
+object, an object without the key, and nulls in either bucket all take `false`
+and write nothing. The existing user was not found by any of them, which is what
+tells "no lookup" from a lookup with no filter. The tree reached the `false`
+branch with a normal 200 in every row.
+
 `listOutcomes`: `["true","false"]`.
 
 ## Create Object and Patch Object

@@ -1310,18 +1310,6 @@ it.each([
   ],
   [
     "IdentifyExistingUserNode",
-    { identityAttribute: "mail", identifier: "userName" },
-    "",
-    "IdentifyExistingUserNode with no identity value",
-  ],
-  [
-    "IdentifyExistingUserNode",
-    { identityAttribute: "mail", identifier: "userName" },
-    "nodeState.putShared('username',null);",
-    "IdentifyExistingUserNode null identity source",
-  ],
-  [
-    "IdentifyExistingUserNode",
     { identityAttribute: "mail" },
     "nodeState.putShared('username','invented@example.com');",
     "IdentifyExistingUserNode identifier configuration",
@@ -1347,6 +1335,69 @@ it.each([
       ? await request(emu, answer(first.body, ["invented@example.com"]))
       : first;
   expect(result).toMatchObject({ status: 501, emulation: { missing: [cause] } });
+});
+// Measured 2026-11-25 (docs/api/25, "Identify Existing User with no identity value"): every
+// one of these takes false and writes nothing. The store holds a user, so an implementation that
+// ran the lookup without a filter, or with `undefined`, would find one and answer true.
+it.each([
+  ["nothing seeded", ""],
+  ["empty objectAttributes", "nodeState.putShared('objectAttributes',{});"],
+  ["objectAttributes without the identity attribute", "nodeState.putShared('objectAttributes',{sn:'x'});"],
+  ["a null username", "nodeState.putShared('username',null);"],
+  ["a null identity attribute and no username", "nodeState.putShared('objectAttributes',{mail:null});"],
+  [
+    "a null identity attribute and a null username",
+    "nodeState.putShared('objectAttributes',{mail:null});nodeState.putShared('username',null);",
+  ],
+  ["a null identity attribute in transient", "nodeState.putTransient('objectAttributes',{mail:null});"],
+])("Identify Existing User with %s takes false and writes no identity", async (_name, seed) => {
+  const idm = storage();
+  await idm.request({
+    method: "PUT",
+    path: "managed/widget/record",
+    body: { userName: "invented", mail: "invented@example.com" },
+  });
+  const next = await request(
+    make(
+      flow("IdentifyExistingUserNode", { identityAttribute: "mail", identifier: "userName" }, seed, [
+        "true",
+        "false",
+      ]),
+      {},
+      idm,
+    ),
+  );
+  expect(next.status).toBe(200);
+  const state = dump(next.body) as Record<string, unknown>;
+  expect(state).toMatchObject({ branch: "false", id: null });
+  expect(state.username ?? null).toBeNull();
+  expect(next.provenance).toContainEqual({
+    kind: "measured",
+    behavior:
+      "IdentifyExistingUserNode with no identity value (no username and no objectAttributes[identityAttribute], or only nulls) takes false and writes no state",
+    source: "docs/api/25-journey-runtime.md (Identify Existing User with no identity value, 2026-11-25)",
+  });
+});
+it("Identify Existing User with an empty username is a lookup of the empty string: a miss, username kept", async () => {
+  const idm = storage();
+  await idm.request({
+    method: "PUT",
+    path: "managed/widget/record",
+    body: { userName: "invented", mail: "invented@example.com" },
+  });
+  const next = await request(
+    make(
+      flow(
+        "IdentifyExistingUserNode",
+        { identityAttribute: "mail", identifier: "userName" },
+        "nodeState.putShared('username','');",
+        ["true", "false"],
+      ),
+      {},
+      idm,
+    ),
+  );
+  expect(dump(next.body)).toMatchObject({ branch: "false", id: null, username: "" });
 });
 it("Patch with no identity value records its measured FAILURE", async () => {
   const next = await request(
