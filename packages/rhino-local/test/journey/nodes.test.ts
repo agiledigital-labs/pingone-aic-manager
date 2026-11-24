@@ -527,7 +527,7 @@ it.each(["validateOnly", "policy", "password"])(
       variant === "password"
         ? "ValidatedPasswordNode validateInput unspecified"
         : variant === "policy"
-          ? "AttributeCollectorNode policy evaluation; supply the IDM policy seam for managed writes"
+          ? "AttributeCollectorNode validateInputs: true needs JourneyOptions.attributePolicies"
           : "AttributeCollectorNode validateOnly";
     expectEmulationFailure(cause);
     let result = await request(emu);

@@ -140,3 +140,18 @@ export type PasswordPolicy = {
   /** `CHARACTER_SET` min-character-sets. */
   readonly minCharacterSets?: number;
 };
+
+/**
+ * The IDM policy of one managed attribute, which an Attribute Collector with `validateInputs: true`
+ * evaluates. Like {@link PasswordPolicy} it is supplied by the caller because the tenant reads it
+ * from IDM (docs/api/25, "Attribute Collector validateInputs", 2026-11-25).
+ */
+export type AttributePolicy = {
+  /** The callback's `policies` output, verbatim as the tenant reported it for the attribute. */
+  readonly policies: Readonly<Record<string, unknown>>;
+  /**
+   * The requirements checked: `REQUIRED` (an empty answer) and `VALID_EMAIL_ADDRESS_FORMAT`. Any
+   * other requirement is not modelled, so naming one is refused rather than ignored.
+   */
+  readonly requirements: readonly ("REQUIRED" | "VALID_EMAIL_ADDRESS_FORMAT")[];
+};

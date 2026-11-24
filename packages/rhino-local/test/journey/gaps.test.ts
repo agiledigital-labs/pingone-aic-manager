@@ -506,12 +506,8 @@ describe("G20/G21: a script-built string is a ConsString, not a java.lang.String
   });
 
   it("a method built with + is missing behaviour", async () => {
-    expectEmulationFailure(
-      /httpClient\.send method built by concatenation.*/,
-    );
-    const { result } = await run(
-      send(`{method: "PO" + t.slice(0, 0) + "ST"}`),
-    );
+    expectEmulationFailure(/httpClient\.send method built by concatenation.*/);
+    const { result } = await run(send(`{method: "PO" + t.slice(0, 0) + "ST"}`));
     expect(result.status).toBe(501);
   });
 });
@@ -1078,7 +1074,11 @@ describe("G3: product-CaptchaNode as the last page child", () => {
 describe("G10: ValidatedPasswordNode with validateInput true", () => {
   const POLICY = {
     minLength: 8,
-    characterSets: ["0:0123456789", "0:ABCDEFGHIJKLMNOPQRSTUVWXYZ", "0:abcdefghijklmnopqrstuvwxyz"],
+    characterSets: [
+      "0:0123456789",
+      "0:ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+      "0:abcdefghijklmnopqrstuvwxyz",
+    ],
     minCharacterSets: 3,
   };
   const vp = (options: JourneyOptions = { passwordPolicy: POLICY }) =>
@@ -1089,14 +1089,24 @@ describe("G10: ValidatedPasswordNode with validateInput true", () => {
           invented: {
             entryNodeId: "vp",
             nodes: {
-              vp: { nodeType: "ValidatedPasswordNode", connections: { outcome: "dump" } },
-              dump: { nodeType: "ScriptedDecisionNode", connections: { true: SUCCESS } },
+              vp: {
+                nodeType: "ValidatedPasswordNode",
+                connections: { outcome: "dump" },
+              },
+              dump: {
+                nodeType: "ScriptedDecisionNode",
+                connections: { true: SUCCESS },
+              },
             },
           },
         },
         nodes: {
-          ValidatedPasswordNode: { vp: { passwordAttribute: "password", validateInput: true } },
-          ScriptedDecisionNode: { dump: { script: "dump", outcomes: ["true"] } },
+          ValidatedPasswordNode: {
+            vp: { passwordAttribute: "password", validateInput: true },
+          },
+          ScriptedDecisionNode: {
+            dump: { script: "dump", outcomes: ["true"] },
+          },
         },
         scripts: {
           dump: decision(
@@ -1105,10 +1115,17 @@ describe("G10: ValidatedPasswordNode with validateInput true", () => {
         },
       }),
       runner,
-      new IdmEmulator(new IdmConfig({ sync: { mappings: [] }, managed: { objects: [] } }), runner),
+      new IdmEmulator(
+        new IdmConfig({ sync: { mappings: [] }, managed: { objects: [] } }),
+        runner,
+      ),
       options,
     );
-  const submit = async (emu: JourneyEmulator, password: string, validateOnly = false) => {
+  const submit = async (
+    emu: JourneyEmulator,
+    password: string,
+    validateOnly = false,
+  ) => {
     const first = await post(emu);
     const body = structuredClone(first.body) as {
       callbacks: { input: { value: JsonValue }[] }[];
@@ -1123,10 +1140,15 @@ describe("G10: ValidatedPasswordNode with validateInput true", () => {
     JSON.parse(
       JSON.stringify(
         (
-          body as { callbacks: { output: { name: string; value: JsonValue }[] }[] }
+          body as {
+            callbacks: { output: { name: string; value: JsonValue }[] }[];
+          }
         ).callbacks[0]?.output.find((o) => o.name === "failedPolicies")?.value,
       ),
-    ).map((raw: string) => (JSON.parse(raw) as { policyRequirement: string }).policyRequirement);
+    ).map(
+      (raw: string) =>
+        (JSON.parse(raw) as { policyRequirement: string }).policyRequirement,
+    );
 
   it("sends a ValidatedCreatePasswordCallback with the measured shape", async () => {
     const first = await post(vp());
@@ -1158,25 +1180,35 @@ describe("G10: ValidatedPasswordNode with validateInput true", () => {
     ["", ["CHARACTER_SET", "LENGTH_BASED"]],
     ["abcdefgh1", ["CHARACTER_SET"]],
     ["Aa1", ["LENGTH_BASED"]],
-  ])("a rejected password %j sends the page again naming %j", async (password, failed) => {
-    const { next } = await submit(vp(), password);
-    expect(failedOf(next.body as JsonValue)).toEqual(failed);
-    // The rejected password is never echoed back.
-    expect(
-      (next.body as { callbacks: { input: { value: JsonValue }[] }[] }).callbacks[0]?.input[0]
-        ?.value,
-    ).toBe("");
-  });
+  ])(
+    "a rejected password %j sends the page again naming %j",
+    async (password, failed) => {
+      const { next } = await submit(vp(), password);
+      expect(failedOf(next.body as JsonValue)).toEqual(failed);
+      // The rejected password is never echoed back.
+      expect(
+        (next.body as { callbacks: { input: { value: JsonValue }[] }[] })
+          .callbacks[0]?.input[0]?.value,
+      ).toBe("");
+    },
+  );
   it("accepts a password that meets the policy and writes transient state", async () => {
     const { next } = await submit(vp(), "Aa1Aa1Aa1");
-    expect(hiddenOf(next.body as JsonValue)).toBe('Aa1Aa1Aa1|{"password":"Aa1Aa1Aa1"}');
+    expect(hiddenOf(next.body as JsonValue)).toBe(
+      'Aa1Aa1Aa1|{"password":"Aa1Aa1Aa1"}',
+    );
   });
   it("a validate-only submission is sent again with validateOnly true and writes nothing", async () => {
     const good = await submit(vp(), "Aa1Aa1Aa1", true);
     expect(failedOf(good.next.body as JsonValue)).toEqual([]);
-    expect(JSON.stringify(good.next.body)).toContain('"name":"validateOnly","value":true');
+    expect(JSON.stringify(good.next.body)).toContain(
+      '"name":"validateOnly","value":true',
+    );
     const bad = await submit(vp(), "abc", true);
-    expect(failedOf(bad.next.body as JsonValue)).toEqual(["CHARACTER_SET", "LENGTH_BASED"]);
+    expect(failedOf(bad.next.body as JsonValue)).toEqual([
+      "CHARACTER_SET",
+      "LENGTH_BASED",
+    ]);
   });
   it("needs the realm password policy", async () => {
     expectEmulationFailure(
@@ -1195,8 +1227,14 @@ describe("G6: slash-path attribute names", () => {
           invented: {
             entryNodeId: "at",
             nodes: {
-              at: { nodeType: "AttributeCollectorNode", connections: { outcome: "dump" } },
-              dump: { nodeType: "ScriptedDecisionNode", connections: { true: SUCCESS } },
+              at: {
+                nodeType: "AttributeCollectorNode",
+                connections: { outcome: "dump" },
+              },
+              dump: {
+                nodeType: "ScriptedDecisionNode",
+                connections: { true: SUCCESS },
+              },
             },
           },
         },
@@ -1209,7 +1247,9 @@ describe("G6: slash-path attribute names", () => {
               required: false,
             },
           },
-          ScriptedDecisionNode: { dump: { script: "dump", outcomes: ["true"] } },
+          ScriptedDecisionNode: {
+            dump: { script: "dump", outcomes: ["true"] },
+          },
         },
         scripts: {
           dump: decision(
@@ -1233,7 +1273,10 @@ describe("G6: slash-path attribute names", () => {
                       type: "object",
                       properties: {
                         otp: { type: "string", title: "One-time code" },
-                        remember: { type: "boolean", title: "Trust this device" },
+                        remember: {
+                          type: "boolean",
+                          title: "Trust this device",
+                        },
                       },
                     },
                   },
@@ -1248,23 +1291,34 @@ describe("G6: slash-path attribute names", () => {
   it("looks the nested schema up, names the callback by its path and stores nested, keys sorted", async () => {
     const emu = collector(["preferences/otp", "givenName"]);
     const first = await post(emu);
-    const cbs = (first.body as { callbacks: { output: { name: string; value: JsonValue }[] }[] })
-      .callbacks;
-    expect(cbs.map((cb) => cb.output.find((o) => o.name === "name")?.value)).toEqual([
-      "preferences/otp",
-      "givenName",
-    ]);
-    expect(cbs[0]?.output.find((o) => o.name === "prompt")?.value).toBe("One-time code");
-    const done = await post(emu, answerAll(first.body as JsonValue, ["123456", "Gv"]));
+    const cbs = (
+      first.body as {
+        callbacks: { output: { name: string; value: JsonValue }[] }[];
+      }
+    ).callbacks;
+    expect(
+      cbs.map((cb) => cb.output.find((o) => o.name === "name")?.value),
+    ).toEqual(["preferences/otp", "givenName"]);
+    expect(cbs[0]?.output.find((o) => o.name === "prompt")?.value).toBe(
+      "One-time code",
+    );
+    const done = await post(
+      emu,
+      answerAll(first.body as JsonValue, ["123456", "Gv"]),
+    );
     // givenName sorts before preferences although it was collected second; the flat key is never written.
-    expect(hiddenOf(done.body as JsonValue)).toBe('{"givenName":"Gv","preferences":{"otp":"123456"}}');
+    expect(hiddenOf(done.body as JsonValue)).toBe(
+      '{"givenName":"Gv","preferences":{"otp":"123456"}}',
+    );
   });
   it("a path through a property that is not an object is missing", async () => {
     expectEmulationFailure("AttributeCollectorNode schema: givenName/otp");
     expect((await post(collector(["givenName/otp"]))).status).toBe(501);
   });
   it("a slash path that ends on a non-string is missing", async () => {
-    expectEmulationFailure("AttributeCollectorNode string schema title: preferences/remember");
+    expectEmulationFailure(
+      "AttributeCollectorNode string schema title: preferences/remember",
+    );
     expect((await post(collector(["preferences/remember"]))).status).toBe(501);
   });
 });
@@ -1288,29 +1342,62 @@ describe("G4: inner trees that wait for the user, and nest", () => {
           invented: {
             entryNodeId: "seedO",
             nodes: {
-              seedO: { nodeType: "ScriptedDecisionNode", connections: { true: "e1" } },
-              e1: { nodeType: "InnerTreeEvaluatorNode", connections: { true: "dump", false: FAILURE } },
-              dump: { nodeType: "ScriptedDecisionNode", connections: { true: SUCCESS } },
+              seedO: {
+                nodeType: "ScriptedDecisionNode",
+                connections: { true: "e1" },
+              },
+              e1: {
+                nodeType: "InnerTreeEvaluatorNode",
+                connections: { true: "dump", false: FAILURE },
+              },
+              dump: {
+                nodeType: "ScriptedDecisionNode",
+                connections: { true: SUCCESS },
+              },
             },
           },
           one: {
             entryNodeId: "seed1",
             innerTreeOnly: true,
             nodes: {
-              seed1: { nodeType: "ScriptedDecisionNode", connections: { true: "a" } },
-              a: { nodeType: "ScriptedDecisionNode", connections: { true: "e2" } },
-              e2: { nodeType: "InnerTreeEvaluatorNode", connections: { true: "b", false: FAILURE } },
-              b: { nodeType: "ScriptedDecisionNode", connections: { true: SUCCESS } },
+              seed1: {
+                nodeType: "ScriptedDecisionNode",
+                connections: { true: "a" },
+              },
+              a: {
+                nodeType: "ScriptedDecisionNode",
+                connections: { true: "e2" },
+              },
+              e2: {
+                nodeType: "InnerTreeEvaluatorNode",
+                connections: { true: "b", false: FAILURE },
+              },
+              b: {
+                nodeType: "ScriptedDecisionNode",
+                connections: { true: SUCCESS },
+              },
             },
           },
           two: {
             entryNodeId: "seed2",
             innerTreeOnly: true,
             nodes: {
-              seed2: { nodeType: "ScriptedDecisionNode", connections: { true: "c" } },
-              c: { nodeType: "ScriptedDecisionNode", connections: { true: withCollector ? "user" : "d" } },
-              user: { nodeType: "UsernameCollectorNode", connections: { outcome: "d" } },
-              d: { nodeType: "ScriptedDecisionNode", connections: { true: SUCCESS } },
+              seed2: {
+                nodeType: "ScriptedDecisionNode",
+                connections: { true: "c" },
+              },
+              c: {
+                nodeType: "ScriptedDecisionNode",
+                connections: { true: withCollector ? "user" : "d" },
+              },
+              user: {
+                nodeType: "UsernameCollectorNode",
+                connections: { outcome: "d" },
+              },
+              d: {
+                nodeType: "ScriptedDecisionNode",
+                connections: { true: SUCCESS },
+              },
             },
           },
         },
@@ -1318,10 +1405,9 @@ describe("G4: inner trees that wait for the user, and nest", () => {
           InnerTreeEvaluatorNode: { e1: { tree: "one" }, e2: { tree: "two" } },
           UsernameCollectorNode: { user: {} },
           ScriptedDecisionNode: Object.fromEntries(
-            ["seedO", "seed1", "seed2", "a", "b", "c", "d", "dump"].map((id) => [
-              id,
-              { script: id, outcomes: ["true"] },
-            ]),
+            ["seedO", "seed1", "seed2", "a", "b", "c", "d", "dump"].map(
+              (id) => [id, { script: id, outcomes: ["true"] }],
+            ),
           ),
         },
         scripts: {
@@ -1338,14 +1424,21 @@ describe("G4: inner trees that wait for the user, and nest", () => {
         },
       }),
       runner,
-      new IdmEmulator(new IdmConfig({ sync: { mappings: [] }, managed: { objects: [] } }), runner),
+      new IdmEmulator(
+        new IdmConfig({ sync: { mappings: [] }, managed: { objects: [] } }),
+        runner,
+      ),
     );
   const report = (body: JsonValue) =>
     Object.fromEntries(
-      Object.entries(JSON.parse(hiddenOf(body)) as Record<string, string>).map(([k, v]) => [
-        k,
-        typeof v === "string" && v.startsWith("{") ? (JSON.parse(v) as JsonValue) : v,
-      ]),
+      Object.entries(JSON.parse(hiddenOf(body)) as Record<string, string>).map(
+        ([k, v]) => [
+          k,
+          typeof v === "string" && v.startsWith("{")
+            ? (JSON.parse(v) as JsonValue)
+            : v,
+        ],
+      ),
     ) as Record<string, Record<string, string> | string>;
   it("nests: shared visible at every depth, transient isolated and restored on return", async () => {
     const result = report((await post(build(false))).body as JsonValue);
@@ -1353,8 +1446,22 @@ describe("G4: inner trees that wait for the user, and nest", () => {
       ot: "t",
       name: "invented",
       // Inner 1 sees only its own transient; inner 2 sees neither of the outer ones.
-      a: { name: "one", inner: "true", os: "s", ot: "null", t1: "t", t2: "null" },
-      c: { name: "two", inner: "true", os: "s", ot: "null", t1: "null", t2: "t" },
+      a: {
+        name: "one",
+        inner: "true",
+        os: "s",
+        ot: "null",
+        t1: "t",
+        t2: "null",
+      },
+      c: {
+        name: "two",
+        inner: "true",
+        os: "s",
+        ot: "null",
+        t1: "null",
+        t2: "t",
+      },
       // Back in inner 1 its transient is restored, and inner 2's shared writes remain.
       b: { name: "one", t1: "t", t2: "null" },
     });
@@ -1362,8 +1469,13 @@ describe("G4: inner trees that wait for the user, and nest", () => {
   it("resumes inside the inner tree after a callback, which drops transient at every level", async () => {
     const emu = build(true);
     const first = await post(emu);
-    expect((first.body as { callbacks: { type: string }[] }).callbacks[0]?.type).toBe("NameCallback");
-    const done = await post(emu, answerAll(first.body as JsonValue, ["someone"]));
+    expect(
+      (first.body as { callbacks: { type: string }[] }).callbacks[0]?.type,
+    ).toBe("NameCallback");
+    const done = await post(
+      emu,
+      answerAll(first.body as JsonValue, ["someone"]),
+    );
     const result = report(done.body as JsonValue);
     expect(result).toMatchObject({
       ot: "null",
@@ -1381,8 +1493,223 @@ describe("G8: success with no identified user is tenant behaviour", () => {
     expect(none.status).toBe(500);
     expect(none.body).toBeNull();
     // The control: the same tree with a shared username succeeds.
-    const some = await post(make(`nodeState.putShared("username", "someone"); action.goTo("true");`));
+    const some = await post(
+      make(`nodeState.putShared("username", "someone"); action.goTo("true");`),
+    );
     expect(some.status).toBe(200);
     expect(some.body).toMatchObject({ successUrl: expect.any(String) });
+  });
+});
+
+describe("G17: AttributeCollectorNode validateInputs: true", () => {
+  const POLICIES = {
+    mail: {
+      policies: {
+        name: "mail",
+        policyRequirements: ["REQUIRED", "VALID_EMAIL_ADDRESS_FORMAT"],
+      },
+      requirements: ["REQUIRED", "VALID_EMAIL_ADDRESS_FORMAT"],
+    },
+    name: {
+      policies: { name: "name", policyRequirements: ["REQUIRED"] },
+      requirements: ["REQUIRED"],
+    },
+  } as const;
+  const build = (
+    config: Record<string, unknown>,
+    options: JourneyOptions = { attributePolicies: POLICIES as never },
+  ) =>
+    new JourneyEmulator(
+      new JourneyConfig({
+        realm: "alpha",
+        trees: {
+          invented: {
+            entryNodeId: "at",
+            nodes: {
+              at: {
+                nodeType: "AttributeCollectorNode",
+                connections: { outcome: "dump" },
+              },
+              dump: {
+                nodeType: "ScriptedDecisionNode",
+                connections: { true: SUCCESS },
+              },
+            },
+          },
+        },
+        nodes: {
+          AttributeCollectorNode: {
+            at: {
+              identityResource: "managed/widget",
+              attributesToCollect: ["name", "mail"],
+              validateInputs: true,
+              required: true,
+              ...config,
+            },
+          },
+          ScriptedDecisionNode: {
+            dump: { script: "dump", outcomes: ["true"] },
+          },
+        },
+        scripts: {
+          dump: decision(
+            `if (callbacks.isEmpty()) { callbacksBuilder.hiddenValueCallback("r", JSON.stringify(nodeState.get("objectAttributes"))); } else { action.goTo("true"); }`,
+          ),
+        },
+      }),
+      runner,
+      new IdmEmulator(
+        new IdmConfig({
+          sync: { mappings: [] },
+          managed: {
+            objects: [
+              {
+                name: "widget",
+                schema: {
+                  properties: {
+                    name: { type: "string", title: "Name" },
+                    mail: { type: "string", title: "Email" },
+                  },
+                },
+              },
+            ],
+          },
+        }),
+        runner,
+      ),
+      options,
+    );
+  type Out = { name: string; value: JsonValue };
+  const outputs = (
+    body: JsonValue,
+  ): Record<string, Record<string, JsonValue>> => {
+    const result: Record<string, Record<string, JsonValue>> = {};
+    for (const cb of (body as { callbacks: { output: Out[] }[] }).callbacks) {
+      const out = Object.fromEntries(cb.output.map((o) => [o.name, o.value]));
+      result[String(out.name)] = out;
+    }
+    return result;
+  };
+  const submit = (
+    body: JsonValue,
+    values: string[],
+    validateOnly: number[] = [],
+  ): JsonValue => {
+    const copy = structuredClone(body) as {
+      callbacks: { input: { value: JsonValue }[] }[];
+    };
+    copy.callbacks.forEach((cb, i) => {
+      if (cb.input[0]) cb.input[0].value = values[i] as string;
+      if (cb.input[1]) cb.input[1].value = validateOnly.includes(i);
+    });
+    return copy as unknown as JsonValue;
+  };
+
+  it("sends the supplied policies with each attribute", async () => {
+    const first = outputs((await post(build({}))).body as JsonValue);
+    expect(first.mail?.policies).toEqual(POLICIES.mail.policies);
+    expect(first.name?.failedPolicies).toEqual([]);
+  });
+  it("a malformed address is sent back with its answers kept and the failure as JSON text; a good one proceeds", async () => {
+    const emu = build({});
+    const first = await post(emu);
+    const retry = await post(
+      emu,
+      submit(first.body as JsonValue, ["Zz", "not-an-email"]),
+    );
+    const out = outputs(retry.body as JsonValue);
+    // Discriminating: an implementation that ignores the policy would have left the node here.
+    expect(out.mail).toMatchObject({
+      value: "not-an-email",
+      failedPolicies: ['{ "policyRequirement": "VALID_EMAIL_ADDRESS_FORMAT" }'],
+    });
+    expect(out.name).toMatchObject({ value: "Zz", failedPolicies: [] });
+    const ok = await post(
+      emu,
+      submit(retry.body as JsonValue, ["Zz", "a@example.com"]),
+    );
+    expect(hiddenOf(ok.body as JsonValue)).toBe(
+      '{"mail":"a@example.com","name":"Zz"}',
+    );
+  });
+  it("the same bad address is accepted with validateInputs false (control)", async () => {
+    const emu = build({ validateInputs: false });
+    const first = await post(emu);
+    const ok = await post(
+      emu,
+      submit(first.body as JsonValue, ["Zz", "not-an-email"]),
+    );
+    expect(hiddenOf(ok.body as JsonValue)).toBe(
+      '{"mail":"not-an-email","name":"Zz"}',
+    );
+  });
+  it("an empty answer fails REQUIRED only on a node that is not itself required", async () => {
+    // required: false -> the policy names REQUIRED; required: true -> retry with no failed policy.
+    const loose = build({ required: false });
+    const a = await post(loose);
+    const looseOut = outputs(
+      (await post(loose, submit(a.body as JsonValue, ["Zz", ""])))
+        .body as JsonValue,
+    );
+    expect(looseOut.mail?.failedPolicies).toEqual([
+      '{ "policyRequirement": "REQUIRED" }',
+    ]);
+    const strict = build({});
+    const b = await post(strict);
+    const strictOut = outputs(
+      (await post(strict, submit(b.body as JsonValue, ["Zz", ""])))
+        .body as JsonValue,
+    );
+    expect(strictOut.mail?.failedPolicies).toEqual([]);
+    expect(strictOut.mail?.value).toBe("");
+  });
+  it("a validate-only submission of a bad value is sent again with validateOnly true", async () => {
+    const emu = build({});
+    const first = await post(emu);
+    const out = outputs(
+      (await post(emu, submit(first.body as JsonValue, ["Zz", "bad"], [1])))
+        .body as JsonValue,
+    );
+    expect(out.mail).toMatchObject({
+      validateOnly: true,
+      failedPolicies: expect.any(Array),
+    });
+    expect(out.name?.validateOnly).toBe(false);
+  });
+  it("validate-only with nothing failing is unmeasured: missing", async () => {
+    expectEmulationFailure(
+      "AttributeCollectorNode validateOnly with nothing failing",
+    );
+    const emu = build({});
+    const first = await post(emu);
+    expect(
+      (
+        await post(
+          emu,
+          submit(first.body as JsonValue, ["Zz", "a@example.com"], [1]),
+        )
+      ).status,
+    ).toBe(501);
+  });
+  it("without attributePolicies it is missing, and so is an attribute with no policy", async () => {
+    expectEmulationFailure(
+      "AttributeCollectorNode validateInputs: true needs JourneyOptions.attributePolicies",
+    );
+    expect((await post(build({}, {}))).status).toBe(501);
+  });
+  it("a requirement the emulator does not model is refused, not ignored", async () => {
+    expectEmulationFailure(
+      "AttributeCollectorNode policy requirement: MIN_LENGTH",
+    );
+    const emu = build(
+      {},
+      {
+        attributePolicies: {
+          ...POLICIES,
+          name: { policies: {}, requirements: ["MIN_LENGTH"] },
+        } as never,
+      },
+    );
+    expect((await post(emu)).status).toBe(501);
   });
 });

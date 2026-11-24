@@ -34,6 +34,7 @@ import type {
   NodeDocument,
   ScriptDocument,
   PasswordPolicy,
+  AttributePolicy,
   SessionDelta,
   TermsAndConditions,
   TreeDocument,
@@ -76,6 +77,8 @@ export type JourneyOptions = {
   termsAndConditions?: TermsAndConditions;
   /** The realm password policy Validated Password evaluates when `validateInput` is true. */
   passwordPolicy?: PasswordPolicy;
+  /** IDM policy per attribute name, which Attribute Collector evaluates when `validateInputs` is true. */
+  attributePolicies?: Readonly<Record<string, AttributePolicy>>;
   maxTransitions?: number;
   timeoutMs?: number;
   /**
@@ -244,7 +247,7 @@ export class JourneyEmulator {
       now: nowNs ? () => Number(nowNs() / 1_000_000n) : Date.now,
       declared: (nodeId) => options.declaredOutcomes?.[nodeId],
       ...(options.termsAndConditions ? { terms: options.termsAndConditions } : {}),
-    }, options.passwordPolicy);
+    }, options.passwordPolicy, options.attributePolicies);
     for (const tree of Object.values(config.trees))
       for (const [id, node] of Object.entries(tree.nodes)) {
         if (
