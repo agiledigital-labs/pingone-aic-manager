@@ -1,6 +1,7 @@
 //! Verified HTTP wrappers for AM journeys (authentication trees).
 //! See `docs/api/09-journeys.md`.
 
+use std::collections::{HashSet, VecDeque};
 use std::future::Future;
 use std::path::is_separator;
 
@@ -255,8 +256,47 @@ fn node_refs(tree: &Value) -> Result<Vec<(String, String)>> {
         .collect()
 }
 
+/// The node type whose config lists child nodes of its own.
+const PAGE_NODE: &str = "PageNode";
+
+/// The child nodes a node's config lists, as `(id, nodeType)`.
+///
+/// Only a `PageNode` has any: its config carries
+/// `nodes: [{_id, nodeType, displayName}]`, and each child is a realm node
+/// object at `…/nodes/<type>/<id>` that the tree's own `nodes` map never
+/// mentions (measured 2026-11-25, `docs/api/09-journeys.md`). A listed child
+/// that cannot be addressed is an error, not a skip: leaving it out is how a
+/// pull used to look complete while holding only the page.
+pub(crate) fn page_children(node_type: &str, config: &Value) -> Result<Vec<(String, String)>> {
+    if node_type != PAGE_NODE {
+        return Ok(Vec::new());
+    }
+    let Some(children) = config.get("nodes") else {
+        return Ok(Vec::new());
+    };
+    let children = children.as_array().ok_or_else(|| Error::Api {
+        status: 0,
+        body: format!("page node `nodes` is not an array: {children}"),
+    })?;
+    children
+        .iter()
+        .map(|child| {
+            let id = child.get("_id").and_then(Value::as_str);
+            let node_type = child.get("nodeType").and_then(Value::as_str);
+            match (id, node_type) {
+                (Some(id), Some(node_type)) => Ok((id.to_owned(), node_type.to_owned())),
+                _ => Err(Error::Api {
+                    status: 0,
+                    body: format!("page child needs a string `_id` and `nodeType`: {child}"),
+                }),
+            }
+        })
+        .collect()
+}
+
 /// The tree and every node it lists that exists, or an error naming each node
-/// that could not be read.
+/// that could not be read. A page's children count as listed: they are read
+/// after the page that names them, and recursively.
 ///
 /// **A 404 is an answer; anything else is not.** This used to warn and leave
 /// any unread node out, which every caller then read as content: `journey
@@ -273,12 +313,23 @@ where
     F: FnMut(String, String) -> Fut,
     Fut: Future<Output = Result<Value>>,
 {
-    let refs = node_refs(&tree)?;
+    let mut queue: VecDeque<(String, String)> = node_refs(&tree)?.into();
+    let mut seen: HashSet<String> = queue.iter().map(|(id, _)| id.clone()).collect();
     let mut nodes = Map::new();
     let mut unread = Vec::new();
-    for (id, node_type) in refs {
+    while let Some((id, node_type)) = queue.pop_front() {
         match fetch_node(node_type.clone(), id.clone()).await {
             Ok(node) => {
+                match page_children(&node_type, &node) {
+                    Ok(children) => {
+                        for child in children {
+                            if seen.insert(child.0.clone()) {
+                                queue.push_back(child);
+                            }
+                        }
+                    }
+                    Err(error) => unread.push(format!("{node_type}/{id} ({error})")),
+                }
                 nodes.insert(id, node);
             }
             Err(Error::Api { status: 404, .. }) => {}
@@ -304,6 +355,47 @@ pub async fn pull(tenant: &str, realm: &str, name: &str) -> Result<JourneyExport
     .await
 }
 
+/// One node write of a push: `(id, nodeType)`.
+type NodeWrite = (String, String);
+
+/// The node writes a push makes, in order, and the nodes it could not write
+/// because the export carries no config for them.
+///
+/// **A page's children come before the page.** AM validates a page on write
+/// and refuses one naming a child that does not exist (measured 2026-11-25:
+/// `400 Invalid config: Node does not exist: <id>`), so the order is not
+/// cosmetic. Pure, so a test drives the order the push really uses.
+fn push_plan(export: &JourneyExport) -> Result<(Vec<NodeWrite>, Vec<NodeWrite>)> {
+    fn visit(
+        export: &JourneyExport,
+        id: &str,
+        node_type: &str,
+        seen: &mut HashSet<String>,
+        writes: &mut Vec<NodeWrite>,
+        absent: &mut Vec<NodeWrite>,
+    ) -> Result<()> {
+        if !seen.insert(id.to_owned()) {
+            return Ok(());
+        }
+        let Some(node) = export.nodes.get(id) else {
+            absent.push((id.to_owned(), node_type.to_owned()));
+            return Ok(());
+        };
+        for (child_id, child_type) in page_children(node_type, node)? {
+            visit(export, &child_id, &child_type, seen, writes, absent)?;
+        }
+        writes.push((id.to_owned(), node_type.to_owned()));
+        Ok(())
+    }
+
+    let (mut writes, mut absent) = (Vec::new(), Vec::new());
+    let mut seen = HashSet::new();
+    for (id, node_type) in node_refs(&export.tree)? {
+        visit(export, &id, &node_type, &mut seen, &mut writes, &mut absent)?;
+    }
+    Ok((writes, absent))
+}
+
 pub async fn push(
     tenant: &str,
     realm: &str,
@@ -311,28 +403,27 @@ pub async fn push(
     export: &JourneyExport,
     confirmed_prod: bool,
 ) -> Result<usize> {
-    let refs = node_refs(&export.tree)?;
-    let mut pushed = 0;
-    for (node_id, node_type) in refs {
-        let Some(node) = export.nodes.get(&node_id) else {
-            eprintln!(
-                "warning: journey tree references node {node_type}/{node_id}, but export has no node config; skipping"
-            );
-            continue;
-        };
+    // Plan before the first write: a malformed page must not leave half a
+    // journey on the tenant.
+    let (writes, absent) = push_plan(export)?;
+    for (node_id, node_type) in &absent {
+        eprintln!(
+            "warning: journey references node {node_type}/{node_id}, but export has no node config; skipping"
+        );
+    }
+    for (node_id, node_type) in &writes {
         upsert_node(
             tenant,
             realm,
-            &node_type,
-            &node_id,
-            node.clone(),
+            node_type,
+            node_id,
+            export.nodes[node_id].clone(),
             confirmed_prod,
         )
         .await?;
-        pushed += 1;
     }
     upsert_tree(tenant, realm, name, export.tree.clone(), confirmed_prod).await?;
-    Ok(pushed)
+    Ok(writes.len())
 }
 
 fn strip_server_fields(value: &Value) -> Value {

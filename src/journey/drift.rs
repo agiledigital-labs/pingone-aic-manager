@@ -132,12 +132,27 @@ impl Part {
 
 fn node_meta(copies: &[&Value], id: &str, key: &str) -> Option<String> {
     copies.iter().find_map(|copy| {
+        let listed = |entry: &Value| entry.get(key).and_then(Value::as_str).map(str::to_string);
         copy.pointer("/tree/nodes")
             .and_then(|nodes| nodes.get(id))
-            .and_then(|meta| meta.get(key))
-            .and_then(Value::as_str)
-            .map(str::to_string)
+            .and_then(listed)
+            // A page's child is not in the tree; its page's config names it.
+            .or_else(|| {
+                held_nodes(copy)
+                    .flat_map(|config| config.get("nodes").and_then(Value::as_array))
+                    .flatten()
+                    .find(|child| child.get("_id").and_then(Value::as_str) == Some(id))
+                    .and_then(listed)
+            })
     })
+}
+
+/// The configs a copy holds.
+fn held_nodes(copy: &Value) -> impl Iterator<Item = &Value> {
+    copy.get("nodes")
+        .and_then(Value::as_object)
+        .into_iter()
+        .flat_map(|nodes| nodes.values())
 }
 
 /// The parts that differ between two copies: the tree, then each node whose
@@ -184,12 +199,27 @@ pub fn node_ids(copy: &Value) -> BTreeSet<String> {
         .unwrap_or_default()
 }
 
-/// The nodes `copy`'s tree lists that its `nodes` map lacks — an export
-/// written by a pull that left unread nodes out. Comparing such a copy says
-/// nothing about those nodes.
+/// The nodes `copy` lists that its `nodes` map lacks — an export written by a
+/// pull that left unread nodes out, or by one that predates page children.
+/// Comparing such a copy says nothing about those nodes. "Lists" covers the
+/// tree's nodes and the children each held page config names.
 pub fn missing_nodes(copy: &Value) -> Vec<String> {
     let held = copy.get("nodes").and_then(Value::as_object);
-    node_ids(copy)
+    let mut listed = node_ids(copy);
+    for (id, config) in held.into_iter().flatten() {
+        let node_type = copy
+            .pointer("/tree/nodes")
+            .and_then(|nodes| nodes.get(id))
+            .and_then(|meta| meta.get("nodeType"))
+            .and_then(Value::as_str)
+            // A page's child is not in the tree; its config says what it is.
+            .or_else(|| config.pointer("/_type/_id").and_then(Value::as_str))
+            .unwrap_or_default();
+        if let Ok(children) = super::api::page_children(node_type, config) {
+            listed.extend(children.into_iter().map(|(child, _)| child));
+        }
+    }
+    listed
         .into_iter()
         .filter(|id| !held.is_some_and(|nodes| nodes.contains_key(id)))
         .collect()

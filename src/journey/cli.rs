@@ -598,7 +598,9 @@ fn api_not_found(error: &Error) -> bool {
     matches!(error, Error::Api { status: 404, .. })
 }
 
-fn script_node_refs(tree: &Value) -> Vec<(String, String)> {
+/// The tree's nodes worth reading when looking for a script: script-typed
+/// ones, and pages, whose children the tree does not list.
+fn script_search_refs(tree: &Value) -> Vec<(String, String)> {
     tree.get("nodes")
         .and_then(Value::as_object)
         .map(|nodes| {
@@ -606,8 +608,7 @@ fn script_node_refs(tree: &Value) -> Vec<(String, String)> {
                 .iter()
                 .filter_map(|(id, meta)| {
                     let node_type = meta.get("nodeType").and_then(Value::as_str)?;
-                    node_type
-                        .contains("Script")
+                    (node_type.contains("Script") || node_type == "PageNode")
                         .then(|| (id.clone(), node_type.to_string()))
                 })
                 .collect()
@@ -1055,12 +1056,30 @@ pub async fn run(cmd: JourneyCommand) -> Result<()> {
                     }
                 };
                 let mut found = false;
-                for (node_id, node_type) in script_node_refs(&tree) {
+                // A page's scripted children are in no tree, so a page is read
+                // too and its script-typed children join the queue.
+                let mut queue = script_search_refs(&tree);
+                let mut seen: std::collections::HashSet<String> =
+                    queue.iter().map(|(id, _)| id.clone()).collect();
+                while let Some((node_id, node_type)) = queue.pop() {
                     match api::read_node(&tenant, &realm, &node_type, &node_id).await {
                         Ok(config) => {
                             if node_config_references_script(&node_type, &config, &script_id) {
                                 found = true;
                                 break;
+                            }
+                            match api::page_children(&node_type, &config) {
+                                Ok(children) => {
+                                    for (id, child_type) in children {
+                                        if child_type.contains("Script") && seen.insert(id.clone())
+                                        {
+                                            queue.push((id, child_type));
+                                        }
+                                    }
+                                }
+                                Err(error) => eprintln!(
+                                    "warning: could not list children of {node_type}/{node_id}: {error}"
+                                ),
                             }
                         }
                         Err(error) => {
@@ -1536,17 +1555,22 @@ mod tests {
     }
 
     #[test]
-    fn script_node_refs_only_returns_script_node_types() {
-        let refs = script_node_refs(&json!({
+    fn script_search_refs_returns_script_nodes_and_pages_only() {
+        let mut refs = script_search_refs(&json!({
             "nodes": {
                 "script": {"nodeType": "ScriptedDecisionNode"},
-                "page": {"nodeType": "PageNode"}
+                "page": {"nodeType": "PageNode"},
+                "plain": {"nodeType": "SetSuccessUrlNode"}
             }
         }));
+        refs.sort();
 
         assert_eq!(
             refs,
-            vec![("script".to_string(), "ScriptedDecisionNode".to_string())]
+            vec![
+                ("page".to_string(), "PageNode".to_string()),
+                ("script".to_string(), "ScriptedDecisionNode".to_string())
+            ]
         );
     }
 }
