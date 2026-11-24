@@ -4,6 +4,8 @@ import { BreakError, parseBreaks } from "../../src/demo/breaks.ts";
 import { mixJson } from "./rig.ts";
 import { parseRfc3339Ns } from "../../src/logs/time.ts";
 
+// A mix is mutated by path in the table below; its shape is what is under test, so it is untyped here.
+/* eslint-disable @typescript-eslint/no-explicit-any */
 const clone = (): any => structuredClone(mixJson());
 
 describe("mix validation", () => {

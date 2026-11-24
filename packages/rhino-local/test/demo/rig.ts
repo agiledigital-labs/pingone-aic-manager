@@ -139,6 +139,8 @@ export async function runDriver(runner: RhinoRunner, o: RunOptions = {}): Promis
 }
 
 export const ts = (r: LogRecord): bigint => parseRfc3339Ns(r.timestamp);
+// Payloads are arbitrary JSON; tests index into them by field.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 export const payload = (r: LogRecord): Record<string, any> => r.payload as Record<string, any>;
 /** A canonical form for comparing runs: arrival order of equal timestamps may differ. */
 export const canon = (records: readonly LogRecord[]): string[] => records.map((r) => JSON.stringify(r)).sort();
