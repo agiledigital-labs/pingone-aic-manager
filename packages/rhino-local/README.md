@@ -2798,7 +2798,16 @@ Integer (written as an integer, which is measured for `s.length`, `indexOf` and
 `size()` results and assumed for a `JSON.parse` result). A `form` request goes out
 urlencoded as Java's `URLEncoder` writes it, with the content type AIC sets, and the
 mock's third argument carries it as `contentType` (docs/api/12 §6); a
-non-string value is missing. `objectAttributes` that a node
+non-string value is missing. A string a script built with `+` is a Rhino
+`ConsString`, which AIC does not treat as a `java.lang.String` (docs/api/12
+§7): as a header value (and a number, a boolean, an object or a `new String`)
+`send` throws the tenant's catchable `InternalError: Cannot add values for key
+'Authorization': Bearer abc`, and as the `body` it goes out as a JSON string
+(`"a=1&b=abc"`, quotes included) under `application/json; charset=UTF-8`,
+replacing the script's header, which is why a urlencoded token body built by
+`+` gets a 400 there; `.toString()`, `String(x)`, `concat`, `slice`, `join` and
+`replace` results are plain strings and pass. A `form` value or a `method` built
+with `+` is missing behaviour. `objectAttributes` that a node
 wrote, or that crossed a callback round trip, reaches the next script as a Java
 map (`get`/`put` work); its printed form is measured, the methods are inferred
 and labelled assumed.
@@ -2963,21 +2972,34 @@ Captcha (as the last child) and Terms and Conditions are accepted as Page
 children, a Page sends its `pageHeader` and `pageDescription` as `header` and
 `description`, and a Page whose children queue no callbacks passes through.
 
+Patch Object's `ignoredFields` drops each named attribute (`sn` or `/sn`, case-sensitive) from the patch, from either `objectAttributes` map (docs/api/25).
+
+Identify Existing User with no identity value (none, empty, or only nulls) takes `false` and
+writes nothing, as measured (docs/api/25).
+
 Gaps in this set: the persistent cookie's `secretLabelIdentifier` signing, claims
 and `idleTimeout` are not modelled.
 
-Attribute policy evaluation/validateOnly, validated-password validation inside
+validateOnly on a passing attribute value, a policy requirement other than `REQUIRED` / `VALID_EMAIL_ADDRESS_FORMAT`, validated-password validation inside
 a Page or beyond the `JourneyOptions.passwordPolicy` fields (`minLength`,
 `characterSets` as `"0:<chars>"`, `minCharacterSets`), a key held as an object in both split objectAttributes maps, conflicting identity
-sources for Patch, a null identity source, `httpClient.send` with no URL, Identify with no identity value at all, Patch with neither an
+sources for Patch, a null identity source for Patch, `httpClient.send` with no URL, Patch with neither an
 identity value nor objectAttributes, a non-object shared objectAttributes under
 AttributeCollector or Identify, `ValidatedPasswordNode` over an existing
 transient objectAttributes, a `ValidatedUsernameNode` Page child, callbacks
 posted without an authId to an entry node other than a scripted decision, a
-non-array `outcomes` configuration, Patch patchAsObject/ignoredFields and
+non-array `outcomes` configuration, Patch patchAsObject (and `ignoredFields` that is not a list of plain attribute names) and
 nested Pages remain fatal missing behavior when
 reached. Policy evaluation is not copied
 into the journey layer: managed writes use the existing IDM policy seam.
+
+AttributeCollector with `validateInputs: true` (doc 25, 2026-11-25) takes its
+policy from `JourneyOptions.attributePolicies`, the sibling of `passwordPolicy`
+(the tenant reads both from IDM, so the caller supplies what the tenant
+reported): `{ mail: { policies: <the callback's policies, verbatim>,
+requirements: ["REQUIRED", "VALID_EMAIL_ADDRESS_FORMAT"] } }`. A failing page is
+sent again with answers kept and `failedPolicies` as JSON text; `validateOnly`
+re-sends. An attribute with no entry, or any other requirement, is missing.
 
 ### Journey log records (`logSink`)
 
@@ -3005,7 +3027,24 @@ record as `nodeExtraLogging.auditInfo` (keys sorted, `undefined` as `null`;
 with 401; a throw writes nothing). `nodeState.putShared("auditEntryDetail", ...)`
 does not count. Shapes: `docs/api/08-logs.md` ("Script logger lines, and the
 node completion record") and `docs/api/25-journey-runtime.md` ("What a script can
-put in the audit log"). The successful end `AM-TREE-LOGIN-COMPLETED` was never
+put in the audit log"). To read a script's output back in a test, collect the
+records and filter: the script's `logger.*` calls are the `am-core` records whose
+`payload.logger` starts `scripts.` (`payload.level`, `payload.message`, already formatted, in call order), and an
+`auditEntryDetail` assignment is `payload.entries[0].info.nodeExtraLogging.auditInfo`
+on the `AM-NODE-LOGIN-COMPLETED` record of its node:
+
+```ts
+const records: LogRecord[] = [];
+const emu = new JourneyEmulator(config, runner, idm, {
+  logSink: { emit: (record) => records.push(record) },
+});
+await emu.request({ method: "POST", path: "authenticate", query, body: {} });
+const lines = records
+  .filter((r) => String((r.payload as { logger?: string }).logger).startsWith("scripts."))
+  .map((r) => r.payload);
+```
+
+The successful end `AM-TREE-LOGIN-COMPLETED` was never
 measured (the sandbox answers 500); it is written in one function,
 `RequestLog.treeSucceeded` in `src/journey/emit.ts`, so a measurement changes one
 place. Every other unmeasured choice is marked `UNMEASURED` in that file.

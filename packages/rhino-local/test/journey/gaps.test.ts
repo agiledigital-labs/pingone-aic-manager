@@ -9,6 +9,7 @@ import {
 } from "../../src/journey/index.ts";
 import { expectEmulationFailure } from "../../src/harness/emulation-guard.ts";
 import type { JsonValue } from "../../src/protocol.ts";
+import type { LogRecord } from "../../src/logs/record.ts";
 import {
   SUCCESS_NODE_ID as SUCCESS,
   FAILURE_NODE_ID as FAILURE,
@@ -301,6 +302,259 @@ describe("G12: httpClient.send form option", () => {
     );
     const { result } = await send(`{n: 1}`);
     expect(result.status).toBe(501);
+  });
+});
+
+describe("G20/G21: a script-built string is a ConsString, not a java.lang.String (docs/api/12 §7)", () => {
+  type Seen = {
+    options: Record<string, JsonValue>;
+    bodyText: string;
+    type?: string;
+  };
+  /** `extra` runs first; `t` is a non-constant string, so `"Bearer " + t` is a concatenation. */
+  const run = async (script: string) => {
+    const seen: Seen[] = [];
+    const emu = make(
+      `var t = "ABC".toLowerCase();
+       var caught = "none";
+       try { ${script} } catch (e) { caught = String(e); }
+       nodeState.putShared("username", "u");
+       nodeState.putShared("caught", caught);
+       action.goTo("true");`,
+      {},
+      {
+        http: (_url, options, wire) => {
+          seen.push({
+            options,
+            bodyText: wire.bodyText,
+            ...(wire.contentType ? { type: wire.contentType } : {}),
+          });
+          return { status: 200, body: {} };
+        },
+      },
+    );
+    const result = await start(emu);
+    return { result, seen, emu };
+  };
+  const send = (options: string) =>
+    `httpClient.send("https://service.example.com/x", ${options}).get();`;
+  /** What the script's own catch saw, read from the success body is not possible; echo it by status. */
+  const caughtText = async (options: string) => {
+    const seen: Seen[] = [];
+    let caught = "";
+    const emu = make(
+      `var t = "ABC".toLowerCase();
+       var caught = "none";
+       try { ${send(options)} } catch (e) { caught = String(e); }
+       httpClient.send("https://service.example.com/report", {method: "POST", body: {caught: caught}}).get();
+       nodeState.putShared("username", "u");
+       action.goTo("true");`,
+      {},
+      {
+        http: (url, options, wire) => {
+          if (url.endsWith("/report")) {
+            caught = String((options.body as { caught: string }).caught);
+          } else {
+            seen.push({ options, bodyText: wire.bodyText });
+          }
+          return { status: 200, body: {} };
+        },
+      },
+    );
+    expect((await start(emu)).status).toBe(200);
+    return { caught, seen };
+  };
+
+  it("a header built with + throws the tenant's InternalError at send, and nothing goes out", async () => {
+    const { caught, seen } = await caughtText(
+      `{method: "POST", headers: {Authorization: "Bearer " + t}}`,
+    );
+    expect(caught).toBe(
+      "InternalError: Cannot add values for key 'Authorization': Bearer abc",
+    );
+    expect(seen).toHaveLength(0);
+  });
+
+  it("the same text as a java.lang.String passes (the discriminating case): toString, concat, String(), slice, join, replace and a literal", async () => {
+    for (const value of [
+      `("Bearer " + t).toString()`,
+      `"Bearer ".concat(t)`,
+      `String("Bearer " + t)`,
+      `("Bearer " + t).slice(0)`,
+      `["Bearer ", t].join("")`,
+      `("Bearer " + t).replace("x", "y")`,
+      `"Bearer abc"`,
+    ]) {
+      const { caught, seen } = await caughtText(
+        `{method: "POST", headers: {Authorization: ${value}}}`,
+      );
+      expect(caught, value).toBe("none");
+      expect(seen, value).toHaveLength(1);
+      expect(seen[0]?.options.headers, value).toEqual({
+        Authorization: "Bearer abc",
+      });
+    }
+  });
+
+  it("a number, a boolean, an object and a String object are refused with the value's Java text", async () => {
+    const cases: [string, string][] = [
+      ["1", "1.0"],
+      ["1.5", "1.5"],
+      ["1e21", "1.0E21"],
+      ["true", "true"],
+      ["{a: 1}", "[object Object]"],
+      [`new String("abc")`, "abc"],
+    ];
+    for (const [value, text] of cases) {
+      const { caught, seen } = await caughtText(
+        `{method: "GET", headers: {"X-Probe": ${value}}}`,
+      );
+      expect(caught, value).toBe(
+        `InternalError: Cannot add values for key 'X-Probe': ${text}`,
+      );
+      expect(seen, value).toHaveLength(0);
+    }
+  });
+
+  it("null, undefined and an empty array omit the header and are sent; an array of strings is sent", async () => {
+    for (const value of ["null", "undefined", "[]", `["a", "b"]`]) {
+      const { caught, seen } = await caughtText(
+        `{method: "GET", headers: {"X-Probe": ${value}}}`,
+      );
+      expect(caught, value).toBe("none");
+      expect(seen, value).toHaveLength(1);
+    }
+  });
+
+  it("an array holding a concatenation is missing behaviour, not a guess at the tenant's class-loader text", async () => {
+    expectEmulationFailure(
+      /httpClient\.send header array holding a value that is not a plain string: X-Probe.*/,
+    );
+    const { result } = await run(
+      send(`{method: "GET", headers: {"X-Probe": ["a", "b" + t]}}`),
+    );
+    expect(result.status).toBe(501);
+  });
+
+  it("a urlencoded body built with + goes out as a JSON string under application/json, whatever the script's header said", async () => {
+    const { seen } = await run(
+      send(
+        `{method: "POST", headers: {"Content-Type": "application/x-www-form-urlencoded"}, body: "a=1&b=" + t}`,
+      ),
+    );
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toMatchObject({
+      bodyText: `"a=1&b=abc"`,
+      type: "application/json; charset=UTF-8",
+    });
+  });
+
+  it("the same body as a java.lang.String is sent raw under the script's own header (the discriminating case)", async () => {
+    for (const value of [`("a=1&b=" + t).toString()`, `"a=1&b=abc"`]) {
+      const { seen } = await run(
+        send(
+          `{method: "POST", headers: {"Content-Type": "application/x-www-form-urlencoded"}, body: ${value}}`,
+        ),
+      );
+      expect(seen[0], value).toMatchObject({ bodyText: "a=1&b=abc" });
+      expect(seen[0]?.type, value).toBeUndefined();
+    }
+  });
+
+  it("a concatenated body is escaped as a JSON string, as every measured body string is", async () => {
+    const { seen } = await run(
+      send(
+        `{method: "POST", headers: {"Content-Type": "text/plain"}, body: "q=\\"" + t + "\\\\\\u00e9"}`,
+      ),
+    );
+    expect(seen[0]).toMatchObject({
+      // The text q="abc\é as a JSON string: quote and backslash escaped, é raw (docs/api/12 §4).
+      bodyText: String.raw`"q=\"abc\\` + "\u00e9" + '"',
+      type: "application/json; charset=UTF-8",
+    });
+  });
+
+  it("an object body under application/json carries the charset suffix; under no header it carries no content type", async () => {
+    const withHeader = await run(
+      send(
+        `{method: "POST", headers: {"Content-Type": "application/json"}, body: {a: 1}}`,
+      ),
+    );
+    expect(withHeader.seen[0]).toMatchObject({
+      bodyText: `{"a":1.0}`,
+      type: "application/json; charset=UTF-8",
+    });
+    const without = await run(send(`{method: "POST", body: {a: 1}}`));
+    expect(without.seen[0]?.type).toBeUndefined();
+  });
+
+  it("a form value or a method built with + is missing behaviour; the toString'd value is fine", async () => {
+    expectEmulationFailure(
+      /httpClient\.send form value built by concatenation: b.*/,
+    );
+    const form = await run(
+      send(`{method: "POST", form: {a: "1", b: "x" + t}}`),
+    );
+    expect(form.result.status).toBe(501);
+  });
+
+  it("a form value that was toString'd is sent", async () => {
+    const { seen } = await run(
+      send(`{method: "POST", form: {a: "1", b: ("x" + t).toString()}}`),
+    );
+    expect(seen[0]).toMatchObject({ bodyText: "a=1&b=xabc" });
+  });
+
+  it("a method built with + is missing behaviour", async () => {
+    expectEmulationFailure(/httpClient\.send method built by concatenation.*/);
+    const { result } = await run(send(`{method: "PO" + t.slice(0, 0) + "ST"}`));
+    expect(result.status).toBe(501);
+  });
+});
+
+describe("G22: a test reads script log lines and audit entries back through logSink", () => {
+  const read = async (source: string) => {
+    const records: LogRecord[] = [];
+    const emu = make(
+      `${source}\nnodeState.putShared("username", "u"); action.goTo("true");`,
+      {},
+      { logSink: { emit: (record) => records.push(record) } },
+    );
+    return { result: await start(emu), records };
+  };
+  const payload = (record: LogRecord) =>
+    record.payload as Record<string, unknown>;
+
+  it("the script's logger calls come back in order, by level and formatted message, from the records whose logger is the script's", async () => {
+    const { result, records } = await read(
+      `logger.info("token {} ok", "abc"); logger.warn("slow"); logger.debug("detail");`,
+    );
+    expect(result.status).toBe(200);
+    const lines = records
+      .filter((r) => String(payload(r).logger).startsWith("scripts."))
+      .map((r) => [payload(r).level, payload(r).message]);
+    expect(lines).toEqual([
+      ["INFO", "token abc ok"],
+      ["WARN", "slow"],
+      ["DEBUG", "detail"],
+    ]);
+  });
+
+  it("an auditEntryDetail trace comes back on the node's AM-NODE-LOGIN-COMPLETED record; a nodeState write does not", async () => {
+    const { records } = await read(
+      `var auditEntryDetail = {event: "step-done", n: 2};
+       nodeState.putShared("auditEntryDetail", "ignored");`,
+    );
+    const node = records.find(
+      (r) => payload(r).eventName === "AM-NODE-LOGIN-COMPLETED",
+    );
+    const entries = payload(node!).entries as {
+      info: { nodeExtraLogging: { auditInfo: unknown } };
+    }[];
+    expect(entries[0]?.info.nodeExtraLogging.auditInfo).toEqual({
+      event: "step-done",
+      n: 2,
+    });
   });
 });
 
@@ -820,7 +1074,11 @@ describe("G3: product-CaptchaNode as the last page child", () => {
 describe("G10: ValidatedPasswordNode with validateInput true", () => {
   const POLICY = {
     minLength: 8,
-    characterSets: ["0:0123456789", "0:ABCDEFGHIJKLMNOPQRSTUVWXYZ", "0:abcdefghijklmnopqrstuvwxyz"],
+    characterSets: [
+      "0:0123456789",
+      "0:ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+      "0:abcdefghijklmnopqrstuvwxyz",
+    ],
     minCharacterSets: 3,
   };
   const vp = (options: JourneyOptions = { passwordPolicy: POLICY }) =>
@@ -831,14 +1089,24 @@ describe("G10: ValidatedPasswordNode with validateInput true", () => {
           invented: {
             entryNodeId: "vp",
             nodes: {
-              vp: { nodeType: "ValidatedPasswordNode", connections: { outcome: "dump" } },
-              dump: { nodeType: "ScriptedDecisionNode", connections: { true: SUCCESS } },
+              vp: {
+                nodeType: "ValidatedPasswordNode",
+                connections: { outcome: "dump" },
+              },
+              dump: {
+                nodeType: "ScriptedDecisionNode",
+                connections: { true: SUCCESS },
+              },
             },
           },
         },
         nodes: {
-          ValidatedPasswordNode: { vp: { passwordAttribute: "password", validateInput: true } },
-          ScriptedDecisionNode: { dump: { script: "dump", outcomes: ["true"] } },
+          ValidatedPasswordNode: {
+            vp: { passwordAttribute: "password", validateInput: true },
+          },
+          ScriptedDecisionNode: {
+            dump: { script: "dump", outcomes: ["true"] },
+          },
         },
         scripts: {
           dump: decision(
@@ -847,10 +1115,17 @@ describe("G10: ValidatedPasswordNode with validateInput true", () => {
         },
       }),
       runner,
-      new IdmEmulator(new IdmConfig({ sync: { mappings: [] }, managed: { objects: [] } }), runner),
+      new IdmEmulator(
+        new IdmConfig({ sync: { mappings: [] }, managed: { objects: [] } }),
+        runner,
+      ),
       options,
     );
-  const submit = async (emu: JourneyEmulator, password: string, validateOnly = false) => {
+  const submit = async (
+    emu: JourneyEmulator,
+    password: string,
+    validateOnly = false,
+  ) => {
     const first = await post(emu);
     const body = structuredClone(first.body) as {
       callbacks: { input: { value: JsonValue }[] }[];
@@ -865,10 +1140,15 @@ describe("G10: ValidatedPasswordNode with validateInput true", () => {
     JSON.parse(
       JSON.stringify(
         (
-          body as { callbacks: { output: { name: string; value: JsonValue }[] }[] }
+          body as {
+            callbacks: { output: { name: string; value: JsonValue }[] }[];
+          }
         ).callbacks[0]?.output.find((o) => o.name === "failedPolicies")?.value,
       ),
-    ).map((raw: string) => (JSON.parse(raw) as { policyRequirement: string }).policyRequirement);
+    ).map(
+      (raw: string) =>
+        (JSON.parse(raw) as { policyRequirement: string }).policyRequirement,
+    );
 
   it("sends a ValidatedCreatePasswordCallback with the measured shape", async () => {
     const first = await post(vp());
@@ -900,25 +1180,35 @@ describe("G10: ValidatedPasswordNode with validateInput true", () => {
     ["", ["CHARACTER_SET", "LENGTH_BASED"]],
     ["abcdefgh1", ["CHARACTER_SET"]],
     ["Aa1", ["LENGTH_BASED"]],
-  ])("a rejected password %j sends the page again naming %j", async (password, failed) => {
-    const { next } = await submit(vp(), password);
-    expect(failedOf(next.body as JsonValue)).toEqual(failed);
-    // The rejected password is never echoed back.
-    expect(
-      (next.body as { callbacks: { input: { value: JsonValue }[] }[] }).callbacks[0]?.input[0]
-        ?.value,
-    ).toBe("");
-  });
+  ])(
+    "a rejected password %j sends the page again naming %j",
+    async (password, failed) => {
+      const { next } = await submit(vp(), password);
+      expect(failedOf(next.body as JsonValue)).toEqual(failed);
+      // The rejected password is never echoed back.
+      expect(
+        (next.body as { callbacks: { input: { value: JsonValue }[] }[] })
+          .callbacks[0]?.input[0]?.value,
+      ).toBe("");
+    },
+  );
   it("accepts a password that meets the policy and writes transient state", async () => {
     const { next } = await submit(vp(), "Aa1Aa1Aa1");
-    expect(hiddenOf(next.body as JsonValue)).toBe('Aa1Aa1Aa1|{"password":"Aa1Aa1Aa1"}');
+    expect(hiddenOf(next.body as JsonValue)).toBe(
+      'Aa1Aa1Aa1|{"password":"Aa1Aa1Aa1"}',
+    );
   });
   it("a validate-only submission is sent again with validateOnly true and writes nothing", async () => {
     const good = await submit(vp(), "Aa1Aa1Aa1", true);
     expect(failedOf(good.next.body as JsonValue)).toEqual([]);
-    expect(JSON.stringify(good.next.body)).toContain('"name":"validateOnly","value":true');
+    expect(JSON.stringify(good.next.body)).toContain(
+      '"name":"validateOnly","value":true',
+    );
     const bad = await submit(vp(), "abc", true);
-    expect(failedOf(bad.next.body as JsonValue)).toEqual(["CHARACTER_SET", "LENGTH_BASED"]);
+    expect(failedOf(bad.next.body as JsonValue)).toEqual([
+      "CHARACTER_SET",
+      "LENGTH_BASED",
+    ]);
   });
   it("needs the realm password policy", async () => {
     expectEmulationFailure(
@@ -937,8 +1227,14 @@ describe("G6: slash-path attribute names", () => {
           invented: {
             entryNodeId: "at",
             nodes: {
-              at: { nodeType: "AttributeCollectorNode", connections: { outcome: "dump" } },
-              dump: { nodeType: "ScriptedDecisionNode", connections: { true: SUCCESS } },
+              at: {
+                nodeType: "AttributeCollectorNode",
+                connections: { outcome: "dump" },
+              },
+              dump: {
+                nodeType: "ScriptedDecisionNode",
+                connections: { true: SUCCESS },
+              },
             },
           },
         },
@@ -951,7 +1247,9 @@ describe("G6: slash-path attribute names", () => {
               required: false,
             },
           },
-          ScriptedDecisionNode: { dump: { script: "dump", outcomes: ["true"] } },
+          ScriptedDecisionNode: {
+            dump: { script: "dump", outcomes: ["true"] },
+          },
         },
         scripts: {
           dump: decision(
@@ -975,7 +1273,10 @@ describe("G6: slash-path attribute names", () => {
                       type: "object",
                       properties: {
                         otp: { type: "string", title: "One-time code" },
-                        remember: { type: "boolean", title: "Trust this device" },
+                        remember: {
+                          type: "boolean",
+                          title: "Trust this device",
+                        },
                       },
                     },
                   },
@@ -990,23 +1291,34 @@ describe("G6: slash-path attribute names", () => {
   it("looks the nested schema up, names the callback by its path and stores nested, keys sorted", async () => {
     const emu = collector(["preferences/otp", "givenName"]);
     const first = await post(emu);
-    const cbs = (first.body as { callbacks: { output: { name: string; value: JsonValue }[] }[] })
-      .callbacks;
-    expect(cbs.map((cb) => cb.output.find((o) => o.name === "name")?.value)).toEqual([
-      "preferences/otp",
-      "givenName",
-    ]);
-    expect(cbs[0]?.output.find((o) => o.name === "prompt")?.value).toBe("One-time code");
-    const done = await post(emu, answerAll(first.body as JsonValue, ["123456", "Gv"]));
+    const cbs = (
+      first.body as {
+        callbacks: { output: { name: string; value: JsonValue }[] }[];
+      }
+    ).callbacks;
+    expect(
+      cbs.map((cb) => cb.output.find((o) => o.name === "name")?.value),
+    ).toEqual(["preferences/otp", "givenName"]);
+    expect(cbs[0]?.output.find((o) => o.name === "prompt")?.value).toBe(
+      "One-time code",
+    );
+    const done = await post(
+      emu,
+      answerAll(first.body as JsonValue, ["123456", "Gv"]),
+    );
     // givenName sorts before preferences although it was collected second; the flat key is never written.
-    expect(hiddenOf(done.body as JsonValue)).toBe('{"givenName":"Gv","preferences":{"otp":"123456"}}');
+    expect(hiddenOf(done.body as JsonValue)).toBe(
+      '{"givenName":"Gv","preferences":{"otp":"123456"}}',
+    );
   });
   it("a path through a property that is not an object is missing", async () => {
     expectEmulationFailure("AttributeCollectorNode schema: givenName/otp");
     expect((await post(collector(["givenName/otp"]))).status).toBe(501);
   });
   it("a slash path that ends on a non-string is missing", async () => {
-    expectEmulationFailure("AttributeCollectorNode string schema title: preferences/remember");
+    expectEmulationFailure(
+      "AttributeCollectorNode string schema title: preferences/remember",
+    );
     expect((await post(collector(["preferences/remember"]))).status).toBe(501);
   });
 });
@@ -1030,29 +1342,62 @@ describe("G4: inner trees that wait for the user, and nest", () => {
           invented: {
             entryNodeId: "seedO",
             nodes: {
-              seedO: { nodeType: "ScriptedDecisionNode", connections: { true: "e1" } },
-              e1: { nodeType: "InnerTreeEvaluatorNode", connections: { true: "dump", false: FAILURE } },
-              dump: { nodeType: "ScriptedDecisionNode", connections: { true: SUCCESS } },
+              seedO: {
+                nodeType: "ScriptedDecisionNode",
+                connections: { true: "e1" },
+              },
+              e1: {
+                nodeType: "InnerTreeEvaluatorNode",
+                connections: { true: "dump", false: FAILURE },
+              },
+              dump: {
+                nodeType: "ScriptedDecisionNode",
+                connections: { true: SUCCESS },
+              },
             },
           },
           one: {
             entryNodeId: "seed1",
             innerTreeOnly: true,
             nodes: {
-              seed1: { nodeType: "ScriptedDecisionNode", connections: { true: "a" } },
-              a: { nodeType: "ScriptedDecisionNode", connections: { true: "e2" } },
-              e2: { nodeType: "InnerTreeEvaluatorNode", connections: { true: "b", false: FAILURE } },
-              b: { nodeType: "ScriptedDecisionNode", connections: { true: SUCCESS } },
+              seed1: {
+                nodeType: "ScriptedDecisionNode",
+                connections: { true: "a" },
+              },
+              a: {
+                nodeType: "ScriptedDecisionNode",
+                connections: { true: "e2" },
+              },
+              e2: {
+                nodeType: "InnerTreeEvaluatorNode",
+                connections: { true: "b", false: FAILURE },
+              },
+              b: {
+                nodeType: "ScriptedDecisionNode",
+                connections: { true: SUCCESS },
+              },
             },
           },
           two: {
             entryNodeId: "seed2",
             innerTreeOnly: true,
             nodes: {
-              seed2: { nodeType: "ScriptedDecisionNode", connections: { true: "c" } },
-              c: { nodeType: "ScriptedDecisionNode", connections: { true: withCollector ? "user" : "d" } },
-              user: { nodeType: "UsernameCollectorNode", connections: { outcome: "d" } },
-              d: { nodeType: "ScriptedDecisionNode", connections: { true: SUCCESS } },
+              seed2: {
+                nodeType: "ScriptedDecisionNode",
+                connections: { true: "c" },
+              },
+              c: {
+                nodeType: "ScriptedDecisionNode",
+                connections: { true: withCollector ? "user" : "d" },
+              },
+              user: {
+                nodeType: "UsernameCollectorNode",
+                connections: { outcome: "d" },
+              },
+              d: {
+                nodeType: "ScriptedDecisionNode",
+                connections: { true: SUCCESS },
+              },
             },
           },
         },
@@ -1060,10 +1405,9 @@ describe("G4: inner trees that wait for the user, and nest", () => {
           InnerTreeEvaluatorNode: { e1: { tree: "one" }, e2: { tree: "two" } },
           UsernameCollectorNode: { user: {} },
           ScriptedDecisionNode: Object.fromEntries(
-            ["seedO", "seed1", "seed2", "a", "b", "c", "d", "dump"].map((id) => [
-              id,
-              { script: id, outcomes: ["true"] },
-            ]),
+            ["seedO", "seed1", "seed2", "a", "b", "c", "d", "dump"].map(
+              (id) => [id, { script: id, outcomes: ["true"] }],
+            ),
           ),
         },
         scripts: {
@@ -1080,14 +1424,21 @@ describe("G4: inner trees that wait for the user, and nest", () => {
         },
       }),
       runner,
-      new IdmEmulator(new IdmConfig({ sync: { mappings: [] }, managed: { objects: [] } }), runner),
+      new IdmEmulator(
+        new IdmConfig({ sync: { mappings: [] }, managed: { objects: [] } }),
+        runner,
+      ),
     );
   const report = (body: JsonValue) =>
     Object.fromEntries(
-      Object.entries(JSON.parse(hiddenOf(body)) as Record<string, string>).map(([k, v]) => [
-        k,
-        typeof v === "string" && v.startsWith("{") ? (JSON.parse(v) as JsonValue) : v,
-      ]),
+      Object.entries(JSON.parse(hiddenOf(body)) as Record<string, string>).map(
+        ([k, v]) => [
+          k,
+          typeof v === "string" && v.startsWith("{")
+            ? (JSON.parse(v) as JsonValue)
+            : v,
+        ],
+      ),
     ) as Record<string, Record<string, string> | string>;
   it("nests: shared visible at every depth, transient isolated and restored on return", async () => {
     const result = report((await post(build(false))).body as JsonValue);
@@ -1095,8 +1446,22 @@ describe("G4: inner trees that wait for the user, and nest", () => {
       ot: "t",
       name: "invented",
       // Inner 1 sees only its own transient; inner 2 sees neither of the outer ones.
-      a: { name: "one", inner: "true", os: "s", ot: "null", t1: "t", t2: "null" },
-      c: { name: "two", inner: "true", os: "s", ot: "null", t1: "null", t2: "t" },
+      a: {
+        name: "one",
+        inner: "true",
+        os: "s",
+        ot: "null",
+        t1: "t",
+        t2: "null",
+      },
+      c: {
+        name: "two",
+        inner: "true",
+        os: "s",
+        ot: "null",
+        t1: "null",
+        t2: "t",
+      },
       // Back in inner 1 its transient is restored, and inner 2's shared writes remain.
       b: { name: "one", t1: "t", t2: "null" },
     });
@@ -1104,8 +1469,13 @@ describe("G4: inner trees that wait for the user, and nest", () => {
   it("resumes inside the inner tree after a callback, which drops transient at every level", async () => {
     const emu = build(true);
     const first = await post(emu);
-    expect((first.body as { callbacks: { type: string }[] }).callbacks[0]?.type).toBe("NameCallback");
-    const done = await post(emu, answerAll(first.body as JsonValue, ["someone"]));
+    expect(
+      (first.body as { callbacks: { type: string }[] }).callbacks[0]?.type,
+    ).toBe("NameCallback");
+    const done = await post(
+      emu,
+      answerAll(first.body as JsonValue, ["someone"]),
+    );
     const result = report(done.body as JsonValue);
     expect(result).toMatchObject({
       ot: "null",
@@ -1123,8 +1493,315 @@ describe("G8: success with no identified user is tenant behaviour", () => {
     expect(none.status).toBe(500);
     expect(none.body).toBeNull();
     // The control: the same tree with a shared username succeeds.
-    const some = await post(make(`nodeState.putShared("username", "someone"); action.goTo("true");`));
+    const some = await post(
+      make(`nodeState.putShared("username", "someone"); action.goTo("true");`),
+    );
     expect(some.status).toBe(200);
     expect(some.body).toMatchObject({ successUrl: expect.any(String) });
+  });
+});
+
+describe("G17: AttributeCollectorNode validateInputs: true", () => {
+  const POLICIES = {
+    mail: {
+      policies: {
+        name: "mail",
+        policyRequirements: ["REQUIRED", "VALID_EMAIL_ADDRESS_FORMAT"],
+      },
+      requirements: ["REQUIRED", "VALID_EMAIL_ADDRESS_FORMAT"],
+    },
+    name: {
+      policies: { name: "name", policyRequirements: ["REQUIRED"] },
+      requirements: ["REQUIRED"],
+    },
+  } as const;
+  const build = (
+    config: Record<string, unknown>,
+    options: JourneyOptions = { attributePolicies: POLICIES as never },
+  ) =>
+    new JourneyEmulator(
+      new JourneyConfig({
+        realm: "alpha",
+        trees: {
+          invented: {
+            entryNodeId: "at",
+            nodes: {
+              at: {
+                nodeType: "AttributeCollectorNode",
+                connections: { outcome: "dump" },
+              },
+              dump: {
+                nodeType: "ScriptedDecisionNode",
+                connections: { true: SUCCESS },
+              },
+            },
+          },
+        },
+        nodes: {
+          AttributeCollectorNode: {
+            at: {
+              identityResource: "managed/widget",
+              attributesToCollect: ["name", "mail"],
+              validateInputs: true,
+              required: true,
+              ...config,
+            },
+          },
+          ScriptedDecisionNode: {
+            dump: { script: "dump", outcomes: ["true"] },
+          },
+        },
+        scripts: {
+          dump: decision(
+            `if (callbacks.isEmpty()) { callbacksBuilder.hiddenValueCallback("r", JSON.stringify(nodeState.get("objectAttributes"))); } else { action.goTo("true"); }`,
+          ),
+        },
+      }),
+      runner,
+      new IdmEmulator(
+        new IdmConfig({
+          sync: { mappings: [] },
+          managed: {
+            objects: [
+              {
+                name: "widget",
+                schema: {
+                  properties: {
+                    name: { type: "string", title: "Name" },
+                    mail: { type: "string", title: "Email" },
+                  },
+                },
+              },
+            ],
+          },
+        }),
+        runner,
+      ),
+      options,
+    );
+  type Out = { name: string; value: JsonValue };
+  const outputs = (
+    body: JsonValue,
+  ): Record<string, Record<string, JsonValue>> => {
+    const result: Record<string, Record<string, JsonValue>> = {};
+    for (const cb of (body as { callbacks: { output: Out[] }[] }).callbacks) {
+      const out = Object.fromEntries(cb.output.map((o) => [o.name, o.value]));
+      result[String(out.name)] = out;
+    }
+    return result;
+  };
+  const submit = (
+    body: JsonValue,
+    values: string[],
+    validateOnly: number[] = [],
+  ): JsonValue => {
+    const copy = structuredClone(body) as {
+      callbacks: { input: { value: JsonValue }[] }[];
+    };
+    copy.callbacks.forEach((cb, i) => {
+      if (cb.input[0]) cb.input[0].value = values[i] as string;
+      if (cb.input[1]) cb.input[1].value = validateOnly.includes(i);
+    });
+    return copy as unknown as JsonValue;
+  };
+
+  it("sends the supplied policies with each attribute", async () => {
+    const first = outputs((await post(build({}))).body as JsonValue);
+    expect(first.mail?.policies).toEqual(POLICIES.mail.policies);
+    expect(first.name?.failedPolicies).toEqual([]);
+  });
+  it("a malformed address is sent back with its answers kept and the failure as JSON text; a good one proceeds", async () => {
+    const emu = build({});
+    const first = await post(emu);
+    const retry = await post(
+      emu,
+      submit(first.body as JsonValue, ["Zz", "not-an-email"]),
+    );
+    const out = outputs(retry.body as JsonValue);
+    // Discriminating: an implementation that ignores the policy would have left the node here.
+    expect(out.mail).toMatchObject({
+      value: "not-an-email",
+      failedPolicies: ['{ "policyRequirement": "VALID_EMAIL_ADDRESS_FORMAT" }'],
+    });
+    expect(out.name).toMatchObject({ value: "Zz", failedPolicies: [] });
+    const ok = await post(
+      emu,
+      submit(retry.body as JsonValue, ["Zz", "a@example.com"]),
+    );
+    expect(hiddenOf(ok.body as JsonValue)).toBe(
+      '{"mail":"a@example.com","name":"Zz"}',
+    );
+  });
+  it("the same bad address is accepted with validateInputs false (control)", async () => {
+    const emu = build({ validateInputs: false });
+    const first = await post(emu);
+    const ok = await post(
+      emu,
+      submit(first.body as JsonValue, ["Zz", "not-an-email"]),
+    );
+    expect(hiddenOf(ok.body as JsonValue)).toBe(
+      '{"mail":"not-an-email","name":"Zz"}',
+    );
+  });
+  it("an empty answer fails REQUIRED only on a node that is not itself required", async () => {
+    // required: false -> the policy names REQUIRED; required: true -> retry with no failed policy.
+    const loose = build({ required: false });
+    const a = await post(loose);
+    const looseOut = outputs(
+      (await post(loose, submit(a.body as JsonValue, ["Zz", ""])))
+        .body as JsonValue,
+    );
+    expect(looseOut.mail?.failedPolicies).toEqual([
+      '{ "policyRequirement": "REQUIRED" }',
+    ]);
+    const strict = build({});
+    const b = await post(strict);
+    const strictOut = outputs(
+      (await post(strict, submit(b.body as JsonValue, ["Zz", ""])))
+        .body as JsonValue,
+    );
+    expect(strictOut.mail?.failedPolicies).toEqual([]);
+    expect(strictOut.mail?.value).toBe("");
+  });
+  it("a validate-only submission of a bad value is sent again with validateOnly true", async () => {
+    const emu = build({});
+    const first = await post(emu);
+    const out = outputs(
+      (await post(emu, submit(first.body as JsonValue, ["Zz", "bad"], [1])))
+        .body as JsonValue,
+    );
+    expect(out.mail).toMatchObject({
+      validateOnly: true,
+      failedPolicies: expect.any(Array),
+    });
+    expect(out.name?.validateOnly).toBe(false);
+  });
+  it("validate-only with nothing failing is unmeasured: missing", async () => {
+    expectEmulationFailure(
+      "AttributeCollectorNode validateOnly with nothing failing",
+    );
+    const emu = build({});
+    const first = await post(emu);
+    expect(
+      (
+        await post(
+          emu,
+          submit(first.body as JsonValue, ["Zz", "a@example.com"], [1]),
+        )
+      ).status,
+    ).toBe(501);
+  });
+  it("without attributePolicies it is missing, and so is an attribute with no policy", async () => {
+    expectEmulationFailure(
+      "AttributeCollectorNode validateInputs: true needs JourneyOptions.attributePolicies",
+    );
+    expect((await post(build({}, {}))).status).toBe(501);
+  });
+  it("a requirement the emulator does not model is refused, not ignored", async () => {
+    expectEmulationFailure(
+      "AttributeCollectorNode policy requirement: MIN_LENGTH",
+    );
+    const emu = build(
+      {},
+      {
+        attributePolicies: {
+          ...POLICIES,
+          name: { policies: {}, requirements: ["MIN_LENGTH"] },
+        } as never,
+      },
+    );
+    expect((await post(emu)).status).toBe(501);
+  });
+});
+
+describe("G30: a nested object in objectAttributes passes the state-shape check", () => {
+  // Round one hides __noSuchMethod__ on plain objects nested in a service's data (AmHostBridge).
+  // Discriminating: the failure named a non-enumerable __noSuchMethod__ at objectAttributes.preferences,
+  // so the nested object must be a plain object, written via both shared and transient state.
+  it.each(["putShared", "putTransient"])(
+    "%s of objectAttributes with a nested object",
+    async (put) => {
+      const emu = make(
+        `var oa = { userName: "u", preferences: { updates: true, tags: ["a"], inner: { k: 1 } } };
+       nodeState.putShared("username", "u");
+       nodeState.${put}("objectAttributes", oa);
+       nodeState.putShared("seen", JSON.stringify(nodeState.get("objectAttributes")));
+       action.goTo("true");`,
+      );
+      const result = await start(emu);
+      expect(result.status).toBe(200);
+      expect(result.body).toMatchObject({ successUrl: expect.any(String) });
+    },
+  );
+  it("a nested object read from existing objectAttributes and written back", async () => {
+    const emu = make(
+      `nodeState.putShared("username", "u");
+       nodeState.putShared("objectAttributes", { preferences: { updates: true } });
+       var oa = nodeState.get("objectAttributes");
+       oa.preferences.marketing = false;
+       nodeState.putShared("objectAttributes", oa);
+       action.goTo("true");`,
+    );
+    expect((await start(emu)).status).toBe(200);
+  });
+  it("a nested object read from IDM (a service's data) and put into objectAttributes", async () => {
+    // Regression guard only: batch 3's G30 named __noSuchMethod__ at objectAttributes.preferences.
+    // Commenting out the skip in AmHostBridge's state-shape check does NOT fail this test, so the
+    // trigger (which service object carries the hidden member) is not reproduced here.
+    const emu = new JourneyEmulator(
+      new JourneyConfig({
+        realm: "alpha",
+        trees: {
+          invented: {
+            entryNodeId: "one",
+            nodes: {
+              one: {
+                nodeType: "ScriptedDecisionNode",
+                connections: { true: SUCCESS, false: FAILURE },
+              },
+            },
+          },
+        },
+        nodes: {
+          ScriptedDecisionNode: {
+            one: { script: "main", outcomes: ["true", "false"] },
+          },
+        },
+        scripts: {
+          main: decision(
+            `var made = openidm.create("managed/widget", null, { name: "n", preferences: { updates: true } });
+             var got = openidm.read("managed/widget/" + made._id);
+             nodeState.putShared("username", "u");
+             nodeState.putTransient("objectAttributes", { name: got.name, preferences: got.preferences });
+             action.goTo("true");`,
+          ),
+        },
+      }),
+      runner,
+      new IdmEmulator(
+        new IdmConfig({
+          sync: { mappings: [] },
+          managed: {
+            objects: [
+              {
+                name: "widget",
+                schema: {
+                  properties: {
+                    name: { type: "string", title: "Name" },
+                    preferences: {
+                      type: "object",
+                      properties: { updates: { type: "boolean", title: "U" } },
+                    },
+                  },
+                },
+              },
+            ],
+          },
+        }),
+        runner,
+      ),
+    );
+    const result = await start(emu);
+    expect(result.status).toBe(200);
   });
 });

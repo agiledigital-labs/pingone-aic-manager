@@ -527,7 +527,7 @@ it.each(["validateOnly", "policy", "password"])(
       variant === "password"
         ? "ValidatedPasswordNode validateInput unspecified"
         : variant === "policy"
-          ? "AttributeCollectorNode policy evaluation; supply the IDM policy seam for managed writes"
+          ? "AttributeCollectorNode validateInputs: true needs JourneyOptions.attributePolicies"
           : "AttributeCollectorNode validateOnly";
     expectEmulationFailure(cause);
     let result = await request(emu);
@@ -675,6 +675,80 @@ it.each(["id", "attribute", "username", "transient", "absent"])(
     ).toMatchObject({ sn: ["id", "absent"].includes(variant) ? "Family-hook" : "Changed" });
   },
 );
+// Patch Object ignoredFields, measured 2026-11-25 (docs/api/25, "Patch Object ignoredFields"):
+// a named attribute is dropped from the patch, with or without a leading slash, matched exactly,
+// from either objectAttributes map. The discriminating cases: "SN" (a case-insensitive match
+// would ignore sn), an ignored field the seed does not hold, and a transient-held field.
+it.each([
+  ["a bare name", ["sn"], {}, { sn: "Family-hook", givenName: "G1" }],
+  ["a leading-slash pointer", ["/sn"], {}, { sn: "Family-hook", givenName: "G1" }],
+  ["a name in a different case is not ignored", ["SN"], {}, { sn: "S1", givenName: "G1" }],
+  ["a name the seed does not hold", ["zzz"], {}, { sn: "S1", givenName: "G1" }],
+  ["the identity attribute", ["userName"], {}, { sn: "S1", givenName: "G1" }],
+  ["two names", ["sn", "givenName"], {}, { sn: "Family-hook", givenName: "G0" }],
+  ["every field", ["userName", "sn", "givenName"], {}, { sn: "Family-hook", givenName: "G0" }],
+  ["a pointer beside a name", ["/sn", "givenName"], {}, { sn: "Family-hook", givenName: "G0" }],
+  ["a field held in the transient map", ["sn"], { splitSn: true }, { sn: "Family-hook", givenName: "G1" }],
+  ["no ignored fields on a split map", [], { splitSn: true }, { sn: "S1", givenName: "G1" }],
+])("Patch ignoredFields: %s", async (_name, ignoredFields, { splitSn }: { splitSn?: boolean }, expected) => {
+  const idm = storage();
+  await idm.request({
+    method: "PUT",
+    path: "managed/widget/record",
+    body: { userName: "invented", givenName: "G0", sn: "Family" },
+  });
+  const seed = splitSn
+    ? "nodeState.putShared('objectAttributes',{userName:'invented',givenName:'G1'});nodeState.putTransient('objectAttributes',{sn:'S1'});"
+    : "nodeState.putShared('objectAttributes',{userName:'invented',givenName:'G1',sn:'S1'});";
+  const next = await request(
+    make(
+      flow(
+        "PatchObjectNode",
+        {
+          identityResource: "managed/widget",
+          identityAttribute: "userName",
+          patchAsObject: false,
+          ignoredFields,
+        },
+        seed,
+        ["PATCHED", "FAILURE"],
+      ),
+      {},
+      idm,
+    ),
+  );
+  expect(dump(next.body)).toMatchObject({ branch: "PATCHED" });
+  expect((await idm.request({ method: "GET", path: "managed/widget/record" })).body).toMatchObject(
+    expected,
+  );
+  if (ignoredFields.length)
+    expect(next.provenance).toContainEqual(
+      expect.objectContaining({
+        kind: "measured",
+        source: "docs/api/25-journey-runtime.md (Patch Object ignoredFields, 2026-11-25)",
+      }),
+    );
+});
+it.each([
+  ["a nested pointer", ["/a/b"], "PatchObjectNode ignoredFields entry that is not a plain attribute name"],
+  ["a non-string entry", [1], "PatchObjectNode ignoredFields entry that is not a plain attribute name"],
+  ["a non-array value", "sn", "PatchObjectNode ignoredFields that is not an array"],
+])("Patch ignoredFields %s is missing, not guessed", async (_name, ignoredFields, cause) => {
+  expectEmulationFailure(cause);
+  const next = await request(
+    make(
+      flow(
+        "PatchObjectNode",
+        { identityAttribute: "userName", patchAsObject: false, ignoredFields },
+        "nodeState.putShared('objectAttributes',{userName:'invented',sn:'x'});",
+        ["PATCHED", "FAILURE"],
+      ),
+      {},
+      storage(),
+    ),
+  );
+  expect(next.status).toBe(501);
+});
 // docs/api/25 (2026-11-04): objectAttributes[identityAttribute], when present, is the
 // only lookup value; username is consulted only when it is absent, with no fallback.
 const PRECEDENCE = {
@@ -1310,18 +1384,6 @@ it.each([
   ],
   [
     "IdentifyExistingUserNode",
-    { identityAttribute: "mail", identifier: "userName" },
-    "",
-    "IdentifyExistingUserNode with no identity value",
-  ],
-  [
-    "IdentifyExistingUserNode",
-    { identityAttribute: "mail", identifier: "userName" },
-    "nodeState.putShared('username',null);",
-    "IdentifyExistingUserNode null identity source",
-  ],
-  [
-    "IdentifyExistingUserNode",
     { identityAttribute: "mail" },
     "nodeState.putShared('username','invented@example.com');",
     "IdentifyExistingUserNode identifier configuration",
@@ -1347,6 +1409,69 @@ it.each([
       ? await request(emu, answer(first.body, ["invented@example.com"]))
       : first;
   expect(result).toMatchObject({ status: 501, emulation: { missing: [cause] } });
+});
+// Measured 2026-11-25 (docs/api/25, "Identify Existing User with no identity value"): every
+// one of these takes false and writes nothing. The store holds a user, so an implementation that
+// ran the lookup without a filter, or with `undefined`, would find one and answer true.
+it.each([
+  ["nothing seeded", ""],
+  ["empty objectAttributes", "nodeState.putShared('objectAttributes',{});"],
+  ["objectAttributes without the identity attribute", "nodeState.putShared('objectAttributes',{sn:'x'});"],
+  ["a null username", "nodeState.putShared('username',null);"],
+  ["a null identity attribute and no username", "nodeState.putShared('objectAttributes',{mail:null});"],
+  [
+    "a null identity attribute and a null username",
+    "nodeState.putShared('objectAttributes',{mail:null});nodeState.putShared('username',null);",
+  ],
+  ["a null identity attribute in transient", "nodeState.putTransient('objectAttributes',{mail:null});"],
+])("Identify Existing User with %s takes false and writes no identity", async (_name, seed) => {
+  const idm = storage();
+  await idm.request({
+    method: "PUT",
+    path: "managed/widget/record",
+    body: { userName: "invented", mail: "invented@example.com" },
+  });
+  const next = await request(
+    make(
+      flow("IdentifyExistingUserNode", { identityAttribute: "mail", identifier: "userName" }, seed, [
+        "true",
+        "false",
+      ]),
+      {},
+      idm,
+    ),
+  );
+  expect(next.status).toBe(200);
+  const state = dump(next.body) as Record<string, unknown>;
+  expect(state).toMatchObject({ branch: "false", id: null });
+  expect(state.username ?? null).toBeNull();
+  expect(next.provenance).toContainEqual({
+    kind: "measured",
+    behavior:
+      "IdentifyExistingUserNode with no identity value (no username and no objectAttributes[identityAttribute], or only nulls) takes false and writes no state",
+    source: "docs/api/25-journey-runtime.md (Identify Existing User with no identity value, 2026-11-25)",
+  });
+});
+it("Identify Existing User with an empty username is a lookup of the empty string: a miss, username kept", async () => {
+  const idm = storage();
+  await idm.request({
+    method: "PUT",
+    path: "managed/widget/record",
+    body: { userName: "invented", mail: "invented@example.com" },
+  });
+  const next = await request(
+    make(
+      flow(
+        "IdentifyExistingUserNode",
+        { identityAttribute: "mail", identifier: "userName" },
+        "nodeState.putShared('username','');",
+        ["true", "false"],
+      ),
+      {},
+      idm,
+    ),
+  );
+  expect(dump(next.body)).toMatchObject({ branch: "false", id: null, username: "" });
 });
 it("Patch with no identity value records its measured FAILURE", async () => {
   const next = await request(

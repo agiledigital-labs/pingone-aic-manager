@@ -94,6 +94,25 @@ upper case and lower case.
 | A passing password | The node left by `outcome`; transient `password` and transient `objectAttributes {password}`, exactly as with `validateInput: false` | — |
 | `IDToken1validateOnly` true | The callback is sent **again** with `validateOnly` true, `failedPolicies` `[]` for `Aa1Aa1Aa1` and both requirements for `abc`; the node did not leave | The same password with the flag false left |
 
+### Attribute Collector `validateInputs: true` (verified 2026-11-25)
+
+`AttributeCollectorNode` over `givenName`, `sn`, `mail` (`validateInputs: true`), alone and wired to a dump node, on the
+sandbox with throwaway `kdemo-g2-` objects (all deleted; re-list empty). Probe:
+`scripts/experiment-journey-attribute-validate.sh`.
+
+| Case | Measured |
+| --- | --- |
+| First callbacks | `StringAttributeInputCallback` per attribute, `failedPolicies: []`, and `policies` holding the attribute's IDM policy (e.g. `mail`: `policyRequirements ["REQUIRED","VALID_TYPE","VALID_EMAIL_ADDRESS_FORMAT"]`) |
+| `mail` = `not-an-email`, `required: true` | `200`, the page sent again, **every answer kept**, `mail`'s `failedPolicies` = `["{ \"policyRequirement\": \"VALID_EMAIL_ADDRESS_FORMAT\" }"]` (JSON text); nothing written; a valid address on the next step left the node |
+| `mail` empty, `required: true` | page sent again, `failedPolicies` `[]` (as without validation) |
+| `mail` empty, `required: false` | page sent again, `failedPolicies` = `["{ \"policyRequirement\": \"REQUIRED\" }"]` |
+| `givenName` of 600 characters | accepted (no length policy) |
+| `IDToken3validateOnly` true on a bad `mail` | page sent again with that callback's `validateOnly` true and the failed policy; the node did not leave; resubmitting with the flag still true stayed |
+| control: `validateInputs: false`, same bad `mail` | accepted unvalidated |
+
+Not measured: `validateOnly` on a passing value, several failures on one attribute, the format rule beyond
+`not-an-email` failing and an ordinary address passing.
+
 ### Attribute Collector slash paths (verified 2026-11-25)
 
 `AttributeCollectorNode` with `validateInputs: false`, `required: false`, on the sandbox. That realm's schema has
@@ -225,6 +244,34 @@ compares `username` with what the user typed must expect the stored case.
 Leading and trailing spaces in `objectAttributes.mail` are ignored the same way
 (`true`), while a space inside the value is a miss (`false`) — verified
 2026-11-04, `scripts/experiment-journey-escaping-query.sh`.
+
+### No identity value at all (2026-11-25)
+
+Measured with `scripts/experiment-journey-identity-empty.sh` (`kdemo-g2-` objects,
+deleted by name, re-listed empty). Same node config (`identityAttribute: "mail"`,
+`identifier: "userName"`); one throwaway user existed with a known `mail`. A seed
+script wrote exactly the keys shown, one dump node per outcome reported what the
+node left.
+
+| Seed | Outcome | State after |
+| --- | --- | --- |
+| `objectAttributes = {mail: <existing>}` (control) | `true` | `_id` and `username` written, as above |
+| `objectAttributes = {mail: <nobody>}` (control) | `false` | no `_id`, `username` null |
+| nothing | **`false`** | no `_id`, no `username`, no `objectAttributes` created |
+| `objectAttributes = {}` | `false` | no `_id`, no `username` |
+| `objectAttributes = {sn: "x"}` | `false` | no `_id`, no `username` |
+| `username = ""` | `false` | no `_id`; `username` stays `""` |
+| `username = null` | `false` | no `_id`, no `username` |
+| `objectAttributes = {mail: null}` | `false` | no `_id` |
+| `objectAttributes = {mail: null}`, `username = null` | `false` | no `_id` |
+| transient `objectAttributes = {mail: null}` | `false` | no `_id` |
+| the same "nothing" with `identityAttribute: "userName"` | `false` | no `_id` |
+
+So the node never errors for want of an identity value: no value, an empty
+object, an object without the key, and nulls in either bucket all take `false`
+and write nothing. The existing user was not found by any of them, which is what
+tells "no lookup" from a lookup with no filter. The tree reached the `false`
+branch with a normal 200 in every row.
 
 `listOutcomes`: `["true","false"]`.
 
@@ -676,6 +723,34 @@ treeName}`, `principal` `["<name>"]`, `realm` `/alpha`, `result` `SUCCESSFUL`,
 `topic` `authentication`, `transactionId` `<tx>/0` and the same `userId`. The
 node record's `nodeType` was `AnonymousUserNode`.
 
+## Patch Object `ignoredFields` (verified 2026-11-25)
+
+Measured with `scripts/experiment-journey-patch-ignored.sh` (`kdemo-g2-` objects,
+deleted by name, re-listed empty). Each variant had a fresh user (`givenName`
+G0, `sn` S0), seeded `objectAttributes` `{userName, givenName: G1, sn: S1}`, and
+config `identityAttribute: "userName"`, `patchAsObject: false`; the IDM record
+was read back after the run.
+
+| `ignoredFields` | IDM after | Outcome |
+| --- | --- | --- |
+| `[]` and the key absent (controls) | `givenName` G1, `sn` S1 | `PATCHED` |
+| `["sn"]` | `givenName` G1, **`sn` S0** | `PATCHED` |
+| `["/sn"]` | `givenName` G1, **`sn` S0**: a leading slash names the same field | `PATCHED` |
+| `["SN"]` | `givenName` G1, `sn` S1: matched exactly, **case-sensitive** | `PATCHED` |
+| `["zzz"]` | both changed | `PATCHED` |
+| `["sn", "givenName"]` | both unchanged | `PATCHED` |
+| `["/sn", "givenName"]` | both unchanged: a pointer beside a bare name | `PATCHED` |
+| `["userName"]` | both changed; the lookup by `userName` still found the user | `PATCHED` |
+| `["userName", "sn", "givenName"]` (every seeded field) | nothing changed | **`PATCHED`**, not `FAILURE` |
+| `["sn"]` with `sn` in the **transient** `objectAttributes` and the rest shared | `givenName` G1, `sn` S0 | `PATCHED` |
+| `[]` with the same split (control) | both changed | `PATCHED` |
+
+So `ignoredFields` removes each named attribute from the patch, whichever
+`objectAttributes` map held it (the split-map reading in the section below is
+confirmed for Patch), and never affects the lookup. Not measured: a nested
+pointer (`/a/b`), a non-array value, and whether IDM saw an empty patch when
+every field was ignored (the record and the outcome are what was read).
+
 ## Split `objectAttributes` (verified 2026-11-25)
 
 Create Object, Patch Object and Identify Existing User each read the shared
@@ -696,10 +771,10 @@ missing rather than guessing a deep merge).
 
 None of these was exercised; do not build on them as measured:
 
-- Patch Object with `patchAsObject: true`, or with `ignoredFields`.
+- Patch Object with `patchAsObject: true`, or `ignoredFields` entries that are nested pointers.
 - `ValidatedPasswordNode` with `validateInput: true` inside a Page, or with a
   `maxLength` or a character-set minimum count other than `0`, or the effect of
-  `IDTokenNvalidateOnly: true` on a validated attribute callback.
+  `IDTokenNvalidateOnly: true` on a validated *password* callback inside a Page; `validateOnly` on a *passing* attribute value.
 - A Page node holding a node other than the collectors, a scripted decision,
   Terms and Conditions and Captcha; a scripted child that calls
   `action.suspend()` or `withHeader` inside a page; a `pageHeader` with
