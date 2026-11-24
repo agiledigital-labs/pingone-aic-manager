@@ -94,6 +94,25 @@ upper case and lower case.
 | A passing password | The node left by `outcome`; transient `password` and transient `objectAttributes {password}`, exactly as with `validateInput: false` | — |
 | `IDToken1validateOnly` true | The callback is sent **again** with `validateOnly` true, `failedPolicies` `[]` for `Aa1Aa1Aa1` and both requirements for `abc`; the node did not leave | The same password with the flag false left |
 
+### Attribute Collector `validateInputs: true` (verified 2026-11-25)
+
+`AttributeCollectorNode` over `givenName`, `sn`, `mail` (`validateInputs: true`), alone and wired to a dump node, on the
+sandbox with throwaway `kdemo-g2-` objects (all deleted; re-list empty). Probe:
+`scripts/experiment-journey-attribute-validate.sh`.
+
+| Case | Measured |
+| --- | --- |
+| First callbacks | `StringAttributeInputCallback` per attribute, `failedPolicies: []`, and `policies` holding the attribute's IDM policy (e.g. `mail`: `policyRequirements ["REQUIRED","VALID_TYPE","VALID_EMAIL_ADDRESS_FORMAT"]`) |
+| `mail` = `not-an-email`, `required: true` | `200`, the page sent again, **every answer kept**, `mail`'s `failedPolicies` = `["{ \"policyRequirement\": \"VALID_EMAIL_ADDRESS_FORMAT\" }"]` (JSON text); nothing written; a valid address on the next step left the node |
+| `mail` empty, `required: true` | page sent again, `failedPolicies` `[]` (as without validation) |
+| `mail` empty, `required: false` | page sent again, `failedPolicies` = `["{ \"policyRequirement\": \"REQUIRED\" }"]` |
+| `givenName` of 600 characters | accepted (no length policy) |
+| `IDToken3validateOnly` true on a bad `mail` | page sent again with that callback's `validateOnly` true and the failed policy; the node did not leave; resubmitting with the flag still true stayed |
+| control: `validateInputs: false`, same bad `mail` | accepted unvalidated |
+
+Not measured: `validateOnly` on a passing value, several failures on one attribute, the format rule beyond
+`not-an-email` failing and an ordinary address passing.
+
 ### Attribute Collector slash paths (verified 2026-11-25)
 
 `AttributeCollectorNode` with `validateInputs: false`, `required: false`, on the sandbox. That realm's schema has
@@ -755,7 +774,7 @@ None of these was exercised; do not build on them as measured:
 - Patch Object with `patchAsObject: true`, or `ignoredFields` entries that are nested pointers.
 - `ValidatedPasswordNode` with `validateInput: true` inside a Page, or with a
   `maxLength` or a character-set minimum count other than `0`, or the effect of
-  `IDTokenNvalidateOnly: true` on a validated attribute callback.
+  `IDTokenNvalidateOnly: true` on a validated *password* callback inside a Page; `validateOnly` on a *passing* attribute value.
 - A Page node holding a node other than the collectors, a scripted decision,
   Terms and Conditions and Captcha; a scripted child that calls
   `action.suspend()` or `withHeader` inside a page; a `pageHeader` with

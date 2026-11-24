@@ -2980,7 +2980,7 @@ writes nothing, as measured (docs/api/25).
 Gaps in this set: the persistent cookie's `secretLabelIdentifier` signing, claims
 and `idleTimeout` are not modelled.
 
-Attribute policy evaluation/validateOnly, validated-password validation inside
+validateOnly on a passing attribute value, a policy requirement other than `REQUIRED` / `VALID_EMAIL_ADDRESS_FORMAT`, validated-password validation inside
 a Page or beyond the `JourneyOptions.passwordPolicy` fields (`minLength`,
 `characterSets` as `"0:<chars>"`, `minCharacterSets`), a key held as an object in both split objectAttributes maps, conflicting identity
 sources for Patch, a null identity source for Patch, `httpClient.send` with no URL, Patch with neither an
@@ -2992,6 +2992,14 @@ non-array `outcomes` configuration, Patch patchAsObject (and `ignoredFields` tha
 nested Pages remain fatal missing behavior when
 reached. Policy evaluation is not copied
 into the journey layer: managed writes use the existing IDM policy seam.
+
+AttributeCollector with `validateInputs: true` (doc 25, 2026-11-25) takes its
+policy from `JourneyOptions.attributePolicies`, the sibling of `passwordPolicy`
+(the tenant reads both from IDM, so the caller supplies what the tenant
+reported): `{ mail: { policies: <the callback's policies, verbatim>,
+requirements: ["REQUIRED", "VALID_EMAIL_ADDRESS_FORMAT"] } }`. A failing page is
+sent again with answers kept and `failedPolicies` as JSON text; `validateOnly`
+re-sends. An attribute with no entry, or any other requirement, is missing.
 
 ### Journey log records (`logSink`)
 

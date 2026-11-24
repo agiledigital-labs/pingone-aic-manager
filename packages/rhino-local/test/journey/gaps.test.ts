@@ -1713,3 +1713,95 @@ describe("G17: AttributeCollectorNode validateInputs: true", () => {
     expect((await post(emu)).status).toBe(501);
   });
 });
+
+describe("G30: a nested object in objectAttributes passes the state-shape check", () => {
+  // Round one hides __noSuchMethod__ on plain objects nested in a service's data (AmHostBridge).
+  // Discriminating: the failure named a non-enumerable __noSuchMethod__ at objectAttributes.preferences,
+  // so the nested object must be a plain object, written via both shared and transient state.
+  it.each(["putShared", "putTransient"])(
+    "%s of objectAttributes with a nested object",
+    async (put) => {
+      const emu = make(
+        `var oa = { userName: "u", preferences: { updates: true, tags: ["a"], inner: { k: 1 } } };
+       nodeState.putShared("username", "u");
+       nodeState.${put}("objectAttributes", oa);
+       nodeState.putShared("seen", JSON.stringify(nodeState.get("objectAttributes")));
+       action.goTo("true");`,
+      );
+      const result = await start(emu);
+      expect(result.status).toBe(200);
+      expect(result.body).toMatchObject({ successUrl: expect.any(String) });
+    },
+  );
+  it("a nested object read from existing objectAttributes and written back", async () => {
+    const emu = make(
+      `nodeState.putShared("username", "u");
+       nodeState.putShared("objectAttributes", { preferences: { updates: true } });
+       var oa = nodeState.get("objectAttributes");
+       oa.preferences.marketing = false;
+       nodeState.putShared("objectAttributes", oa);
+       action.goTo("true");`,
+    );
+    expect((await start(emu)).status).toBe(200);
+  });
+  it("a nested object read from IDM (a service's data) and put into objectAttributes", async () => {
+    // Regression guard only: batch 3's G30 named __noSuchMethod__ at objectAttributes.preferences.
+    // Commenting out the skip in AmHostBridge's state-shape check does NOT fail this test, so the
+    // trigger (which service object carries the hidden member) is not reproduced here.
+    const emu = new JourneyEmulator(
+      new JourneyConfig({
+        realm: "alpha",
+        trees: {
+          invented: {
+            entryNodeId: "one",
+            nodes: {
+              one: {
+                nodeType: "ScriptedDecisionNode",
+                connections: { true: SUCCESS, false: FAILURE },
+              },
+            },
+          },
+        },
+        nodes: {
+          ScriptedDecisionNode: {
+            one: { script: "main", outcomes: ["true", "false"] },
+          },
+        },
+        scripts: {
+          main: decision(
+            `var made = openidm.create("managed/widget", null, { name: "n", preferences: { updates: true } });
+             var got = openidm.read("managed/widget/" + made._id);
+             nodeState.putShared("username", "u");
+             nodeState.putTransient("objectAttributes", { name: got.name, preferences: got.preferences });
+             action.goTo("true");`,
+          ),
+        },
+      }),
+      runner,
+      new IdmEmulator(
+        new IdmConfig({
+          sync: { mappings: [] },
+          managed: {
+            objects: [
+              {
+                name: "widget",
+                schema: {
+                  properties: {
+                    name: { type: "string", title: "Name" },
+                    preferences: {
+                      type: "object",
+                      properties: { updates: { type: "boolean", title: "U" } },
+                    },
+                  },
+                },
+              },
+            ],
+          },
+        }),
+        runner,
+      ),
+    );
+    const result = await start(emu);
+    expect(result.status).toBe(200);
+  });
+});
