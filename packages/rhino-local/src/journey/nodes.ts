@@ -41,6 +41,8 @@ const PRECEDENCE_SOURCE =
   "docs/api/25-journey-runtime.md (Identify Existing User precedence, 2026-11-04)";
 const BLANK_SOURCE =
   "docs/api/25-journey-runtime.md (A blank or null lookup value, and letter case, 2026-11-04)";
+const IGNORED_SOURCE =
+  "docs/api/25-journey-runtime.md (Patch Object ignoredFields, 2026-11-25)";
 const EMPTY_SOURCE =
   "docs/api/25-journey-runtime.md (Identify Existing User with no identity value, 2026-11-25)";
 /** Writes `value` at a slash path, creating the intermediate objects (a sibling path shares them). */
@@ -420,11 +422,15 @@ export class JourneyNodes {
     if (type === "PatchObjectNode") {
       if (config.patchAsObject !== false)
         this.missing("PatchObjectNode patchAsObject: true or unspecified");
-      if (
-        config.ignoredFields !== undefined &&
-        (!Array.isArray(config.ignoredFields) || config.ignoredFields.length)
-      )
-        this.missing("PatchObjectNode ignoredFields");
+      if (config.ignoredFields !== undefined) {
+        if (!Array.isArray(config.ignoredFields))
+          this.missing("PatchObjectNode ignoredFields that is not an array");
+        // Doc 25 (2026-11-25): an entry is an attribute name, with or without a leading slash.
+        // A nested pointer was not measured.
+        for (const entry of config.ignoredFields)
+          if (typeof entry !== "string" || entry.replace(/^\//, "").includes("/"))
+            this.missing("PatchObjectNode ignoredFields entry that is not a plain attribute name");
+      }
     }
     if (type === "IdentifyExistingUserNode") {
       if (typeof config.identifier !== "string")
@@ -514,11 +520,29 @@ export class JourneyNodes {
         },
       };
     if (!attrs) this.missing("PatchObjectNode missing objectAttributes");
-    const patches = Object.entries(attrs).map(([key, data]) => ({
-      operation: "replace",
-      field: `/${key.replace(/~/g, "~0").replace(/\//g, "~1")}`,
-      value: data,
-    }));
+    // Doc 25 (2026-11-25): a field named in ignoredFields ("sn" or "/sn", matched exactly and
+    // case-sensitively) is dropped from the patch, whichever objectAttributes map held it.
+    const ignored = new Set(
+      ((config.ignoredFields as string[] | undefined) ?? []).map((name) => name.replace(/^\//, "")),
+    );
+    if (ignored.size)
+      this.evidence.measured(
+        "PatchObjectNode ignoredFields drops each named attribute (with or without a leading slash, case-sensitive, from either objectAttributes map) from the patch; the lookup is unaffected, and ignoring every field still takes PATCHED",
+        IGNORED_SOURCE,
+      );
+    const patches = Object.entries(attrs)
+      .filter(([key]) => !ignored.has(key))
+      .map(([key, data]) => ({
+        operation: "replace",
+        field: `/${key.replace(/~/g, "~0").replace(/\//g, "~1")}`,
+        value: data,
+      }));
+    if (!patches.length) {
+      this.evidence.assumed(
+        "PatchObjectNode with every field ignored sends no patch (the outcome PATCHED and the unchanged record are measured; whether IDM saw an empty patch is not)",
+      );
+      return done("PATCHED");
+    }
     const result = await this.call("patch", [`${resource}/${String(match._id)}`, null, patches]);
     if (result.status >= 400) this.missing(`PatchObjectNode IDM error: ${result.status}`);
     return done("PATCHED");

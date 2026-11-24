@@ -704,6 +704,34 @@ treeName}`, `principal` `["<name>"]`, `realm` `/alpha`, `result` `SUCCESSFUL`,
 `topic` `authentication`, `transactionId` `<tx>/0` and the same `userId`. The
 node record's `nodeType` was `AnonymousUserNode`.
 
+## Patch Object `ignoredFields` (verified 2026-11-25)
+
+Measured with `scripts/experiment-journey-patch-ignored.sh` (`kdemo-g2-` objects,
+deleted by name, re-listed empty). Each variant had a fresh user (`givenName`
+G0, `sn` S0), seeded `objectAttributes` `{userName, givenName: G1, sn: S1}`, and
+config `identityAttribute: "userName"`, `patchAsObject: false`; the IDM record
+was read back after the run.
+
+| `ignoredFields` | IDM after | Outcome |
+| --- | --- | --- |
+| `[]` and the key absent (controls) | `givenName` G1, `sn` S1 | `PATCHED` |
+| `["sn"]` | `givenName` G1, **`sn` S0** | `PATCHED` |
+| `["/sn"]` | `givenName` G1, **`sn` S0**: a leading slash names the same field | `PATCHED` |
+| `["SN"]` | `givenName` G1, `sn` S1: matched exactly, **case-sensitive** | `PATCHED` |
+| `["zzz"]` | both changed | `PATCHED` |
+| `["sn", "givenName"]` | both unchanged | `PATCHED` |
+| `["/sn", "givenName"]` | both unchanged: a pointer beside a bare name | `PATCHED` |
+| `["userName"]` | both changed; the lookup by `userName` still found the user | `PATCHED` |
+| `["userName", "sn", "givenName"]` (every seeded field) | nothing changed | **`PATCHED`**, not `FAILURE` |
+| `["sn"]` with `sn` in the **transient** `objectAttributes` and the rest shared | `givenName` G1, `sn` S0 | `PATCHED` |
+| `[]` with the same split (control) | both changed | `PATCHED` |
+
+So `ignoredFields` removes each named attribute from the patch, whichever
+`objectAttributes` map held it (the split-map reading in the section below is
+confirmed for Patch), and never affects the lookup. Not measured: a nested
+pointer (`/a/b`), a non-array value, and whether IDM saw an empty patch when
+every field was ignored (the record and the outcome are what was read).
+
 ## Split `objectAttributes` (verified 2026-11-25)
 
 Create Object, Patch Object and Identify Existing User each read the shared
@@ -724,7 +752,7 @@ missing rather than guessing a deep merge).
 
 None of these was exercised; do not build on them as measured:
 
-- Patch Object with `patchAsObject: true`, or with `ignoredFields`.
+- Patch Object with `patchAsObject: true`, or `ignoredFields` entries that are nested pointers.
 - `ValidatedPasswordNode` with `validateInput: true` inside a Page, or with a
   `maxLength` or a character-set minimum count other than `0`, or the effect of
   `IDTokenNvalidateOnly: true` on a validated attribute callback.

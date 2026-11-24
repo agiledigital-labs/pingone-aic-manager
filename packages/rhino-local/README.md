@@ -2972,6 +2972,8 @@ Captcha (as the last child) and Terms and Conditions are accepted as Page
 children, a Page sends its `pageHeader` and `pageDescription` as `header` and
 `description`, and a Page whose children queue no callbacks passes through.
 
+Patch Object's `ignoredFields` drops each named attribute (`sn` or `/sn`, case-sensitive) from the patch, from either `objectAttributes` map (docs/api/25).
+
 Identify Existing User with no identity value (none, empty, or only nulls) takes `false` and
 writes nothing, as measured (docs/api/25).
 
@@ -2986,7 +2988,7 @@ identity value nor objectAttributes, a non-object shared objectAttributes under
 AttributeCollector or Identify, `ValidatedPasswordNode` over an existing
 transient objectAttributes, a `ValidatedUsernameNode` Page child, callbacks
 posted without an authId to an entry node other than a scripted decision, a
-non-array `outcomes` configuration, Patch patchAsObject/ignoredFields and
+non-array `outcomes` configuration, Patch patchAsObject (and `ignoredFields` that is not a list of plain attribute names) and
 nested Pages remain fatal missing behavior when
 reached. Policy evaluation is not copied
 into the journey layer: managed writes use the existing IDM policy seam.
