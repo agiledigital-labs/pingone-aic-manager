@@ -94,6 +94,22 @@ upper case and lower case.
 | A passing password | The node left by `outcome`; transient `password` and transient `objectAttributes {password}`, exactly as with `validateInput: false` | — |
 | `IDToken1validateOnly` true | The callback is sent **again** with `validateOnly` true, `failedPolicies` `[]` for `Aa1Aa1Aa1` and both requirements for `abc`; the node did not leave | The same password with the flag false left |
 
+### Attribute Collector slash paths (verified 2026-11-25)
+
+`AttributeCollectorNode` with `validateInputs: false`, `required: false`, on the sandbox. That realm's schema has
+no nested string property, so the path walk and the storage were measured on `preferences/remember`, the nested
+boolean it does have.
+
+| Question | Observed | Control |
+| --- | --- | --- |
+| Schema lookup | `attributesToCollect: ["preferences/remember"]` found `properties.preferences.properties.remember` (title `Trust this device`), so the lookup walks the path one segment at a time | — |
+| Callback `name` | The path as written, `preferences/remember` | A flat attribute (`givenName`) in the same node is named `givenName` |
+| Stored value | **Nested**: shared `objectAttributes` held `{"preferences":{"remember":true}}`, with no flat `preferences/remember` key | — |
+| Key order | `["preferences/remember","givenName"]` stored `{"givenName":…,"preferences":{…}}`, and the flat `["sn","givenName"]` stored `{"givenName":…,"sn":…}`: top-level keys are **alphabetical**, not in collection order | Both orders collected the same pair the other way round |
+
+A boolean property is a `BooleanAttributeInputCallback` with a boolean `value` and `IDToken1` input; that callback
+is not built by the emulator. A **string** slash path was not measured (no such property on the sandbox).
+
 ## Inner Tree
 
 Measured 2026-11-02 with `scripts/experiment-journey-inner-tree.sh`. Outer

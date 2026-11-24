@@ -4,7 +4,7 @@ import { EmulationFailure } from "../emulation.ts";
 import { isDocument, own, setOwn } from "../idm/document.ts";
 import type { IdmEmulator } from "../idm/emulator.ts";
 import type { Evidence } from "../idm/provenance.ts";
-import type { Document, RestResult } from "../idm/types.ts";
+import type { Document, PropertyConfig, RestResult } from "../idm/types.ts";
 import type { HostCall, JsonValue } from "../protocol.ts";
 import { EXTRA_TYPES, ExtraNodes, type ExtraContext } from "./extra-nodes.ts";
 import type { AuthenticateResult, NodeDocument, PasswordPolicy, SessionDelta } from "./types.ts";
@@ -41,6 +41,16 @@ const PRECEDENCE_SOURCE =
   "docs/api/25-journey-runtime.md (Identify Existing User precedence, 2026-11-04)";
 const BLANK_SOURCE =
   "docs/api/25-journey-runtime.md (A blank or null lookup value, and letter case, 2026-11-04)";
+/** Writes `value` at a slash path, creating the intermediate objects (a sibling path shares them). */
+function setNested(target: Document, path: string[], value: JsonValue): void {
+  const [head, ...rest] = path;
+  if (head === undefined) return;
+  if (!rest.length) return setOwn(target, head, value);
+  const existing = own(target, head);
+  const child: Document = isDocument(existing) ? existing : {};
+  setNested(child, rest, value);
+  setOwn(target, head, child);
+}
 const PASSWORD_SOURCE = "docs/api/25-journey-runtime.md (Validated password, 2026-11-25)";
 export class JourneyNodes {
   private readonly idm: IdmEmulator;
@@ -286,12 +296,26 @@ export class JourneyNodes {
       if (submitted.length && submitted.length !== config.attributesToCollect.length)
         this.missing("AttributeCollectorNode callback count");
       for (const [index, attribute] of (config.attributesToCollect as string[]).entries()) {
-        const property =
-          schema.properties && Object.hasOwn(schema.properties, attribute)
-            ? schema.properties[attribute]
-            : undefined;
+        const path = attribute.split("/");
+        let property: PropertyConfig | undefined,
+          level: unknown = schema.properties;
+        for (const [depth, segment] of path.entries()) {
+          property =
+            isDocument(level) && Object.hasOwn(level, segment)
+              ? (level[segment] as PropertyConfig)
+              : undefined;
+          if (depth < path.length - 1) {
+            if (property?.type !== "object")
+              this.missing(`AttributeCollectorNode schema: ${attribute}`);
+            level = property.properties;
+          }
+        }
         if (!property || property.type !== "string" || typeof property.title !== "string")
           this.missing(`AttributeCollectorNode string schema title: ${attribute}`);
+        if (path.length > 1)
+          this.evidence.assumed(
+            "AttributeCollectorNode treats a slash-path string attribute like a flat one; the path walk and nested storage were measured with a boolean property",
+          );
         const cb = submitted[index];
         if (
           cb &&
@@ -302,7 +326,7 @@ export class JourneyNodes {
           this.missing("AttributeCollectorNode callback submission");
         if (cb?.validateOnly === true) this.missing("AttributeCollectorNode validateOnly");
         const answer = cb?.value ?? "";
-        setOwn(attrs, attribute, answer);
+        setNested(attrs, path, answer);
         if (config.required === true && answer === "") invalid = true;
         else if (cb && answer === "")
           this.evidence.measured(
@@ -326,7 +350,14 @@ export class JourneyNodes {
       );
       if (!submitted.length || invalid) return { outcome: null, callbacks };
       const previous = this.sharedAttributes(shared, type);
-      setOwn(shared, "objectAttributes", { ...previous, ...attrs });
+      // Measured: the collected keys come out in alphabetical order whatever the collection order.
+      const ordered: Document = {};
+      for (const key of Object.keys(attrs).sort()) setOwn(ordered, key, attrs[key] as JsonValue);
+      this.evidence.measured(
+        "AttributeCollectorNode stores a slash path as nested objectAttributes and orders the collected top-level keys alphabetically",
+        "docs/api/25-journey-runtime.md (Attribute Collector slash paths, 2026-11-25)",
+      );
+      setOwn(shared, "objectAttributes", { ...previous, ...ordered });
       this.evidence.assumed(
         "AttributeCollectorNode merges collected attributes into existing shared objectAttributes",
       );

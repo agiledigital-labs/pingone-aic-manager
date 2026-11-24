@@ -565,6 +565,8 @@ final class AmHostBridge extends BaseFunction {
         Object item = desc.get("value", desc);
         if (!ScriptRuntime.toBoolean(desc.get("enumerable", desc))) {
           if (hidden.contains(String.valueOf(id)) && item instanceof Function) continue;
+          // The method guard hides __noSuchMethod__ on plain objects nested in a service's data.
+          if ("__noSuchMethod__".equals(String.valueOf(id)) && item instanceof Function) continue;
           throw shape("non-enumerable property", at);
         }
         if (array) {

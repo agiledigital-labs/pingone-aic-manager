@@ -927,3 +927,86 @@ describe("G10: ValidatedPasswordNode with validateInput true", () => {
     expect((await post(vp({}))).status).toBe(501);
   });
 });
+
+describe("G6: slash-path attribute names", () => {
+  const collector = (attributes: string[]) =>
+    new JourneyEmulator(
+      new JourneyConfig({
+        realm: "alpha",
+        trees: {
+          invented: {
+            entryNodeId: "at",
+            nodes: {
+              at: { nodeType: "AttributeCollectorNode", connections: { outcome: "dump" } },
+              dump: { nodeType: "ScriptedDecisionNode", connections: { true: SUCCESS } },
+            },
+          },
+        },
+        nodes: {
+          AttributeCollectorNode: {
+            at: {
+              identityResource: "managed/widget",
+              attributesToCollect: attributes,
+              validateInputs: false,
+              required: false,
+            },
+          },
+          ScriptedDecisionNode: { dump: { script: "dump", outcomes: ["true"] } },
+        },
+        scripts: {
+          dump: decision(
+            `if (callbacks.isEmpty()) { callbacksBuilder.hiddenValueCallback("r", JSON.stringify(nodeState.get("objectAttributes"))); } else { action.goTo("true"); }`,
+          ),
+        },
+      }),
+      runner,
+      new IdmEmulator(
+        new IdmConfig({
+          sync: { mappings: [] },
+          managed: {
+            objects: [
+              {
+                name: "widget",
+                schema: {
+                  properties: {
+                    givenName: { type: "string", title: "First Name" },
+                    flag: { type: "boolean", title: "Flag" },
+                    preferences: {
+                      type: "object",
+                      properties: {
+                        otp: { type: "string", title: "One-time code" },
+                        remember: { type: "boolean", title: "Trust this device" },
+                      },
+                    },
+                  },
+                },
+              },
+            ],
+          },
+        }),
+        runner,
+      ),
+    );
+  it("looks the nested schema up, names the callback by its path and stores nested, keys sorted", async () => {
+    const emu = collector(["preferences/otp", "givenName"]);
+    const first = await post(emu);
+    const cbs = (first.body as { callbacks: { output: { name: string; value: JsonValue }[] }[] })
+      .callbacks;
+    expect(cbs.map((cb) => cb.output.find((o) => o.name === "name")?.value)).toEqual([
+      "preferences/otp",
+      "givenName",
+    ]);
+    expect(cbs[0]?.output.find((o) => o.name === "prompt")?.value).toBe("One-time code");
+    const done = await post(emu, answerAll(first.body as JsonValue, ["123456", "Gv"]));
+    // givenName sorts before preferences although it was collected second; the flat key is never written.
+    expect(hiddenOf(done.body as JsonValue)).toBe('{"givenName":"Gv","preferences":{"otp":"123456"}}');
+  });
+  it("a path through a property that is not an object is missing", async () => {
+    expectEmulationFailure("AttributeCollectorNode schema: givenName/otp");
+    expect((await post(collector(["givenName/otp"]))).status).toBe(501);
+  });
+  it("a slash path that ends on a non-string is missing", async () => {
+    expectEmulationFailure("AttributeCollectorNode string schema title: preferences/remember");
+    expect((await post(collector(["preferences/remember"]))).status).toBe(501);
+  });
+});

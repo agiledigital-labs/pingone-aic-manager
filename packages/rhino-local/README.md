@@ -2933,6 +2933,11 @@ carrying the tenant's `400` text.
   the outcome must come from `declaredOutcomes` (undeclared is `missing`).
   `reCaptchaV3` is not modelled. `JourneyOptions.now` replaces the clock.
 
+An Attribute Collector accepts a slash path (`preferences/otp`): the schema is
+walked a segment at a time, the callback is named by the path and the value is
+stored nested. Only a string property is built, and it is taken from the
+measured boolean case, so the run says so.
+
 Captcha (as the last child) and Terms and Conditions are accepted as Page
 children, a Page sends its `pageHeader` and `pageDescription` as `header` and
 `description`, and a Page whose children queue no callbacks passes through.
