@@ -3058,7 +3058,9 @@ only labels the driver's tallies.
 
 **Breaks** are read from kikori-aic's break file as it is (the same file drives
 the generator and the emulator): `endpoint` (a share of requests under a path
-fail, and hit requests run `slower` times slower), `node-fails` (a share of
+fail, and hit requests run `slower` times slower; the path is an absolute-URL
+prefix of `http.request.path`, as the generator matches it, so a bare `/am/...`
+matches nothing), `node-fails` (a share of
 journeys at a node end there), `template` (a new message at a rate in a stream)
 and `surge` (extra requests from one network). A window is `[from, to)` in
 virtual time. Unknown fields are refused as the Rust parser does. Each break

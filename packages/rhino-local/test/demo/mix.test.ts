@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { MixError, parseMix, ratePerHour } from "../../src/demo/mix.ts";
-import { BreakError, parseBreaks } from "../../src/demo/breaks.ts";
+import { BreakError, endpointEffect, parseBreaks } from "../../src/demo/breaks.ts";
 import { mixJson } from "./rig.ts";
 import { parseRfc3339Ns } from "../../src/logs/time.ts";
 
@@ -104,5 +104,22 @@ describe("break file", () => {
   });
   it("refuses a file that is not an array", () => {
     expect(() => parseBreaks("{}")).toThrow(/array/);
+  });
+});
+
+describe("endpoint break path", () => {
+  const at = parseRfc3339Ns("2026-11-18T00:30:00Z");
+  const brk = (path: string) =>
+    parseBreaks(JSON.stringify([{ from: "2026-11-18T00:00:00Z", to: "2026-11-18T01:00:00Z", kind: "endpoint", path, share: 1, slower: 2 }]));
+  const url = "https://tenant.example.com/am/json/realms/root/realms/alpha/authenticate";
+
+  it("matches an absolute-URL prefix of http.request.path, as kikori-aic's generator does", () => {
+    expect(endpointEffect(brk("https://tenant.example.com/am/json/"), "s", at, url, "k")).toEqual({ slower: 2 });
+  });
+
+  // The discriminating case: a matcher that also tried the bare path part would hit here,
+  // and the same break file would then fire in the emulator but not in the generator.
+  it("does not match a bare path prefix", () => {
+    expect(endpointEffect(brk("/am/json/"), "s", at, url, "k")).toBeUndefined();
   });
 });

@@ -107,7 +107,7 @@ describe("breaks change records inside their window and nowhere else", () => {
   it("endpoint: requests under the path fail with the share, slower, and only then", async () => {
     const mix = parseMix(requestsOnly(1200));
     const base = await runDriver(runner, { mix, duration: 2n * HOUR });
-    const broken = await runDriver(runner, { mix, duration: 2n * HOUR, breaks: window({ kind: "endpoint", path: "/am/oauth2", share: 0.5, slower: 10 }) });
+    const broken = await runDriver(runner, { mix, duration: 2n * HOUR, breaks: window({ kind: "endpoint", path: "https://tenant.example.com/am/oauth2", share: 0.5, slower: 10 }) });
     const failed = (rs: readonly LogRecord[]) => outcomes(inside(rs), "/am/oauth2").filter((r) => payload(r)["response"].status === "FAILED");
     const all = outcomes(inside(broken.records), "/am/oauth2");
     const share = failed(broken.records).length / all.length;

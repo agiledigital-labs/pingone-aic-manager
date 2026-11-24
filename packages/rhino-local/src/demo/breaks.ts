@@ -126,8 +126,11 @@ export type EndpointEffect = { readonly slower: number };
 
 /**
  * Whether request `key` at time `t` to `path` fails under an endpoint break.
- * `path` is matched whole and also by its path part, so a break written
- * against `/am/...` hits a record that carries `https://host/am/...`.
+ * `path` is the record's `http.request.path`, which the tenant writes as an
+ * absolute URL, and the break's `path` is a prefix of it, matched as kikori-aic's
+ * generator matches it (`starts_with`). So a break must name the absolute URL; a
+ * bare `/am/...` matches nothing, here as there, and one break file behaves the
+ * same in both.
  */
 export function endpointEffect(
   breaks: readonly Break[],
@@ -137,10 +140,9 @@ export function endpointEffect(
   key: string,
 ): EndpointEffect | undefined {
   let hit: EndpointEffect | undefined;
-  const pathname = path.replace(/^https?:\/\/[^/]+/, "");
   for (const b of breaks) {
     if (b.kind !== "endpoint" || !inWindow(b, t)) continue;
-    if (!path.startsWith(b.path) && !pathname.startsWith(b.path)) continue;
+    if (!path.startsWith(b.path)) continue;
     if (keyedUnit(seed, "break", b.index, key) < b.share) {
       hit = { slower: Math.max(hit?.slower ?? 0, b.slower) };
     }
