@@ -2519,6 +2519,75 @@ the old behaviour: `require` is the `missing` behaviour `require`. The emulator
 opts its own jobs in with `idmRequire: true`, which turns `require` into a
 `require` host call that it answers from the provider.
 
+## Monitoring logs server
+
+`src/logs/` emulates the tenant's `GET /monitoring/logs`, so a client written for
+a real tenant (kikori-aic's `pull`) reads emulator traffic through the same API.
+Three parts: a shared clock (`clock.ts`), an in-memory `LogStore` that is a
+`LogSink` producers emit into (`store.ts`), and the HTTP server (`server.ts`).
+Import them from `@agiledigital/pingone-aic-script-tester/logs`:
+
+```ts
+import { clockFromEnv, LogStore, startLogsServer } from "@agiledigital/pingone-aic-script-tester/logs";
+
+const clock = clockFromEnv(); // KIKORI_CLOCK file, or real time
+const store = new LogStore({ clock });
+const server = await startLogsServer({ store, clock, keys: { id, secret }, port: 0 });
+// store.emit({ source: "am-access", timestamp, type: "application/json", payload })
+```
+
+Or run `aic-emulator-logs [--port N] [--seed records.jsonl] [--retention-days N]
+[--requests-per-minute N|off]` with `API_KEY_ID` / `API_KEY_SECRET` (the names
+kikori-aic reads) in the environment.
+
+- **Clock.** `KIKORI_CLOCK` names a JSON file `{real_origin, virtual_origin,
+rate}`; now is `virtual_origin + (real now - real_origin) * rate`, read once at
+  start. All three fields are required, the origins RFC 3339, `rate` a positive
+  finite number; anything else is refused with a `clock file: ...` error. The
+  arithmetic is exact integer nanoseconds (not doubles), truncating toward zero.
+  The real-time source is injectable.
+- **Precision.** Timestamps are compared as nanosecond integers, so two records a
+  microsecond apart either side of a bound are told apart. Records are served
+  verbatim; the store parses only `timestamp` (and `payload.transactionId` for
+  the filter).
+- **Bounds.** `(beginTime, endTime]`: exclusive at an exact event timestamp at
+  the begin, inclusive at the end (measured, docs/api/08-logs.md). A window over
+  24 hours is a 400 naming the span. `endTime` is required with `beginTime`.
+  With neither, the server serves the last hour (unmeasured on the tenant).
+- **Paging.** `_pageSize` defaults to and is capped at 1000 (400 outside 1..1000).
+  Reply `{result, resultCount, pagedResultsCookie}`; a null cookie ends the
+  window. A cookie is a stateless snapshot: it names the filter, the upper bound
+  actually served (`min(endTime, now)` at the first page), the highest record
+  sequence that existed then, and the position after the last record returned.
+  A retried cookie therefore returns the same page even if records have since
+  arrived inside the window; a fresh query sees them. A cookie presented with a
+  different query is a 400.
+- **Sources.** Comma-separated; `am-everything` / `idm-everything` expand to every
+  `am-*` / `idm-*` stream (the doc does not say what the aggregates cover beyond
+  "catch-all roll-ups", so all of them, `*-core` included). Each record keeps its
+  own stream in `source`. Other sources the tenant lists (`ctsstore`,
+  `userstore*`) are accepted and empty; anything else is a 400.
+- **`transactionId`** is a prefix match on `payload.transactionId`, as measured.
+- **Publication.** A record is visible once virtual now >= its timestamp (zero
+  lag, which meets "published within two virtual minutes"). A record stamped in
+  the future stays hidden until the clock reaches it.
+- **Retention.** 30 days of virtual time by default; expired records are dropped
+  lazily, so slightly older ones may linger, never younger ones lost.
+- **Auth.** `x-api-key` / `x-api-secret`; anything else is `401` with a CREST-style
+  body `{code, reason, message}` (the doc records the status, not the body).
+- **Rate limit.** 60 requests per real minute for the **whole environment**,
+  every source sharing one quota, as the tenant documents it (docs/api/08-logs.md;
+  documented by Ping, not measured); over quota is `429` with `Retry-After` in whole seconds,
+  rounded up, until the oldest counted request leaves the window. Rejected and
+  unauthenticated requests spend nothing. `requestsPerMinute` configures it;
+  `false` disables it.
+- **Faults.** `fault` (option) or `server.setFault(hook)`: a hook that sees
+  `{sources, cookie, attempt}` and returns `{status, body?, retryAfterSeconds?}` to
+  answer instead of the real reply. It runs after auth and the quota, so an
+  injected 5xx still spends quota, as a real one does.
+
+Not served: `/monitoring/logs/sources`, `/monitoring/logs/tail`, `_queryFilter`.
+
 ## Artefacts
 
 Committed under `generated/`:
