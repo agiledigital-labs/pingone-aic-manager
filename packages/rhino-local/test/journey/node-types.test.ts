@@ -343,7 +343,7 @@ it.each([
   const input = flow("SetPersistentCookieNode", node, put({ username: "alice" }), ["outcome"], {
     success: true,
   });
-  const result = await request(make(input, { now: () => NOW }));
+  const result = await request(make(input, { now: () => BigInt(NOW) * 1_000_000n }));
   expect(result.status).toBe(200);
   expect(result.cookies).toHaveLength(1);
   // Discriminating: Secure is set even where useSecureCookie is false (the tenant forces it).
@@ -374,7 +374,7 @@ it.each([6, 7, 8])(
   "OneTimePasswordGeneratorNode length %i writes digits and an epoch-seconds stamp",
   async (length) => {
     const emu = make(flow("OneTimePasswordGeneratorNode", { length }, ""), {
-      now: () => NOW,
+      now: () => BigInt(NOW) * 1_000_000n,
     });
     const seen = new Set<string>();
     for (let run = 0; run < 40; run++) {
@@ -565,7 +565,7 @@ it.each([false, "false", ""])(
 it.each([true, "true"])("AcceptTermsAndConditionsNode accepts %j", async (value) => {
   const emu = make(flow("AcceptTermsAndConditionsNode", {}, ""), {
     termsAndConditions: TERMS,
-    now: () => NOW,
+    now: () => BigInt(NOW) * 1_000_000n,
   });
   const first = await request(emu);
   const next = await request(emu, answerWith(first.body, value));

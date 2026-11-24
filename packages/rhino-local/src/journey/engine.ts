@@ -19,6 +19,7 @@ import { fromWire, toWire, type WireCallback } from "./callbacks.ts";
 import { JourneyNodes, EMULATED, type NodeResult } from "./nodes.ts";
 import { JourneyConfig } from "./config.ts";
 import { journeyPreamble } from "./script.ts";
+import { JourneyLogs, type JourneyLogOptions, type RequestLog } from "./emit.ts";
 import { EXTRA_OUTCOMES, STUB_TYPES } from "./extra-nodes.ts";
 import type {
   AuthenticateRequest,
@@ -53,6 +54,8 @@ type State = {
   session?: SessionDelta;
   /** Evidence gathered before a round trip; the eventual result depends on it too. */
   provenance?: Provenance[];
+  /** The journey's log identity (`trackingIds[0]`), kept across every round trip of it. */
+  tracking?: string;
 };
 export type JourneyOptions = {
   /** Outcomes by node id, for otherwise unimplemented node types only. */
@@ -61,12 +64,30 @@ export type JourneyOptions = {
   /** Complete existing-session snapshots supplied by cookie value; not fabricated from tokenId. */
   sessions?: Readonly<Record<string, Readonly<Record<string, string>>>>;
   cookieName?: string;
-  /** Clock for nodes that stamp time (epoch ms); defaults to `Date.now`. */
-  now?: () => number;
   /** The realm's Terms and Conditions, which Accept Terms and Conditions presents. */
   termsAndConditions?: TermsAndConditions;
   maxTransitions?: number;
   timeoutMs?: number;
+  /**
+   * Where the AIC log records of each authenticate request go. Without a sink nothing is
+   * emitted and nothing else changes. `origin` and `latencyMs` are the knobs of
+   * src/journey/emit.ts.
+   */
+  logSink?: JourneyLogOptions["sink"];
+  /**
+   * The one clock, in epoch nanoseconds, injected so a virtual clock can drive it: log records
+   * are stamped with it and nodes that stamp time (OTP, Terms and Conditions) read it. Defaults
+   * to real time.
+   */
+  now?: JourneyLogOptions["now"];
+  origin?: JourneyLogOptions["origin"];
+  latencyMs?: JourneyLogOptions["latencyMs"];
+  /**
+   * A fault injector, for traffic drivers: asked as a node completes, and when it says yes the
+   * node's record carries outcome "false" and the journey ends there FAILED (401), whatever the
+   * node decided and however the tree wires "false". Not an AM behaviour; absent, nothing changes.
+   */
+  failAt?: (node: { tree: string; nodeId: string }) => boolean;
 };
 const OUTCOMES: Readonly<Record<string, readonly string[]>> = Object.freeze({
   UsernameCollectorNode: ["outcome"],
@@ -136,6 +157,7 @@ export class JourneyEmulator {
   private key = randomBytes(32);
   private snapshots = new Map<string, State>();
   private completed = new Set<string>();
+  private logs: JourneyLogs | undefined;
   constructor(
     config: JourneyConfig,
     runner: RhinoRunner,
@@ -145,8 +167,9 @@ export class JourneyEmulator {
     this.config = config;
     this.runner = runner;
     this.idm = idm;
+    const nowNs = options.now;
     this.nodes = new JourneyNodes(idm, this.evidence, (name) => this.missing(name), {
-      now: options.now ?? Date.now,
+      now: nowNs ? () => Number(nowNs() / 1_000_000n) : Date.now,
       declared: (nodeId) => options.declaredOutcomes?.[nodeId],
       ...(options.termsAndConditions ? { terms: options.termsAndConditions } : {}),
     });
@@ -165,6 +188,13 @@ export class JourneyEmulator {
           if (Object.hasOwn(options.declaredOutcomes ?? {}, id))
             throw new TypeError(`declared outcome for emulated node: ${type}/${id}`);
         }
+    if (options.logSink)
+      this.logs = new JourneyLogs({
+        sink: options.logSink,
+        ...(options.now ? { now: options.now } : {}),
+        ...(options.origin ? { origin: options.origin } : {}),
+        ...(options.latencyMs ? { latencyMs: options.latencyMs } : {}),
+      });
     this.options = {
       ...options,
       declaredOutcomes: Object.freeze(structuredClone(options.declaredOutcomes ?? {})),
@@ -184,6 +214,7 @@ export class JourneyEmulator {
     fork.snapshots = structuredClone(this.snapshots);
     fork.completed = new Set(this.completed);
     fork.failures = this.failures;
+    fork.logs = this.logs;
     return fork;
   }
   get emulationFailures() {
@@ -202,9 +233,11 @@ export class JourneyEmulator {
   }
   request(request: AuthenticateRequest): Promise<AuthenticateResult> {
     return this.failures.run(`authenticate ${request.query.authIndexValue}`, async () => {
+      const log = this.logs?.begin(request, this.config.realm);
+      log?.attempt();
       const { value, provenance } = await this.evidence.run(async () => {
         try {
-          return await this.authenticate(request);
+          return await this.authenticate(request, log);
         } catch (error) {
           const fatal = emulationFailure(error) ?? {
             kind: "internal" as const,
@@ -223,6 +256,7 @@ export class JourneyEmulator {
           };
         }
       });
+      log?.outcome(value.status, request.query.authIndexValue);
       return { ...value, provenance };
     });
   }
@@ -281,6 +315,7 @@ export class JourneyEmulator {
   }
   private async authenticate(
     request: AuthenticateRequest,
+    log?: RequestLog,
   ): Promise<Omit<AuthenticateResult, "provenance">> {
     if (
       request.method !== "POST" ||
@@ -365,6 +400,11 @@ export class JourneyEmulator {
         this.measured("callbacks without authId start a fresh journey and reach its first node");
       }
     }
+    if (log && this.logs) {
+      state.tracking ??= this.logs.nextId();
+      log.tracking = state.tracking;
+    }
+    const rootTree = state.frames[0]?.tree ?? name;
     let submitted = fromWire(body.callbacks, (name) => this.missing(name));
     if (state.pending) {
       const raw = body.callbacks;
@@ -402,6 +442,18 @@ export class JourneyEmulator {
           this.measured(
             "inner success/failure maps to true/false and restores outer transient state",
           );
+          // UNMEASURED: whether the inner-tree node writes its own completion record, and under
+          // which tree name. It is written here, as the outer tree's, once the inner tree ends.
+          const evaluator = this.tree(parent.tree).nodes[parent.node];
+          if (evaluator)
+            log?.nodeCompleted({
+              tree: parent.tree,
+              nodeId: parent.node,
+              displayName: evaluator.displayName ?? evaluator.nodeType,
+              nodeType: evaluator.nodeType,
+              outcome: success ? "true" : "false",
+              authLevel: state.shared.authLevel,
+            });
           const reply = this.advance(state, success ? "true" : "false");
           if (reply) return reply;
           continue;
@@ -409,7 +461,11 @@ export class JourneyEmulator {
         this.measured(
           "failure is 401 with action error message; success requires shared username or returns empty 500",
         );
-        if (!success) return this.error(401, state.errorMessage ?? "Login failure");
+        if (!success) {
+          log?.treeFailed(rootTree, state.shared.authLevel);
+          return this.error(401, state.errorMessage ?? "Login failure");
+        }
+        // UNMEASURED: an empty 500 writes no tree record here; the tenant's is unread.
         if (!state.shared.username) return this.empty();
         this.evidence.assumed(
           "session tokenId is a local random UUID; principal existence and session properties are not modeled",
@@ -417,6 +473,7 @@ export class JourneyEmulator {
         if (this.config.realm !== "alpha")
           this.missing(`session success realm: ${this.config.realm}`);
         if (typeof body.authId === "string") this.completed.add(body.authId);
+        log?.treeSucceeded(rootTree, state.shared.authLevel, String(state.shared.username));
         const tokenId = randomUUID();
         const session = state.session;
         return {
@@ -469,6 +526,7 @@ export class JourneyEmulator {
         frame,
         submitted,
         request,
+        log,
       );
       if (result.abort) return result.abort;
       if (result.callbacks.length) {
@@ -490,8 +548,33 @@ export class JourneyEmulator {
       const allowed = this.outcomes(node.nodeType, config);
       if (outcome === null || (allowed !== undefined && !allowed.includes(outcome))) {
         this.measured("undeclared node outcome returns 401 Login failure");
+        // UNMEASURED: no node record, and a plain "Login failure" tree record, for an outcome the
+        // node does not declare.
+        log?.treeFailed(rootTree, state.shared.authLevel);
         return this.error(401, "Login failure");
       }
+      if (this.options.failAt?.({ tree: frame.tree, nodeId: frame.node })) {
+        log?.nodeCompleted({
+          tree: frame.tree,
+          nodeId: frame.node,
+          displayName: node.displayName ?? node.nodeType,
+          nodeType: node.nodeType,
+          outcome: "false",
+          authLevel: state.shared.authLevel,
+        });
+        log?.treeFailed(rootTree, state.shared.authLevel);
+        return this.error(401, "Login failure");
+      }
+      // A node that queued callbacks has not completed and wrote nothing; it re-runs on resume.
+      log?.nodeCompleted({
+        tree: frame.tree,
+        nodeId: frame.node,
+        displayName: node.displayName ?? node.nodeType,
+        nodeType: node.nodeType,
+        outcome,
+        authLevel: state.shared.authLevel,
+        ...(result.audit === undefined ? {} : { audit: result.audit }),
+      });
       const reply = this.advance(state, outcome);
       if (reply) return reply;
       submitted = [];
@@ -507,6 +590,7 @@ export class JourneyEmulator {
     frame: Frame,
     submitted: CallbackEffect[],
     request: AuthenticateRequest,
+    log?: RequestLog,
   ): Promise<NodeResult> {
     const currentTree = this.tree(frame.tree),
       inner = state.frames.length > 1;
@@ -589,14 +673,23 @@ export class JourneyEmulator {
     const fatal = responseFailure(response);
     if (fatal) throw new EmulationFailure(fatal);
     if (response.outcome === "compile_error") this.missing("journey script compilation failure");
+    const scriptName = script.name ?? config.script ?? "script";
+    log?.scriptLines(response.logs ?? [], String(config.script ?? "script"), scriptName);
     if (response.outcome !== "ok") {
       if (inner) this.missing("inner tree script exception");
       this.measured("thrown scripted decision error returns 401 Login failure");
-      return {
-        outcome: null,
-        callbacks: [],
-        abort: this.error(401, "Login failure"),
-      };
+      if (log)
+        log.treeFailed(
+          state.frames[0]?.tree ?? frame.tree,
+          state.shared.authLevel,
+          log.scriptThrew({
+            scriptName,
+            thrown: thrownText(response),
+            line: response.error?.line ?? 1,
+            column: Math.max(response.error?.column ?? 0, 0),
+          }),
+        );
+      return { outcome: null, callbacks: [], abort: this.error(401, "Login failure") };
     }
     // The runner's bridge serializes the harvest in Java and fails it as an emulation failure.
     if (typeof response.value !== "string") this.missing("journey harvest serialization");
@@ -609,7 +702,21 @@ export class JourneyEmulator {
         javaMapObjectAttributes: { shared: boolean; transient: boolean };
       };
       errorMessage: string | null;
+      auditEntryDetail?: { value?: JsonValue; invalid?: true };
     };
+    // AM fails the tree on an `auditEntryDetail` that is not a string or a map, and writes no node
+    // record for it (measured 2026-11-25, docs/api/25-journey-runtime.md).
+    if (result.auditEntryDetail?.invalid) {
+      this.measured("an auditEntryDetail that is not a string or a map fails the tree with 401");
+      if (inner) this.missing("inner tree script exception");
+      if (log)
+        log.treeFailed(
+          state.frames[0]?.tree ?? frame.tree,
+          state.shared.authLevel,
+          log.invalidAuditDetail(),
+        );
+      return { outcome: null, callbacks: [], abort: this.error(401, "Login failure") };
+    }
     // AM discards the Action when callbacks are queued; whether a message set
     // alongside them survives is unmeasured.
     if (result.errorMessage !== null && result.effects.callbacks.length)
@@ -622,6 +729,9 @@ export class JourneyEmulator {
     return {
       outcome: result.effects.outcome,
       callbacks: result.effects.callbacks,
+      ...(result.auditEntryDetail?.value === undefined
+        ? {}
+        : { audit: result.auditEntryDetail.value }),
     };
   }
   private async execute(
@@ -632,10 +742,11 @@ export class JourneyEmulator {
     frame: Frame,
     submitted: CallbackEffect[],
     request: AuthenticateRequest,
+    log?: RequestLog,
   ): Promise<NodeResult> {
     if (type === "ScriptedDecisionNode")
-      return this.scripted(config, state, frame, submitted, request);
-    if (type === "PageNode") return this.page(config, state, frame, submitted, request);
+      return this.scripted(config, state, frame, submitted, request, log);
+    if (type === "PageNode") return this.page(config, state, frame, submitted, request, log);
     if (EMULATED.includes(type)) {
       const before = [state.shared.objectAttributes, frame.transient.objectAttributes];
       const result = await this.nodes.run(
@@ -667,6 +778,7 @@ export class JourneyEmulator {
     frame: Frame,
     submitted: CallbackEffect[],
     request: AuthenticateRequest,
+    log?: RequestLog,
   ): Promise<NodeResult> {
     if (state.frames.length > 1) this.missing("inner tree callbacks");
     for (const field of ["pageHeader", "pageDescription"])
@@ -715,6 +827,7 @@ export class JourneyEmulator {
         frame,
         own,
         request,
+        log,
       );
       if (result.abort) {
         if (!previous)
@@ -891,4 +1004,12 @@ export class JourneyEmulator {
     this.checkHostValue(result);
     return result;
   }
+}
+
+/**
+ * Rhino's own text for a throw, `<thrown value> (<script>#<line>)`: the tenant's ScriptException
+ * message carries exactly that (`Error: boom (name#1)`; a thrown string reads `str (name#1)`).
+ */
+function thrownText(response: { error: { message: string | null } | null }): string {
+  return response.error?.message ?? "unknown error";
 }

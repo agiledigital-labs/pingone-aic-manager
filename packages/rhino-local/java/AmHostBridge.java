@@ -38,6 +38,8 @@ final class AmHostBridge extends BaseFunction {
   private Scriptable runtime;
   private Scriptable action;
   private String errorMessage;
+  /** Script logger lines, held in Java so they survive a throw and cannot be rebound by author code. */
+  private final java.util.List<String[]> logs = new ArrayList<String[]>();
 
   AmHostBridge(String id, long timeoutMs) {
     state = new IdmContextFactory(timeoutMs, "AM harness timeout");
@@ -109,6 +111,8 @@ final class AmHostBridge extends BaseFunction {
         return expose(new ErrorMessage());
       case "chain":
         return expose(new Chain());
+      case "log":
+        return expose(new LogPush());
       case "unsupported":
         return expose(new Unsupported());
       case "observe":
@@ -766,6 +770,24 @@ final class AmHostBridge extends BaseFunction {
     }
   }
 
+  /**
+   * Stands in for {@code __rhinoLocal.logs.push}: records the level and the already formatted
+   * message of one {@code logger.*} call. The entries go on the response, thrown or not.
+   */
+  private final class LogPush extends BaseFunction {
+    @Override
+    public Object call(Context cx, Scriptable scope, Scriptable thisObj, Object[] args) {
+      Object entry = arg(args, 0);
+      if (!(entry instanceof Scriptable)) throw protocol("journey log entry");
+      logs.add(
+          new String[] {
+            Context.toString(ScriptableObject.getProperty((Scriptable) entry, "level")),
+            Context.toString(ScriptableObject.getProperty((Scriptable) entry, "message"))
+          });
+      return Undefined.instance;
+    }
+  }
+
   /** action.withLockoutMessage: measured to have no visible effect. */
   private final class Chain extends BaseFunction {
     @Override
@@ -818,6 +840,23 @@ final class AmHostBridge extends BaseFunction {
     out.append(",\"javaMapObjectAttributes\":{").append(maps).append("}}");
     out.append(",\"errorMessage\":");
     out.append(errorMessage == null ? "null" : Json.quote(errorMessage));
+    // AM reads the top-level variable `auditEntryDetail` after the node evaluates (measured
+    // 2026-11-25, docs/api/25-journey-runtime.md). Absent, undefined and null mean no entry; a
+    // string or a map is kept; anything else (an array, a number, a boolean) fails the tree.
+    Object audit = ScriptableObject.getProperty(top, "auditEntryDetail");
+    if (audit == Scriptable.NOT_FOUND || audit == Undefined.instance || audit == null) {
+      // no entry
+    } else if (audit instanceof CharSequence
+        || (audit instanceof ScriptableObject
+            && !(audit instanceof NativeArray)
+            && !(audit instanceof Function)
+            && "Object".equals(((ScriptableObject) audit).getClassName()))) {
+      out.append(",\"auditEntryDetail\":{\"value\":")
+          .append(new Encoder(cx, "auditEntryDetail value: ", "").write(audit, "").text())
+          .append('}');
+    } else {
+      out.append(",\"auditEntryDetail\":{\"invalid\":true}");
+    }
     return out.append('}').toString();
   }
 
@@ -836,6 +875,18 @@ final class AmHostBridge extends BaseFunction {
       Map<String, Object> fatal = new LinkedHashMap<String, Object>(state.failure.info);
       if (!state.missing.isEmpty()) fatal.put("missing", new ArrayList<String>(state.missing));
       response.put("emulation", fatal);
+    }
+    if (!logs.isEmpty()) {
+      java.util.List<Object> lines = new ArrayList<Object>();
+      for (String[] line : logs) {
+        Map<String, Object> entry = new LinkedHashMap<String, Object>();
+        entry.put("surface", "logger");
+        entry.put("level", line[0]);
+        entry.put("message", line[1]);
+        entry.put("args", new ArrayList<Object>());
+        lines.add(entry);
+      }
+      response.put("logs", lines);
     }
     response.put("missing", new ArrayList<String>(state.missing));
     response.put("provenance", calls.evidenceSnapshot());
