@@ -9,6 +9,7 @@ import {
 } from "../../src/journey/index.ts";
 import { expectEmulationFailure } from "../../src/harness/emulation-guard.ts";
 import type { JsonValue } from "../../src/protocol.ts";
+import type { LogRecord } from "../../src/logs/record.ts";
 import {
   SUCCESS_NODE_ID as SUCCESS,
   FAILURE_NODE_ID as FAILURE,
@@ -512,6 +513,52 @@ describe("G20/G21: a script-built string is a ConsString, not a java.lang.String
       send(`{method: "PO" + t.slice(0, 0) + "ST"}`),
     );
     expect(result.status).toBe(501);
+  });
+});
+
+describe("G22: a test reads script log lines and audit entries back through logSink", () => {
+  const read = async (source: string) => {
+    const records: LogRecord[] = [];
+    const emu = make(
+      `${source}\nnodeState.putShared("username", "u"); action.goTo("true");`,
+      {},
+      { logSink: { emit: (record) => records.push(record) } },
+    );
+    return { result: await start(emu), records };
+  };
+  const payload = (record: LogRecord) =>
+    record.payload as Record<string, unknown>;
+
+  it("the script's logger calls come back in order, by level and formatted message, from the records whose logger is the script's", async () => {
+    const { result, records } = await read(
+      `logger.info("token {} ok", "abc"); logger.warn("slow"); logger.debug("detail");`,
+    );
+    expect(result.status).toBe(200);
+    const lines = records
+      .filter((r) => String(payload(r).logger).startsWith("scripts."))
+      .map((r) => [payload(r).level, payload(r).message]);
+    expect(lines).toEqual([
+      ["INFO", "token abc ok"],
+      ["WARN", "slow"],
+      ["DEBUG", "detail"],
+    ]);
+  });
+
+  it("an auditEntryDetail trace comes back on the node's AM-NODE-LOGIN-COMPLETED record; a nodeState write does not", async () => {
+    const { records } = await read(
+      `var auditEntryDetail = {event: "step-done", n: 2};
+       nodeState.putShared("auditEntryDetail", "ignored");`,
+    );
+    const node = records.find(
+      (r) => payload(r).eventName === "AM-NODE-LOGIN-COMPLETED",
+    );
+    const entries = payload(node!).entries as {
+      info: { nodeExtraLogging: { auditInfo: unknown } };
+    }[];
+    expect(entries[0]?.info.nodeExtraLogging.auditInfo).toEqual({
+      event: "step-done",
+      n: 2,
+    });
   });
 });
 

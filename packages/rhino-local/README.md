@@ -3014,7 +3014,24 @@ record as `nodeExtraLogging.auditInfo` (keys sorted, `undefined` as `null`;
 with 401; a throw writes nothing). `nodeState.putShared("auditEntryDetail", ...)`
 does not count. Shapes: `docs/api/08-logs.md` ("Script logger lines, and the
 node completion record") and `docs/api/25-journey-runtime.md` ("What a script can
-put in the audit log"). The successful end `AM-TREE-LOGIN-COMPLETED` was never
+put in the audit log"). To read a script's output back in a test, collect the
+records and filter: the script's `logger.*` calls are the `am-core` records whose
+`payload.logger` starts `scripts.` (`payload.level`, `payload.message`, already formatted, in call order), and an
+`auditEntryDetail` assignment is `payload.entries[0].info.nodeExtraLogging.auditInfo`
+on the `AM-NODE-LOGIN-COMPLETED` record of its node:
+
+```ts
+const records: LogRecord[] = [];
+const emu = new JourneyEmulator(config, runner, idm, {
+  logSink: { emit: (record) => records.push(record) },
+});
+await emu.request({ method: "POST", path: "authenticate", query, body: {} });
+const lines = records
+  .filter((r) => String((r.payload as { logger?: string }).logger).startsWith("scripts."))
+  .map((r) => r.payload);
+```
+
+The successful end `AM-TREE-LOGIN-COMPLETED` was never
 measured (the sandbox answers 500); it is written in one function,
 `RequestLog.treeSucceeded` in `src/journey/emit.ts`, so a measurement changes one
 place. Every other unmeasured choice is marked `UNMEASURED` in that file.
