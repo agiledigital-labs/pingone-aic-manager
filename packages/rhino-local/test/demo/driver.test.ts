@@ -197,23 +197,27 @@ describe("breaks change records inside their window and nowhere else", () => {
 describe("records", () => {
   it("a journey's records share one tracking id across round trips, with string outcomes, tree last", async () => {
     const { records } = await runDriver(runner, { mix: parseMix({ ...(mixJson() as object), requests: [] }), duration: 10n * MINUTE });
-    const byTracking = new Map<string, LogRecord[]>();
+    // An ATTEMPT carries no trackingIds (measured), so a journey is its tracking id plus
+    // the records sharing a transaction id with one of its own.
+    const txOf = new Map<string, Set<string>>();
     for (const r of records) {
-      const id = payload(r)["trackingIds"][0] as string;
-      byTracking.set(id, [...(byTracking.get(id) ?? []), r]);
+      const id = payload(r)["trackingIds"]?.[0] as string | undefined;
+      if (id !== undefined) txOf.set(id, (txOf.get(id) ?? new Set()).add(payload(r)["transactionId"]));
     }
-    const journeys = [...byTracking.values()].filter((rs) => rs.some((r) => payload(r)["eventName"] === "AM-TREE-LOGIN-COMPLETED"));
-    expect(journeys.length).toBeGreaterThan(20);
-    for (const rs of journeys) {
-      const sorted = [...rs].sort((a, b) => Number(ts(a) - ts(b)));
-      const txs = new Set(rs.map((r) => payload(r)["transactionId"]));
-      expect(txs.size).toBe(2); // two round trips, two transaction ids, one tracking id
-      const names = sorted.map((r) => payload(r)["eventName"]);
+    const done = [...txOf].filter(([id]) => records.some((r) => payload(r)["eventName"] === "AM-TREE-LOGIN-COMPLETED" && payload(r)["trackingIds"][0] === id));
+    expect(done.length).toBeGreaterThan(20);
+    for (const [id, txs] of done) {
+      expect(txs.size).toBe(2); // two round trips: two transaction ids, one tracking id
+      const rs = records.filter((r) => txs.has(payload(r)["transactionId"]));
+      const names = [...rs].sort((a, b) => Number(ts(a) - ts(b))).map((r) => payload(r)["eventName"]).filter((n) => n !== undefined); // core lines carry none
       expect(names.filter((n) => n === "AM-ACCESS-ATTEMPT")).toHaveLength(2);
       const tree = names.indexOf("AM-TREE-LOGIN-COMPLETED");
       expect(names.slice(tree + 1)).toEqual(["AM-ACCESS-OUTCOME"]); // only the outcome follows the tree record
-      for (const r of sorted) {
-        if (payload(r)["eventName"] === "AM-NODE-LOGIN-COMPLETED") expect(typeof payload(r)["entries"][0].info.nodeOutcome).toBe("string");
+      for (const r of rs) {
+        if (payload(r)["eventName"] === "AM-NODE-LOGIN-COMPLETED") {
+          expect(payload(r)["trackingIds"][0]).toBe(id);
+          expect(typeof payload(r)["entries"][0].info.nodeOutcome).toBe("string");
+        }
       }
     }
   }, 60_000);

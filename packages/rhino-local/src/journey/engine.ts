@@ -70,6 +70,12 @@ export type JourneyOptions = {
   now?: JourneyLogOptions["now"];
   origin?: JourneyLogOptions["origin"];
   latencyMs?: JourneyLogOptions["latencyMs"];
+  /**
+   * A fault injector, for traffic drivers: asked as a node completes, and when it says yes the
+   * node's record carries outcome "false" and the journey ends there FAILED (401), whatever the
+   * node decided and however the tree wires "false". Not an AM behaviour; absent, nothing changes.
+   */
+  failAt?: (node: { tree: string; nodeId: string }) => boolean;
 };
 const OUTCOMES: Readonly<Record<string, readonly string[]>> = Object.freeze({
   UsernameCollectorNode: ["outcome"],
@@ -479,6 +485,18 @@ export class JourneyEmulator {
         this.measured("undeclared node outcome returns 401 Login failure");
         // UNMEASURED: no node record, and a plain "Login failure" tree record, for an outcome the
         // node does not declare.
+        log?.treeFailed(rootTree, state.shared.authLevel);
+        return this.error(401, "Login failure");
+      }
+      if (this.options.failAt?.({ tree: frame.tree, nodeId: frame.node })) {
+        log?.nodeCompleted({
+          tree: frame.tree,
+          nodeId: frame.node,
+          displayName: node.displayName ?? node.nodeType,
+          nodeType: node.nodeType,
+          outcome: "false",
+          authLevel: state.shared.authLevel,
+        });
         log?.treeFailed(rootTree, state.shared.authLevel);
         return this.error(401, "Login failure");
       }

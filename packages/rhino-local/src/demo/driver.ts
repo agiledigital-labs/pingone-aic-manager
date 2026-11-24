@@ -19,10 +19,9 @@
  */
 import type { JourneyConfig } from "../journey/config.ts";
 import type { JourneyEmulator, JourneyOptions } from "../journey/engine.ts";
-import type { HttpMock } from "../journey/types.ts";
+import type { AuthenticateRequest, HttpMock } from "../journey/types.ts";
 import type { Clock } from "../logs/clock.ts";
 import type { LogRecord, LogSink } from "../logs/record.ts";
-import { JourneySession } from "./adapter.ts";
 import { address } from "./cidr.ts";
 import { endpointEffect, fill, inWindow, nodeFails, templateVoice, type Break } from "./breaks.ts";
 import { person, ratePerHour, type JourneySpec, type Mix, type Network, type RequestSpec } from "./mix.ts";
@@ -241,6 +240,30 @@ class CountingSink implements LogSink {
   }
 }
 
+const ENGINE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}-(\d+)$/;
+
+/**
+ * The engine numbers its record ids from a random instance uuid. Swap that
+ * prefix for the journey's own, derived from the seed, so a seed fixes the
+ * records. Only `_id` and `trackingIds` carry it.
+ */
+function stableIds(inner: LogSink, uuid: string): LogSink {
+  const swap = (v: unknown): unknown => {
+    const m = typeof v === "string" ? ENGINE_ID.exec(v) : null;
+    return m === null ? v : `${uuid}-${m[1]}`;
+  };
+  return {
+    emit(record) {
+      const p = record.payload;
+      if (typeof p === "string") return inner.emit(record);
+      const out: Record<string, unknown> = { ...p };
+      if ("_id" in out) out["_id"] = swap(out["_id"]);
+      if (Array.isArray(out["trackingIds"])) out["trackingIds"] = out["trackingIds"].map(swap);
+      inner.emit({ ...record, payload: out });
+    },
+  };
+}
+
 function networkPick(networks: readonly Network[], rng: Rng): string {
   const n = networks[rng.weighted(networks.map((x) => x.share))] as Network;
   return address(n.cidr, rng);
@@ -251,7 +274,14 @@ type Journey = {
   readonly idx: number;
   readonly spec: JourneySpec;
   readonly rng: Rng;
-  readonly session: JourneySession;
+  readonly engine: JourneyEmulator;
+  /** What the engine's `now`, `latencyMs` and `failAt` read: the request being run. */
+  readonly run: { t0: bigint; k: number; elapsedMs: number };
+  readonly uuid: string;
+  readonly ip: string;
+  readonly userAgent: string;
+  /** Counter for the ids of records the driver itself writes (an endpoint-failed request). */
+  failId: number;
   readonly user: { username: string; email: string; userId: string };
   /** Index of the callback response the journey stops at, or -1. */
   readonly abandonAt: number;
@@ -488,9 +518,6 @@ export class Driver {
     const rng = Rng.derive(this.#seed, "journey", spec.tree, idx);
     const httpRng = Rng.derive(this.#seed, "http", spec.tree, idx);
     const uuid = rng.uuid();
-    let counter = 1_000_000 + rng.below(1_000_000);
-    const nextId = (): string => `${uuid}-${counter++}`;
-    const tracking = nextId();
     const ip = networkPick(spec.networks, rng);
     const userAgent = rng.pick(spec.userAgents);
     const user = person(spec.users, rng.below(spec.users.count));
@@ -505,23 +532,17 @@ export class Driver {
       const r = rule.responses[httpRng.weighted(rule.responses.map((x) => x.share))];
       return r === undefined ? { status: 404, body: null } : { status: r.status, ...(r.body === undefined ? {} : { body: r.body as never }) };
     };
-    const session = new JourneySession(
-      {
-        tree: spec.tree,
-        config: this.#o.config,
-        sink: this.#sink,
-        realm: this.#realm,
-        origin: this.#origin,
-        ip,
-        userAgent,
-        tracking,
-        http,
-        nextId,
-        forceFail: (node, at) => nodeFails(this.#breaks, this.#seed, at, node, key),
-      },
-      this.#o.makeEngine,
-    );
-    const j: Journey = { treeIdx, idx, spec, rng, session, user, abandonAt, authId: undefined, callbacks: undefined, round: 0, received: 0 };
+    const run = { t0: 0n, k: 0, elapsedMs: 0 };
+    const engine = this.#o.makeEngine({
+      http,
+      logSink: stableIds(this.#sink, uuid),
+      // Records are stamped from the schedule: the request's time, a hundred microseconds apart.
+      now: () => run.t0 + BigInt(run.k++) * 100_000n,
+      ...(this.#origin === "" ? {} : { origin: this.#origin }),
+      latencyMs: () => run.elapsedMs,
+      failAt: ({ nodeId }) => nodeFails(this.#breaks, this.#seed, run.t0, nodeId, key),
+    });
+    const j: Journey = { treeIdx, idx, spec, rng, engine, run, uuid, ip, userAgent, failId: 5_000_000, user, abandonAt, authId: undefined, callbacks: undefined, round: 0, received: 0 };
     this.#report.journeys.started += 1;
     this.#report.journeysByTree[spec.tree] = (this.#report.journeysByTree[spec.tree] ?? 0) + 1;
     return this.#journeyStep(j, t);
@@ -534,15 +555,27 @@ export class Driver {
     const baseMs = rng.lognormal(spec.latency.medianMs, spec.latency.p95Ms);
     const fault = endpointEffect(this.#breaks, this.#seed, t, path, key);
     const elapsedNs = BigInt(Math.max(1_000_000, Math.round(baseMs * (fault?.slower ?? 1) * 1e6)));
-    const timing = { t0: t, elapsedNs, transactionId: rng.uuid() };
+    const transactionId = rng.uuid();
     j.round += 1;
     if (fault !== undefined) {
-      j.session.failRequest(timing);
+      this.#failAuthenticate(j, t, elapsedNs, transactionId);
       this.#report.journeys.brokenByEndpoint += 1;
       return;
     }
-    const body = j.authId === undefined ? undefined : { authId: j.authId, callbacks: j.callbacks };
-    const { result } = await j.session.request(timing, body as never);
+    j.run.t0 = t;
+    j.run.k = 0;
+    j.run.elapsedMs = Number(elapsedNs) / 1e6;
+    const request: AuthenticateRequest = {
+      method: "POST",
+      path: `/am/json/realms/root/realms/${this.#realm}/authenticate`,
+      query: { authIndexType: "service", authIndexValue: spec.tree },
+      ...(j.authId === undefined ? {} : { body: { authId: j.authId, callbacks: j.callbacks } as never }),
+      url: path,
+      clientIp: j.ip,
+      userAgent: j.userAgent,
+      transactionId,
+    };
+    const result = await j.engine.request(request);
     const reply = (result.body ?? {}) as { authId?: unknown; callbacks?: unknown; tokenId?: unknown };
     if (result.status === 200 && typeof reply.authId === "string" && Array.isArray(reply.callbacks)) {
       const at = j.received++;
@@ -577,6 +610,31 @@ export class Driver {
       const message = String((result.body as { message?: unknown } | null)?.message ?? result.status).slice(0, 160);
       this.#report.engineErrors[message] = (this.#report.engineErrors[message] ?? 0) + 1;
     }
+  }
+
+  /** A request an endpoint break fails before the engine sees it: an access pair, FAILED, HTTP 500. */
+  #failAuthenticate(j: Journey, t: bigint, elapsedNs: bigint, transactionId: string): void {
+    const where: Where = {
+      origin: this.#origin,
+      path: `/am/json/realms/root/realms/${this.#realm}/authenticate`,
+      method: "POST",
+      query: { authIndexType: "service", authIndexValue: j.spec.tree },
+      ip: j.ip,
+      userAgent: j.userAgent,
+    };
+    const a = (ns: bigint) => ({
+      ns,
+      id: `${j.uuid}-${j.failId++}`,
+      tracking: `${j.uuid}-${j.failId}`,
+      transactionId: `${transactionId}/0`,
+      component: "Authentication",
+      realm: `/${this.#realm}`,
+      where,
+    });
+    this.#sink.emit(amAccessAttempt(a(t)));
+    this.#sink.emit(
+      amAccessOutcome(a(t + elapsedNs), { status: "FAILED", statusCode: 500, elapsedMs: Number(elapsedNs) / 1e6, reason: "Internal Server Error" }),
+    );
   }
 
   // ---- non-journey requests ---------------------------------------------
