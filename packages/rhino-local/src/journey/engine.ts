@@ -473,7 +473,12 @@ export class JourneyEmulator {
         if (this.config.realm !== "alpha")
           this.missing(`session success realm: ${this.config.realm}`);
         if (typeof body.authId === "string") this.completed.add(body.authId);
-        log?.treeSucceeded(rootTree, state.shared.authLevel, String(state.shared.username));
+        log?.treeSucceeded(
+          rootTree,
+          state.shared.authLevel,
+          String(state.shared.username),
+          typeof state.shared._id === "string" ? state.shared._id : undefined,
+        );
         const tokenId = randomUUID();
         const session = state.session;
         return {

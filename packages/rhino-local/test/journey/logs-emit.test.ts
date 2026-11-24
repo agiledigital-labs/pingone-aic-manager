@@ -507,3 +507,28 @@ it("timestamps: the payload is milliseconds, the envelope nanoseconds with trail
   expect(isoNanos(ns)).toBe("2026-11-18T11:06:40.1234567Z");
   expect(isoNanos(1_795_000_000_000_000_000n)).toBe("2026-11-18T11:06:40Z");
 });
+
+// Measured 2026-11-25: an identified user's success record names the user's `_id` in `userId`,
+// while `principal` carries the username. The discriminating case: a userId built from the
+// username (right only for the anonymous user) fails here.
+it("a successful tree record carries the measured principal and userId", async () => {
+  const { records, options } = sinkAndClock();
+  const emu = make(
+    {
+      a: {
+        source:
+          "nodeState.putShared('username', 'user-a@example.com'); nodeState.putShared('_id', '00000000-0000-4000-8000-0000000000aa'); action.goTo('true');",
+      },
+    },
+    "a",
+    options,
+  );
+  expect((await post(emu)).status).toBe(200);
+  const tree = treeRecords(records);
+  expect(tree).toHaveLength(1);
+  const p = payload(tree[0]!);
+  expect(p.result).toBe("SUCCESSFUL");
+  expect(p.principal).toEqual(["user-a@example.com"]);
+  expect(p.userId).toBe("id=00000000-0000-4000-8000-0000000000aa,ou=user,o=alpha,ou=services,ou=am-config");
+  expect(Object.keys(info(tree[0]!)).sort()).toEqual(["authLevel", "ipAddress", "treeName"]);
+});

@@ -396,8 +396,17 @@ global scope) found it undefined; that was correct but did not test assignment.
 
 Where the script `logger` lands is in `08-logs.md`, "Script logger lines".
 
-**Not measured.** The `AM-TREE-LOGIN-COMPLETED` of a tree that **succeeds**
-(an anonymous journey reaching Success returns `500` with an empty body here).
+**A succeeding tree** (measured 2026-11-25, two runs: a journey that identified
+a user by `_id`, and one through an Anonymous User node; both reached Success
+with `200`). Its `AM-TREE-LOGIN-COMPLETED` has `result: "SUCCESSFUL"`,
+`entries[0].info` = `{authLevel, ipAddress, treeName}` and no
+`nodeExtraLogging`, `principal: ["<username>"]` and
+`userId: "id=<universal id>,ou=user,o=alpha,ou=services,ou=am-config"`, where
+the universal id is the identified user's `_id`, or the anonymous user's name.
+A journey that reaches Success with no identified user returns `500` with an
+empty body and was not read back.
+
+**Not measured.**
 Assignment inside a Page node child, or in a node that suspends or sends
 callbacks. A size limit on the value. Whether any other script context (OAuth2,
 SAML, policy) accepts the assignment. Whether this key is emitted at the

@@ -376,13 +376,14 @@ export class RequestLog {
   }
 
   /**
-   * `AM-TREE-LOGIN-COMPLETED` with `result: "SUCCESSFUL"`. UNMEASURED: the sandbox answers an
-   * anonymous journey that reaches Success with a 500, so no successful end was ever read back.
-   * The shape is the failed one's envelope with the `principal`/`userId` pair a production corpus
-   * shows (docs/api/08-logs.md, source taxonomy); the DN is synthetic. A measurement of a real
-   * success changes this one function.
+   * `AM-TREE-LOGIN-COMPLETED` with `result: "SUCCESSFUL"`, as measured 2026-11-25 on the sandbox
+   * twice (a journey that identified a user, and one through AnonymousUser): `entries[0].info` is
+   * `{authLevel, ipAddress, treeName}` with no `nodeExtraLogging`; `principal` is `[<username>]`;
+   * `userId` is `id=<universal id>,ou=user,o=<realm>,ou=services,ou=am-config`, the universal id
+   * being the user's `_id` for an identified user and the anonymous user's name otherwise.
+   * UNMEASURED: whether the session-hook lines precede a success as they precede a failure.
    */
-  treeSucceeded(tree: string, authLevel: unknown, username: string): void {
+  treeSucceeded(tree: string, authLevel: unknown, username: string, universalId?: string): void {
     this.sessionHook();
     this.audit("am-authentication", "authentication", {
       entries: [
@@ -398,7 +399,7 @@ export class RequestLog {
       principal: [username],
       result: "SUCCESSFUL",
       trackingIds: [this.trackingId()],
-      userId: `id=${username},ou=user,o=${this.realm},ou=services,ou=am-config`,
+      userId: `id=${universalId ?? username},ou=user,o=${this.realm},ou=services,ou=am-config`,
     });
   }
 
