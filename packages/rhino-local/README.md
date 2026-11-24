@@ -2575,9 +2575,9 @@ rate}`; now is `virtual_origin + (real now - real_origin) * rate`, read once at
   lazily, so slightly older ones may linger, never younger ones lost.
 - **Auth.** `x-api-key` / `x-api-secret`; anything else is `401` with a CREST-style
   body `{code, reason, message}` (the doc records the status, not the body).
-- **Rate limit.** 15 requests per real minute **per requested source name**, each
-  its own quota (a request naming two sources spends from both, or none if
-  either is exhausted); over quota is `429` with `Retry-After` in whole seconds,
+- **Rate limit.** 60 requests per real minute for the **whole environment**,
+  every source sharing one quota, as the tenant documents it (docs/api/08-logs.md;
+  documented by Ping, not measured); over quota is `429` with `Retry-After` in whole seconds,
   rounded up, until the oldest counted request leaves the window. Rejected and
   unauthenticated requests spend nothing. `requestsPerMinute` configures it;
   `false` disables it.

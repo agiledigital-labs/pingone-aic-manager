@@ -25,7 +25,7 @@ try {
       host: { type: "string", default: "127.0.0.1" },
       seed: { type: "string" },
       "retention-days": { type: "string", default: "30" },
-      "requests-per-minute": { type: "string", default: "15" },
+      "requests-per-minute": { type: "string", default: "60" },
     },
   });
   const id = process.env["API_KEY_ID"];
