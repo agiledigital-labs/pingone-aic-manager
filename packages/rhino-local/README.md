@@ -2933,8 +2933,11 @@ carrying the tenant's `400` text.
   the outcome must come from `declaredOutcomes` (undeclared is `missing`).
   `reCaptchaV3` is not modelled. `JourneyOptions.now` replaces the clock.
 
-Gaps in this set: Captcha and Terms and Conditions are not accepted as Page
-children, and the persistent cookie's `secretLabelIdentifier` signing, claims
+Captcha (as the last child) and Terms and Conditions are accepted as Page
+children, a Page sends its `pageHeader` and `pageDescription` as `header` and
+`description`, and a Page whose children queue no callbacks passes through.
+
+Gaps in this set: the persistent cookie's `secretLabelIdentifier` signing, claims
 and `idleTimeout` are not modelled. The emulator's Username and Password
 collectors accept an empty answer where the tenant re-prompts (measured with a
 Page of collectors in front of `DataStoreDecisionNode`).

@@ -112,6 +112,8 @@ const PAGE_CHILDREN: readonly string[] = [
   "PasswordCollectorNode",
   "AttributeCollectorNode",
   "ValidatedPasswordNode",
+  "AcceptTermsAndConditionsNode",
+  "product-CaptchaNode",
 ];
 /**
  * A node's stored outcome vocabulary, as doc 25's listOutcomes table reports it;
@@ -599,7 +601,12 @@ export class JourneyEmulator {
         state.pending = callbacks;
         return {
           status: 200,
-          body: { authId: this.snapshot(state), callbacks },
+          body: {
+            authId: this.snapshot(state),
+            callbacks,
+            ...(result.header !== undefined ? { header: result.header } : {}),
+            ...(result.description !== undefined ? { description: result.description } : {}),
+          },
         };
       }
       const outcome = result.outcome;
@@ -833,6 +840,36 @@ export class JourneyEmulator {
     this.evidence.assumed(`declared by test: ${frame.tree}/${id} -> ${String(outcome)}`);
     return { outcome, callbacks: [] };
   }
+  /**
+   * A Page's localized `pageHeader` / `pageDescription` map as the wire string (doc 25, 2026-11-25): the
+   * `en` entry, else the only entry, an empty string meaning none. Which of several locales an
+   * Accept-Language request picks is unmeasured.
+   */
+  private pageText(
+    config: NodeDocument,
+    field: "pageHeader" | "pageDescription",
+    wire: "header" | "description",
+    request: AuthenticateRequest,
+  ): { header?: string; description?: string } {
+    const map = config[field];
+    if (map === undefined) return {};
+    if (!isDocument(map)) this.missing(`PageNode ${field} shape`);
+    const keys = Object.keys(map);
+    if (!keys.length) return {};
+    const lang = Object.keys(request.headers ?? {}).some(
+      (h) => h.toLowerCase() === "accept-language",
+    );
+    if (lang && keys.length > 1)
+      this.missing(`PageNode ${field} with several locales and Accept-Language`);
+    const key = Object.hasOwn(map, "en") ? "en" : keys.length === 1 ? keys[0] : undefined;
+    if (key === undefined) this.missing(`PageNode ${field} with several locales and no en`);
+    const value = map[key];
+    if (typeof value !== "string") this.missing(`PageNode ${field} value`);
+    this.measured(
+      "a PageNode sends pageHeader and pageDescription as header and description beside its callbacks: the en entry, else a sole entry, omitted when empty; a re-sent page repeats them",
+    );
+    return value === "" ? {} : { [wire]: value };
+  }
   private async page(
     config: NodeDocument,
     state: State,
@@ -842,11 +879,10 @@ export class JourneyEmulator {
     log?: RequestLog,
   ): Promise<NodeResult> {
     if (state.frames.length > 1) this.missing("inner tree callbacks");
-    for (const field of ["pageHeader", "pageDescription"])
-      if (
-        isDocument(config[field]) ? Object.keys(config[field]).length : config[field] !== undefined
-      )
-        this.missing(`PageNode ${field}`);
+    const texts = {
+      ...this.pageText(config, "pageHeader", "header", request),
+      ...this.pageText(config, "pageDescription", "description", request),
+    };
     if (!Array.isArray(config.nodes) || !config.nodes.length)
       this.missing("PageNode child configuration");
     const previous = state.page;
@@ -895,6 +931,16 @@ export class JourneyEmulator {
           this.measured("a throw in a Page child's discovery run fails the first POST with 401");
         return result;
       }
+      if (
+        previous &&
+        child.nodeType === "product-CaptchaNode" &&
+        own.some((cb) => cb.type === "ReCaptchaCallback" && cb.value === "")
+      ) {
+        this.measured(
+          "a Page whose product-CaptchaNode child is submitted with an empty token fails with 401 Login failure",
+        );
+        return { outcome: null, callbacks: [], abort: this.error(401, "Login failure") };
+      }
       // Discovery ignores the child's Action (doc 25); whether a message set there survives is unmeasured.
       if (!previous && state.errorMessage !== message)
         this.missing("action.withErrorMessage in a PageNode discovery run");
@@ -907,7 +953,15 @@ export class JourneyEmulator {
       "PageNode children run in order with only their own callbacks; last child supplies the outcome",
     );
     if (!previous) {
-      if (!collected.length) this.missing("PageNode without callbacks");
+      if (!collected.length) {
+        // Doc 25 (2026-11-25): a page whose children queue no callbacks runs each child once and leaves
+        // by the last child's outcome, with nothing sent to the client.
+        if (outcome === null) this.missing("PageNode without callbacks and without an outcome");
+        this.measured(
+          "a PageNode whose children queue no callbacks runs them once and passes through by the last child's outcome",
+        );
+        return { outcome, callbacks: [] };
+      }
       state.page = { counts, effects: structuredClone(collected) };
       state.shared.pageNodeCallbacks = toWire(collected, (name) => this.missing(name)) as JsonValue;
       this.evidence.assumed(
@@ -919,7 +973,7 @@ export class JourneyEmulator {
         this.measured(
           "PageNode discovery runs every scripted child once, with real effects and retained state, and ignores its goTo; submission runs it again",
         );
-      return { outcome: null, callbacks: collected };
+      return { outcome: null, callbacks: collected, ...texts };
     }
     if (collected.length) {
       // Doc 25 measured a re-send only for collectors; what a script's effects do
@@ -938,7 +992,11 @@ export class JourneyEmulator {
           if (counts[index] !== count)
             this.missing("PageNode callback count changes on resubmission");
           retry.push(...collected.splice(0, count));
-        } else if (answered.every((cb) => cb.type === "StringAttributeInputCallback")) {
+        } else if (
+          answered.every(
+            (cb) => cb.type === "StringAttributeInputCallback" || cb.type === "NameCallback",
+          )
+        ) {
           retry.push(...answered.map((cb) => ({ ...cb })));
         } else {
           if (sent.some((cb) => cb.type !== "PasswordCallback")) firstShape = true;
@@ -958,7 +1016,7 @@ export class JourneyEmulator {
       this.measured(
         "required empty attribute re-sends the whole page with echoed values and empty failedPolicies",
       );
-      return { outcome: null, callbacks: retry };
+      return { outcome: null, callbacks: retry, ...texts };
     }
     return { outcome, callbacks: [] };
   }

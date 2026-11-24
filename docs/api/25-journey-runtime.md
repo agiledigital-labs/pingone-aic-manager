@@ -66,6 +66,20 @@ shared versus transient can only be told apart by whether a key survives a
 callback round trip, which is how every "shared"/"transient" cell in this file
 was decided.
 
+### Page header, no-callback pages and extra children (verified 2026-11-25)
+
+Measured on the sandbox with throwaway trees (`kdemo-g-`), none left behind.
+
+| Question | Observed | Control |
+| --- | --- | --- |
+| A page whose only child is a callback-free scripted decision | Not shown: the script ran **once** (a counter it kept read `1` at the next node) and the response was the next node's callbacks; the page left by the script's outcome | The same counter, in a page with a collector, reads 2 after submit (rows above) |
+| `pageHeader` / `pageDescription` | Sent as top-level **`header`** and **`description`** strings beside `callbacks` (after it), taken from the localized map | A page with `{}` for both sends neither |
+| Several locales, no `Accept-Language` | `{en: "E", fr: "F"}` gave `"E"`; a sole `{fr: "F"}` gave `"F"`; an empty string omitted the field | The three maps differ only in their entries |
+| A rejected page re-sent | `header` and `description` repeat on the re-sent page | — |
+| `AcceptTermsAndConditionsNode` after a collector | A `TermsAndConditionsCallback` (version `5.0` here, the realm's terms) follows the `NameCallback`; `true` leaves, `false` re-sends the page with the collector's input echoed | Same page, only the answer changes |
+| `product-CaptchaNode` as the last child | A `ReCaptchaCallback` follows the collector's callback and the page outcomes are the node's `true`/`false`; a token the provider rejects left by `false`, **an empty token fails the journey with `401 Login failure`** | Empty versus non-empty token |
+| A rejected page's `NameCallback` | Re-sent with `input[0].value` set to the submitted name and no `value` output, beside the echoed attribute callbacks (measured with a rejected required attribute and with a declined terms child) | The password callback of the same page goes out empty |
+
 ## Inner Tree
 
 Measured 2026-11-02 with `scripts/experiment-journey-inner-tree.sh`. Outer
@@ -515,8 +529,10 @@ None of these was exercised; do not build on them as measured:
 - `ValidatedPasswordNode` with `validateInput: true` (expected to emit
   `ValidatedCreatePasswordCallback`; not observed), and the effect of
   `IDTokenNvalidateOnly: true` on any validated callback.
-- A Page node holding a node that is not a collector or scripted decision; a
-  scripted child that calls `action.suspend()` or `withHeader` inside a page.
+- A Page node holding a node other than the collectors, a scripted decision,
+  Terms and Conditions and Captcha; a scripted child that calls
+  `action.suspend()` or `withHeader` inside a page; a `pageHeader` with
+  several locales under an `Accept-Language` request.
 - `withLockoutMessage` on an account that is actually locked out.
 - Inner Tree with `displayErrorOutcome: true` when the inner tree throws; an
   inner tree that sends callbacks; nested inner trees.

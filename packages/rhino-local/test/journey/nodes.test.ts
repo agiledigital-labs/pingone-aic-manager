@@ -1160,7 +1160,7 @@ const COLLECTORS = {
     attrs: { attributesToCollect: ["givenName", "sn"], validateInputs: false, required: true },
   },
 };
-it("a re-sent Page echoes attribute values only; Name and Password go out as first sent", async () => {
+it("a re-sent Page echoes Name and attribute values; Password goes out as first sent", async () => {
   const emu = make(
     collectorPage(
       [
@@ -1182,18 +1182,16 @@ it("a re-sent Page echoes attribute values only; Name and Password go out as fir
   const sent = first.body as WirePage,
     retry = rejected.body as WirePage;
   expect(JSON.stringify(retry)).not.toContain("super-secret-pw");
-  expect(retry.callbacks[0]).toEqual(sent.callbacks[0]);
+  expect(retry.callbacks[0]).toEqual({
+    ...sent.callbacks[0],
+    input: [{ name: "IDToken1", value: "invented" }],
+  });
   expect(retry.callbacks[3]).toEqual({
     type: "PasswordCallback",
     output: [{ name: "prompt", value: "Password" }],
     input: [{ name: "IDToken4", value: "" }],
   });
   expect(retry.callbacks[1]?.output.find((field) => field.name === "value")?.value).toBe("Given");
-  expect(rejected.provenance).toContainEqual({
-    kind: "assumed",
-    behavior:
-      "a re-sent Page repeats an accepted sibling's callbacks as first sent; measured for PasswordCallback only",
-  });
   // The re-sent page is what the snapshot expects back.
   const done = await request(
     emu,

@@ -24,7 +24,7 @@ export function toWire(
   return callbacks.map((callback, index) => {
     if (!SUPPORTED.includes(callback.type)) absent(`callback wire type: ${callback.type}`);
     const output = Object.entries(callback)
-      .filter(([key]) => key !== "type")
+      .filter(([key]) => key !== "type" && !(callback.type === "NameCallback" && key === "value"))
       .map(([name, value]) => ({ name, value }));
     const out: WireCallback = { type: callback.type, output };
     if (callback.type !== "TextOutputCallback")
@@ -32,7 +32,7 @@ export function toWire(
         {
           name: `IDToken${index + 1}`,
           value:
-            callback.type === "StringAttributeInputCallback"
+            callback.type === "StringAttributeInputCallback" || callback.type === "NameCallback"
               ? (callback.value ?? "")
               : callback.type === "HiddenValueCallback"
                 ? (callback.id ?? "")
