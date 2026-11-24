@@ -2936,3 +2936,134 @@ put in the audit log"). The successful end `AM-TREE-LOGIN-COMPLETED` was never
 measured (the sandbox answers 500); it is written in one function,
 `RequestLog.treeSucceeded` in `src/journey/emit.ts`, so a measurement changes one
 place. Every other unmeasured choice is marked `UNMEASURED` in that file.
+
+### `failAt`
+
+`JourneyOptions.failAt({tree, nodeId})` is a harness hook for the demo driver,
+not an AM behaviour. When it answers true for a node that is about to complete
+normally, the node's record is written with `nodeOutcome` `"false"`, the tree
+ends in `AM-TREE-LOGIN-COMPLETED` with a failure, and the request answers 401
+`Login failure`, whatever the node's own script decided. Absent, nothing
+changes.
+
+## Demo driver
+
+`src/demo/` and `aic-emulator-demo` drive synthetic traffic through the journey
+emulator into the monitoring logs server, so a log-anomaly demo has a tenant to
+pull from. **Everything it writes is synthetic.** Journey records come from the
+real engine running the journeys you give it; the non-journey OAuth2 token and
+IDM read traffic is invented from the mix file and writes only `am-access` /
+`idm-access` records and the `am-core` / `idm-core` lines the mix lists. Users
+are `user0001@example.com` style, networks are the CIDRs you name, and the
+mix refuses any email domain that is not reserved for documentation.
+
+```sh
+API_KEY_ID=... API_KEY_SECRET=... KIKORI_CLOCK=clock.json \
+  aic-emulator-demo --journeys journeys.json --mix mix.json \
+    [--breaks breaks.json] [--port 8080] [--seed demo] [--scale 1] \
+    [--concurrency 8] [--retention-days 30] [--requests-per-minute 60|off]
+```
+
+It starts the logs server, then runs the driver on the shared clock until
+SIGINT. It prints a status line every 30 s (journeys started, finished, lag).
+
+**Journeys file.** One JSON object: the `JourneyConfig` input (`realm`, `trees`,
+`nodes`, `scripts`) plus an optional `idm` key (an IDM config) for nodes that
+read managed objects.
+
+**Mix file** (`version: 1`; every refusal names its path in the file):
+
+```json
+{
+  "version": 1,
+  "tenant": { "host": "tenant.example.com", "realm": "alpha" },
+  "journeys": {
+    "tree-a": {
+      "rate": { "perHour": 600, "daily": [24 numbers], "weekly": [7 numbers] },
+      "users": { "count": 500, "domain": "example.com" },
+      "networks": [{ "cidr": "198.51.100.0/24", "share": 1 }],
+      "userAgents": ["..."],
+      "latencyMs": { "medianMs": 30, "p95Ms": 90 },
+      "abandon": 0.1,
+      "steps": [{
+        "thinkSeconds": [1, 5],
+        "answers": [
+          { "label": "good", "outcome": "success", "share": 0.8, "fill": { "NameCallback": "{username}" } },
+          { "label": "bad", "outcome": "failure", "share": 0.2, "fill": { "NameCallback": "intruder" } }
+        ]
+      }],
+      "http": [{ "match": "...", "responses": [{ "share": 1, "status": 200, "body": {} }] }]
+    }
+  },
+  "requests": [{
+    "name": "token", "stream": "am-access", "method": "POST",
+    "path": "/am/oauth2/realms/root/realms/alpha/access_token",
+    "rate": { "perHour": 300 }, "networks": [...],
+    "status": [{ "share": 0.95, "status": "SUCCESSFUL", "statusCode": 200 },
+               { "share": 0.05, "status": "FAILED", "statusCode": 401 }],
+    "core": []
+  }]
+}
+```
+
+A rate is either `{perHour, daily[24], weekly[7]}` (the base rate times a daily
+and a weekly multiplier) or `{byHourOfWeek: [168 numbers]}`, hour 0 being Monday
+00:00 UTC. `fill` maps a callback type to the value put in its first input;
+`{username}`, `{email}` and `{userId}` are replaced by the journey's user.
+Shares need not sum to 1; they are weights. `outcome` is the author's intent and
+only labels the driver's tallies.
+
+**Breaks** are read from kikori-aic's break file as it is (the same file drives
+the generator and the emulator): `endpoint` (a share of requests under a path
+fail, and hit requests run `slower` times slower), `node-fails` (a share of
+journeys at a node end there), `template` (a new message at a rate in a stream)
+and `surge` (extra requests from one network). A window is `[from, to)` in
+virtual time. Unknown fields are refused as the Rust parser does. Each break
+draws from its own random stream, so records outside its window are those of a
+run without it (tested for each kind, and for two breaks at once).
+
+**Behaviour.**
+
+- Arrivals are Poisson per journey and per request stream, redrawn at each
+  virtual hour boundary. Every random choice is keyed by (seed, journey or
+  request), and every timestamp is scheduled, not read from a clock, so the same
+  seed gives the same records at any `--concurrency`.
+- The driver emits nothing at or before the instant it starts; the first record
+  is strictly after it. That is the history-to-live handoff: a puller's
+  `beginTime` is exclusive.
+- `--scale` multiplies base rates (not breaks). `--concurrency` bounds journeys
+  in flight; waiting for a slot delays a journey but never changes what it does.
+- The report carries lag (virtual time behind the clock, which journeys), and
+  throughput. Lag is only meaningful against a real pacer; a flat-out run
+  (tests) has none.
+
+**Throughput** (this machine, 22 cores, host JVM, flat out, a two-node tree with
+two round trips per journey): about 350-450 finished journeys per real second
+(3,400-4,200 records per second), at concurrency 8 and 64 respectively. At clock
+rate 15 that sustains over 1,500 journeys per virtual second, so the driver
+does not lag at any rate the log quota lets a puller read.
+
+**Default rates.** The example above, scaled to a peak of 3,600 journeys per
+virtual hour (60 a minute), plus 300 token and 200 read requests an hour,
+writes per virtual minute about 234 `am-access`, 149 `am-authentication`, 117
+`am-core` and 3 `idm-access` rows (about 500 for `am-everything`). At rate 15
+the whole-environment quota of 60 requests a real minute at 1,000 rows a page
+reads 4,000 rows per virtual minute, so a puller keeps up with a margin of
+eight; the ceiling to stay under is about 1,000 rows per virtual minute per
+source. These are demo choices, not measurements of any tenant.
+
+**Unmeasured** (choices the tenant was not observed making):
+
+- The OAuth2 `component` string and an `am-access` outcome's `detail.reason` on
+  anything but the 401.
+- `idm-access`'s `request.{protocol,operation}` block (carried over from the AM
+  CREST shape).
+- A `template` break's level and logger (`am-core`/`idm-core` lines).
+- A `surge` break's copy semantics: it emits extra requests from the network; it
+  does not copy existing ones.
+- The successful `AM-TREE-LOGIN-COMPLETED` shape (see the journey log records).
+- `AM-ACCESS-OUTCOME`'s stamp against its `elapsedTime`: the outcome is stamped
+  at the end of the request's scheduled work and `elapsedTime` is drawn from the
+  mix's latency, so they need not agree to the millisecond.
+- Whether `http.request.path` is absolute (`https://host/...`) or stripped; the
+  driver writes it absolute.
