@@ -431,7 +431,8 @@ records for a config provider node). `message` is exactly the string passed.
 **The node completion record** is `am-authentication`, `AM-NODE-LOGIN-COMPLETED`,
 one per node that completed, written in the same millisecond as the node's last
 `am-core` line. `entries[0].info` has exactly these keys for a scripted decision
-node, whatever the script did:
+node whose script did not assign `auditEntryDetail`; when it did, a
+`nodeExtraLogging` key joins them (shown after the JSON blocks below):
 
 ```json
 {
@@ -469,9 +470,28 @@ There is no `result` on it. A tree that fails writes `AM-TREE-LOGIN-COMPLETED`
 with `result: "FAILED"` and `entries[0].info = {authLevel, ipAddress,
 nodeExtraLogging: {…}, treeName}`; `nodeExtraLogging` is `{failureReason:
 "Login failure"}` when a node routed to the Failure node and `{exception,
-failureReason}` when a script threw. **A script cannot add anything to either
-record**; see `25-journey-runtime.md`, "What a script can put in the audit log",
-for the probes (there is no `auditEntryDetail` binding in a decision node).
+failureReason}` when a script threw. **A script can add to the node record, not the tree record.** Assigning the
+script variable `auditEntryDetail` (a string, or an object; never a top-level
+array) makes the node's record carry `entries[0].info.nodeExtraLogging =
+{"auditInfo": <the value>}`, with the info keys otherwise unchanged. For
+example, after `auditEntryDetail = {"k": "v", "list": ["a", "b"]};`:
+
+```json
+"info": {
+  "authLevel": "0",
+  "displayName": "<node display name>",
+  "nodeExtraLogging": { "auditInfo": { "k": "v", "list": ["a", "b"] } },
+  "nodeId": "<node uuid>",
+  "nodeOutcome": "true",
+  "nodeType": "ScriptedDecisionNode",
+  "treeName": "<journey name>"
+}
+```
+
+It is emitted on both engines and for either outcome, and not at all when the
+script throws. It is not pre-bound (`typeof` is `"undefined"` until assigned).
+The probes, the rejected array and the other forms are in `25-journey-runtime.md`,
+"What a script can put in the audit log".
 
 ## Source IDs (verified)
 

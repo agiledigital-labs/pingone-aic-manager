@@ -352,35 +352,57 @@ response proves which outcome was taken). Each request carried its own
 `x-forgerock-transactionid`, and the events were read back with
 `aic logs tx <id> --source am-authentication,am-access,am-core`. The probe was
 an ad hoc driver over `scripts/experiment_journey_lib.py`, not committed.
-**Answer to "can a decision script write info-level detail into the node's
-completion record through `auditEntryDetail`": no. The binding does not exist in
-a scripted decision node on either engine, and nothing else a script can touch
-reaches that record.**
 
-| Question | Observed | Control |
+**`auditEntryDetail` is an output variable the script assigns, not a binding it
+is handed.** Before assignment it does not exist (`typeof` is `"undefined"`,
+reading it is a `ReferenceError`). After the script assigns it, the node reads
+it back and AM writes it into that node's `AM-NODE-LOGIN-COMPLETED` record as
+`entries[0].info.nodeExtraLogging.auditInfo`. It works on next-gen (2.0) and
+legacy (1.0) decision nodes alike.
+
+| Script (next-gen ends `action.goTo("true");`, legacy ends `outcome = "true";`) | Observed in `entries[0].info` | Engines |
 | --- | --- | --- |
-| `typeof auditEntryDetail`, next-gen (`evaluatorVersion` 2.0) decision node | `"undefined"`; reading it throws `ReferenceError: "auditEntryDetail" is not defined.` | `typeof scriptName` in the same script was `"string"` |
-| The same, legacy (1.0) decision node | `ReferenceError`, same text. The names bound in the legacy script's global scope: `httpClient, sharedState, logger, requestParameters, callbacks, secrets, idRepository, systemEnv, requestHeaders, nodeState, resumedFromSuspend, context, scriptName, realm, transientState` | Names read with `for…in this` |
-| Next-gen global scope | `samlApplication, logger, callbacks, idRepository, jwtAssertion, utils, context, action, callbacksBuilder, openidm, requestCookies, cookieName, policy, httpClient, journey, requestParameters, require, cacheManager, secrets, oauthApplication, emailService, locales, systemEnv, requestHeaders, nodeState, resumedFromSuspend, scriptName, realm, jwtValidator` (plus the probe's own locals). No audit binding | — |
-| Next-gen `action` builder | Methods: `goTo, withDescription, withErrorMessage, withLockoutMessage, withStage, withHeader, withMaxIdleTime, withMaxSessionTime, withIdentifiedUser, withIdentifiedAgent, putSessionProperty, removeSessionProperty, suspend`. None is an audit method | — |
-| `action.goTo("true").withDescription("KDEMO-DESC").withErrorMessage(…).withStage(…).withHeader(…).putSessionProperty(…)` | The node's `AM-NODE-LOGIN-COMPLETED` record is **identical** to one from a bare `goTo("true")`: none of the strings appears anywhere in `am-authentication` | Bare `goTo("true")` |
-| `nodeState.putShared("auditEntryDetail", {…})` and `putTransient("nodeExtraLogging", "…")` | No effect on the record | Bare `goTo` |
-| A custom outcome name, `goTo("KDEMO-OUTCOME-A")` on a node declaring two such outcomes | **Lands**: `info.nodeOutcome` is `"KDEMO-OUTCOME-A"`. It is the only script-chosen string that reaches the record, and it must be one of the node's declared outcomes | `"true"` / `"false"` in the other runs |
-| A script that throws (`throw new Error("KDEMO-THROWN")`, and a thrown string) | Client sees `401 Login failure`. **No `AM-NODE-LOGIN-COMPLETED` for that node.** One `AM-TREE-LOGIN-COMPLETED`, `result: "FAILED"`, whose `info.nodeExtraLogging` is `{exception: "An exception occurred during the authentication process", failureReason: "javax.script.ScriptException: java.util.concurrent.ExecutionException: javax.script.ScriptException: <String(thrown)> (<script name>#1) in <script name> at line number 1 at column number 0"}`. The thrown text, and the script's name, are inside `failureReason`. Work the script did before throwing (`logger.info`) is still in `am-core` | A non-throwing script emits no `nodeExtraLogging` |
-| A script taking the `false` outcome into a sink node | `AM-NODE-LOGIN-COMPLETED` with `nodeOutcome: "false"`, same fields as `true`; no extra field | The `true` run |
-| A script taking `false` into the Failure node | `AM-NODE-LOGIN-COMPLETED` (`nodeOutcome: "false"`) then `AM-TREE-LOGIN-COMPLETED`, `result: "FAILED"`, `info.nodeExtraLogging = {failureReason: "Login failure"}` | — |
+| `auditEntryDetail = {"k": "v", "list": ["a", "b"]};` (implicit global) | `nodeExtraLogging: {"auditInfo": {"k": "v", "list": ["a", "b"]}}` | both |
+| `var auditEntryDetail = {…};` at top level | the same | both |
+| `auditEntryDetail = "KDEMO-STR";` | `nodeExtraLogging: {"auditInfo": "KDEMO-STR"}` | both |
+| `auditEntryDetail = ["KDEMO-A", "KDEMO-B"];` (top-level **array**) | **Rejected**: client gets `401 Login failure`; `am-core` WARN `script auditEntryDetail not type String or Map`; no node record; `AM-TREE-LOGIN-COMPLETED` `FAILED` with `nodeExtraLogging: {exception: "An exception occurred during the authentication process", failureReason: "Invalid auditEntryDetail type from script"}`. An array is fine **inside** an object (first row) | both |
+| `{"n": 1, "f": 1.5, "b": true, "z": null, "o": {"x": "y"}, "e": "", "u": undefined}` | `auditInfo: {"b": true, "e": "", "f": 1.5, "n": 1, "o": {"x": "y"}, "u": null, "z": null}`: numbers, booleans, nested objects and `""` survive; `undefined` becomes `null`; the keys came back in alphabetical order | next-gen |
+| `auditEntryDetail = {};` | `nodeExtraLogging: {"auditInfo": {}}` | next-gen |
+| `auditEntryDetail = null;` | no `nodeExtraLogging` key at all (same as never assigning) | next-gen |
+| Assigned, then `goTo("false")` to a sink node | `AM-NODE-LOGIN-COMPLETED` with `nodeOutcome: "false"` **and** `nodeExtraLogging.auditInfo` | both |
+| Assigned, then `goTo("false")` to the Failure node | that node's `AM-NODE-LOGIN-COMPLETED` carries `auditInfo` (`nodeOutcome: "false"`); the following `AM-TREE-LOGIN-COMPLETED` (`FAILED`) has `nodeExtraLogging: {failureReason: "Login failure"}` and no `auditInfo` | next-gen |
+| Assigned, then the script throws (`throw new Error("KDEMO-THROWN")`; legacy throws a string) | **Not emitted.** No `AM-NODE-LOGIN-COMPLETED` for the node; the `AM-TREE-LOGIN-COMPLETED` `nodeExtraLogging` is only the usual `{exception, failureReason}` and the assigned value appears nowhere in `am-authentication` | both |
+
+So the value is a **string or a map (JSON object)**, shown under the fixed key
+`auditInfo`; an object holding an array of entries is the way to carry several.
+It is per node execution and rides the completion record, so it exists only for
+nodes that finish. The legacy runs also logged the unrelated `am-core` WARN
+`Found an action result from scripted node, but it was not an Action object`
+(legacy `outcome = "…"` still took the right path).
+
+Other probes, all from a script that did **not** assign `auditEntryDetail`:
+
+| Question | Observed |
+| --- | --- |
+| `action.goTo("true").withDescription(…).withErrorMessage(…).withStage(…).withHeader(…).putSessionProperty(…)` | `AM-NODE-LOGIN-COMPLETED` identical to a bare `goTo("true")`; none of the strings reaches `am-authentication` |
+| `nodeState.putShared("auditEntryDetail", {…})`, `putTransient("nodeExtraLogging", "…")` | no effect on the record. Only an **assignment to the script variable** works |
+| The `action` builder | Methods: `goTo, withDescription, withErrorMessage, withLockoutMessage, withStage, withHeader, withMaxIdleTime, withMaxSessionTime, withIdentifiedUser, withIdentifiedAgent, putSessionProperty, removeSessionProperty, suspend`; none is an audit method |
+| Global scope before assignment | next-gen: `samlApplication, logger, callbacks, idRepository, jwtAssertion, utils, context, action, callbacksBuilder, openidm, requestCookies, cookieName, policy, httpClient, journey, requestParameters, require, cacheManager, secrets, oauthApplication, emailService, locales, systemEnv, requestHeaders, nodeState, resumedFromSuspend, scriptName, realm, jwtValidator`; legacy: `httpClient, sharedState, logger, requestParameters, callbacks, secrets, idRepository, systemEnv, requestHeaders, nodeState, resumedFromSuspend, context, scriptName, realm, transientState`. No audit name in either |
+| A custom outcome name, `goTo("KDEMO-OUTCOME-A")` on a node declaring two such outcomes | `info.nodeOutcome` is `"KDEMO-OUTCOME-A"` |
+| A script that throws (no assignment) | Client `401 Login failure`; no node record; one `AM-TREE-LOGIN-COMPLETED` `FAILED` with `nodeExtraLogging: {exception: "An exception occurred during the authentication process", failureReason: "javax.script.ScriptException: java.util.concurrent.ExecutionException: javax.script.ScriptException: <String(thrown)> (<script name>#1) in <script name> at line number 1 at column number 0"}`. `logger` calls made before the throw are still in `am-core` |
+
+The earlier probe that only read `typeof auditEntryDetail` (and listed the
+global scope) found it undefined; that was correct but did not test assignment.
 
 Where the script `logger` lands is in `08-logs.md`, "Script logger lines".
 
-**Not measured.** A tree that **succeeds** (reaches the Success node with an
-identified user): the `AM-TREE-LOGIN-COMPLETED` for it was not captured, because
-an anonymous journey that reaches Success returns `500` with an empty body here.
-The legacy script's mechanism for choosing an outcome was not studied (`outcome
-= "true"` took the `true` path but AM logged `Found an action result from
-scripted node, but it was not an Action object`; `Action` is not defined in the
-legacy global scope). Whether any other script context (OAuth2, SAML, policy)
-binds `auditEntryDetail` was not probed; `12-script-bindings-matrix.md`
-lists it as unbound for next-gen config provider and library callers.
+**Not measured.** The `AM-TREE-LOGIN-COMPLETED` of a tree that **succeeds**
+(an anonymous journey reaching Success returns `500` with an empty body here).
+Assignment inside a Page node child, or in a node that suspends or sends
+callbacks. A size limit on the value. Whether any other script context (OAuth2,
+SAML, policy) accepts the assignment. Whether this key is emitted at the
+production log level: the sandbox is verbose (`08-logs.md`), and the
+audit topic's own filtering is unmeasured.
 
 ## Not yet measured
 
