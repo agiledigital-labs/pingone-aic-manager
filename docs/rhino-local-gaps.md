@@ -1340,6 +1340,31 @@ and message (`InternalError: Cannot find default value for object.`) but ends
 Preserving it would need the wrapper in Java; not done. Pinned by
 `test/bindings/tosource-native-error-location.e2e.test.ts`.
 
+## Journey log records: what is and is not emitted (2026-11-25)
+
+The journey emulator can write AIC log records into a `LogSink`
+(`packages/rhino-local/README.md`, "Journey log records"). Measured shapes are in
+`docs/api/08-logs.md` and `docs/api/25-journey-runtime.md`; what follows is the
+list of gaps.
+
+- **`auditEntryDetail`** is read after a decision script on the **next-gen**
+  engine only, because the journey emulator runs only `evaluatorVersion` 2.0
+  (1.0 is a missing-behaviour failure). AM measured it on both engines; the
+  legacy half is untested here for that reason. Assigned inside a Page child it
+  is dropped (assignment there is unmeasured), and a value that is a function,
+  `Date` or other host object is a missing-behaviour failure, not a guess.
+- **Unmeasured on the sandbox**, written anyway and marked `UNMEASURED` in
+  `src/journey/emit.ts`: the successful `AM-TREE-LOGIN-COMPLETED` (its `principal`
+  and `userId` follow a production corpus's shape, the DN is synthetic); an
+  inner-tree evaluator node's own completion record; whether an undeclared or
+  unwired outcome writes a node or tree record; `detail.reason` for any status
+  but 401; the `AM-ACCESS-OUTCOME` of a request that never reached a journey;
+  whether AM logs cookie and authorization headers (they are left out); the
+  generated `transactionId` when the caller supplies none; script thread numbers.
+- **Not emitted**: the framework `DEBUG` lines AM writes around a request
+  (about 30 to 60 per request), and the Java stack frames of an `exception`.
+- Script logger lines are stamped when the script returns, not as each call ran.
+
 ## What this does _not_ claim
 
 - It does not claim the 384-script production corpus was run. That tree is not
