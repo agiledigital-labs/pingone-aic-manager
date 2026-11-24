@@ -585,3 +585,69 @@ describe("attribute collector boolean attributes", () => {
     expect(next).toMatchObject({ status: 400, body: { code: 400, reason: "Bad Request" } });
   });
 });
+
+// ---------------------------------------------------------------------------------------------
+// DataStoreDecisionNode and accountStatus (batch 3 G27, batch 4 G24). Doc 25, "DataStoreDecisionNode
+// and accountStatus".
+describe("DataStoreDecisionNode ignores accountStatus", () => {
+  const tree = (): JourneyConfigInput => ({
+    realm: "alpha",
+    trees: {
+      invented: {
+        entryNodeId: "seed",
+        nodes: {
+          seed: { nodeType: "ScriptedDecisionNode", connections: { true: "ds" } },
+          ds: { nodeType: "DataStoreDecisionNode", connections: { true: "t", false: "f" } },
+          t: { nodeType: "ScriptedDecisionNode", connections: {} },
+          f: { nodeType: "ScriptedDecisionNode", connections: {} },
+        },
+      },
+    },
+    nodes: {
+      DataStoreDecisionNode: { ds: {} },
+      ScriptedDecisionNode: {
+        seed: { script: "seed", outcomes: ["true"] },
+        t: { script: "t", outcomes: [] },
+        f: { script: "f", outcomes: [] },
+      },
+    },
+    scripts: {
+      seed: script(`nodeState.putShared('username','PERSON');nodeState.putTransient('password','pw-PERSON');action.goTo('true');`),
+      t: script(report("true")),
+      f: script(report("false")),
+    },
+  });
+  async function verdict(status: string | undefined, password = "pw-PERSON") {
+    const idm = new IdmEmulator(
+      new IdmConfig({
+        sync: { mappings: [] },
+        managed: { objects: [{ name: "alpha_user", schema: { properties: { userName: { type: "string", title: "u" }, password: { type: "string", title: "p" }, accountStatus: { type: "string", title: "s" } } } }] },
+      }),
+      runner,
+    );
+    await idm.request({
+      method: "PUT",
+      path: "managed/alpha_user/00000000-0000-0000-0000-0000000000c3",
+      body: { userName: "PERSON", password: "pw-PERSON", ...(status === undefined ? {} : { accountStatus: status }) },
+    });
+    const base = tree();
+    const input = {
+      ...base,
+      scripts: {
+        ...base.scripts,
+        seed: script(`nodeState.putShared('username','PERSON');nodeState.putTransient('password','${password}');action.goTo('true');`),
+      },
+    };
+    const result = await run(make(input, {}, idm), "invented");
+    return dump(result.body).branch;
+  }
+  // Discriminating: every status, including the ones a status check would refuse, gives the password
+  // verdict (measured on the tenant: "inactive" and "Inactive" with the right password took true).
+  it.each(["active", "Active", "inactive", "Inactive", "", undefined])("status %j with the right password takes true", async (status) => {
+    expect(await verdict(status)).toBe("true");
+  });
+  it("a wrong password still takes false whatever the status", async () => {
+    for (const status of ["active", "inactive", undefined])
+      expect(await verdict(status, "wrong")).toBe("false");
+  });
+});

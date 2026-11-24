@@ -233,8 +233,10 @@ export class ExtraNodes {
     );
     const user = matches[0];
     if (!user) return { outcome: "false", callbacks: [] };
-    if (user.accountStatus !== undefined && user.accountStatus !== "active")
-      this.ctx.missing("DataStoreDecisionNode over an account that is not active");
+    evidence.measured(
+      "DataStoreDecisionNode does not read accountStatus: any status, in any case, takes the password verdict",
+      "docs/api/25-journey-runtime.md (DataStoreDecisionNode and accountStatus, 2026-11-25)",
+    );
     if (typeof user.password !== "string")
       this.ctx.missing("DataStoreDecisionNode over a user with no password");
     evidence.measured(

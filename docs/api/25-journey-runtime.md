@@ -855,6 +855,29 @@ Measured on the sandbox with throwaway journeys, each node run standalone and as
   true` as a child; `GetAuthenticatorAppNode` messages with other wildcards
   (`{{appleLabel}}`, `{{googleLabel}}`) or a quote, backslash or line break.
 
+## DataStoreDecisionNode and accountStatus (2026-11-25)
+
+Measured on the sandbox: one throwaway `alpha_user` per `accountStatus`, all with the same password; a seed script put
+the user name in shared `username` and the password in transient `password`; `DataStoreDecisionNode` led to dump
+nodes. Probe: `scripts/experiment-journey-datastore-status.sh`. All objects `kdemo-g3-`, deleted, get-after 404.
+
+| `accountStatus` written | Stored | Right password | Wrong password |
+| ----------------------- | ------ | -------------- | -------------- |
+| `active` | `active` | `true` | not run |
+| `Active` | `Active` | `true` | not run |
+| `inactive` | `inactive` | `true` | `false` |
+| `Inactive` | `Inactive` | `true` | not run |
+| `""` | **`active`** | `true` | not run |
+| `null` | **`active`** | `true` | not run |
+| absent | **`active`** | `true` | `false` |
+
+- The node does not read `accountStatus`: any status, in any case, takes the password verdict. The emulator used to
+  refuse anything but `active` as missing; that guess is gone.
+- Separately, the tenant's managed object turned `""`, `null` and an absent status into `active` on create. The IDM
+  emulator does not model that default (a `null` status is rejected there), so a fixture that needs a status other than
+  the ones above says so itself.
+- Not measured: whether a later node (session creation) refuses an inactive account after a `true`.
+
 ## Not yet measured
 
 None of these was exercised; do not build on them as measured:
