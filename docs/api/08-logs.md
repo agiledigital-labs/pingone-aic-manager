@@ -375,6 +375,124 @@ request, including the two fetches themselves. That is a ceiling rather than a
 measurement of the lag, taken on one source and one request type — do not quote
 it as "logs appear within 9 seconds".
 
+## Script logger lines, and the node completion record (verified 2026-11-25)
+
+Sandbox tenant, realm `alpha`, `aic logs tx <id> --source am-authentication,am-access,am-core`
+for requests sent with `x-forgerock-transactionid: <id>`. Four sources came back
+for one `authenticate` request: `am-access` (`AM-ACCESS-ATTEMPT`,
+`AM-ACCESS-OUTCOME`), `am-authentication` (the node/tree records), and `am-core`
+(about 30 to 60 lines, mostly framework `DEBUG`).
+
+**A script's `logger` output is in `am-core`, and it is keyed by transaction id**
+for a journey script — unlike the IDM hook case above. One next-gen decision
+script called `trace`, `debug`, `info`, `warn`, `error` once each:
+
+| Call | In `am-core`? | `payload.level` |
+| --- | --- | --- |
+| `logger.trace` | no | — |
+| `logger.debug` | yes | `DEBUG` |
+| `logger.info` | yes | `INFO` |
+| `logger.warn` | yes | `WARN` |
+| `logger.error` | yes | `ERROR` |
+
+So **this tenant emits script `info` (and `debug`)**; the sandbox's level is not
+the production one, and nothing here says what a production tenant emits. The
+same run's framework lines (`org.forgerock.openam.auth.trees.engine.AuthTreeExecutor`,
+`…scripting.StandardScriptEvaluator`) were `DEBUG`. The legacy logger has
+`warning`, `error`, `debug`, `message`, not `warn` (`logger.warn` throws
+`TypeError: Cannot find function warn`, and the tree fails `401`).
+
+An `am-core` script line (field order as returned; the envelope `source`,
+`timestamp`, `type` are the log API's):
+
+```json
+{
+  "payload": {
+    "context": "default",
+    "level": "INFO",
+    "logger": "scripts.AUTHENTICATION_TREE_DECISION_NODE.<script-uuid>.(<script name>)",
+    "mdc": { "transactionId": "<id>/0" },
+    "message": "KDEMO-INFO",
+    "thread": "ScriptEvaluator-26",
+    "timestamp": "2026-11-24T14:19:10.303Z",
+    "transactionId": "<id>/0"
+  },
+  "source": "am-core",
+  "timestamp": "2026-11-24T14:19:10.30361749Z",
+  "type": "application/json"
+}
+```
+
+`logger` is `scripts.<context>.<script uuid>.(<script name>)`, with context
+`AUTHENTICATION_TREE_DECISION_NODE` for **both** the legacy and the next-gen
+decision script (this is not the `…_NEXT_GEN` name `12-script-bindings-matrix.md`
+records for a config provider node). `message` is exactly the string passed.
+
+**The node completion record** is `am-authentication`, `AM-NODE-LOGIN-COMPLETED`,
+one per node that completed, written in the same millisecond as the node's last
+`am-core` line. `entries[0].info` has exactly these keys for a scripted decision
+node whose script did not assign `auditEntryDetail`; when it did, a
+`nodeExtraLogging` key joins them (shown after the JSON blocks below):
+
+```json
+{
+  "payload": {
+    "_id": "<uuid>-1574317",
+    "component": "Authentication",
+    "entries": [
+      {
+        "info": {
+          "authLevel": "0",
+          "displayName": "<node display name>",
+          "nodeId": "<node uuid>",
+          "nodeOutcome": "true",
+          "nodeType": "ScriptedDecisionNode",
+          "treeName": "<journey name>"
+        }
+      }
+    ],
+    "eventName": "AM-NODE-LOGIN-COMPLETED",
+    "level": "INFO",
+    "realm": "/alpha",
+    "source": "audit",
+    "timestamp": "2026-11-24T14:19:10.304Z",
+    "topic": "authentication",
+    "trackingIds": ["<uuid>-1574312"],
+    "transactionId": "<id>/0"
+  },
+  "source": "am-authentication",
+  "timestamp": "2026-11-24T14:19:10.304795551Z",
+  "type": "application/json"
+}
+```
+
+There is no `result` on it. A tree that fails writes `AM-TREE-LOGIN-COMPLETED`
+with `result: "FAILED"` and `entries[0].info = {authLevel, ipAddress,
+nodeExtraLogging: {…}, treeName}`; `nodeExtraLogging` is `{failureReason:
+"Login failure"}` when a node routed to the Failure node and `{exception,
+failureReason}` when a script threw. **A script can add to the node record, not the tree record.** Assigning the
+script variable `auditEntryDetail` (a string, or an object; never a top-level
+array) makes the node's record carry `entries[0].info.nodeExtraLogging =
+{"auditInfo": <the value>}`, with the info keys otherwise unchanged. For
+example, after `auditEntryDetail = {"k": "v", "list": ["a", "b"]};`:
+
+```json
+"info": {
+  "authLevel": "0",
+  "displayName": "<node display name>",
+  "nodeExtraLogging": { "auditInfo": { "k": "v", "list": ["a", "b"] } },
+  "nodeId": "<node uuid>",
+  "nodeOutcome": "true",
+  "nodeType": "ScriptedDecisionNode",
+  "treeName": "<journey name>"
+}
+```
+
+It is emitted on both engines and for either outcome, and not at all when the
+script throws. It is not pre-bound (`typeof` is `"undefined"` until assigned).
+The probes, the rejected array and the other forms are in `25-journey-runtime.md`,
+"What a script can put in the audit log".
+
 ## Source IDs (verified)
 
 Live `GET /monitoring/logs/sources` on the sandbox returned:
