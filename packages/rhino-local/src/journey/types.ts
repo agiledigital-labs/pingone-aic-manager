@@ -1,6 +1,7 @@
 /** Tenant-shaped config and authenticate REST contracts. No test framework dependencies. */
 import type { JsonValue } from "../protocol.ts";
 import type { RestResult } from "../idm/types.ts";
+import type { CustomNodeType } from "./extra-nodes.ts";
 export type TreeNode = {
   readonly nodeType: string;
   readonly displayName?: string;
@@ -34,6 +35,11 @@ export type JourneyConfigInput = {
   readonly nodes: Readonly<Record<string, Readonly<Record<string, NodeDocument>>>>;
   /** Script REST documents: script is base64 encoded, as on the tenant. */
   readonly scripts: Readonly<Record<string, ScriptDocument>>;
+  /**
+   * Node-designer node types, by the `nodeType` a tree node carries ("designer-<serviceName>"), each as
+   * the tenant stores it.
+   */
+  readonly customNodeTypes?: Readonly<Record<string, CustomNodeType>>;
 };
 export type AuthenticateRequest = {
   readonly method: "POST";

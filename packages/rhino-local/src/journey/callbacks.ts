@@ -16,6 +16,8 @@ const SUPPORTED = [
   "StringAttributeInputCallback",
   "TermsAndConditionsCallback",
   "ReCaptchaCallback",
+  "ConfirmationCallback",
+  "ChoiceCallback",
 ];
 export function toWire(
   callbacks: CallbackEffect[],
@@ -40,7 +42,11 @@ export function toWire(
                   ? (callback.defaultText ?? "")
                   : callback.type === "TermsAndConditionsCallback"
                     ? false
-                    : "",
+                    : callback.type === "ConfirmationCallback"
+                      ? 0
+                      : callback.type === "ChoiceCallback"
+                        ? (callback.defaultChoice ?? 0)
+                        : "",
         },
       ];
     if (callback.type === "StringAttributeInputCallback")
@@ -66,6 +72,10 @@ export function fromWire(
           !(
             callback.type === "TermsAndConditionsCallback" &&
             typeof callback.input[0].value === "boolean"
+          ) &&
+          !(
+            (callback.type === "ConfirmationCallback" || callback.type === "ChoiceCallback") &&
+            typeof callback.input[0].value === "number"
           )))
     )
       absent("authenticate callback input shape");

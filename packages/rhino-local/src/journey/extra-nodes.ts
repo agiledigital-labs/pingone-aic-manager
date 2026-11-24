@@ -24,10 +24,66 @@ export const EXTRA_OUTCOMES: Readonly<Record<string, readonly string[]>> = Objec
   RetryLimitDecisionNode: ["Retry", "Reject"],
   AcceptTermsAndConditionsNode: ["outcome"],
   "product-CaptchaNode": ["true", "false"],
+  AnonymousUserNode: ["outcome"],
+  SetSuccessUrlNode: ["outcome"],
+  SetStateNode: ["outcome"],
+  ModifyAuthLevelNode: ["outcome"],
+  AuthLevelDecisionNode: ["true", "false"],
+  MessageNode: ["true", "false"],
+  ValidatedUsernameNode: ["outcome"],
+  OneTimePasswordCollectorDecisionNode: ["true", "false"],
+  PersistentCookieDecisionNode: ["true", "false"],
+  // Stubs (below): vocabularies as listOutcomes reports them with the type's template configuration.
+  PushWaitNode: ["DONE", "EXITED"],
+  PushResultVerifierNode: ["TRUE", "FALSE", "EXPIRED", "WAITING"],
+  PushRegistrationNode: ["successOutcome", "failureOutcome", "timeoutOutcome"],
+  "product-Saml2Node": ["ACCOUNT_EXISTS", "NO_ACCOUNT"],
+  OneTimePasswordSmtpSenderNode: ["outcome"],
+  OneTimePasswordSmsSenderNode: ["outcome"],
+  DisplayUserNameNode: ["outcome"],
+  AnonymousSessionUpgradeNode: ["outcome"],
+  RecoveryCodeDisplayNode: ["outcome"],
+  PollingWaitNode: ["DONE"],
+  PushAuthenticationSenderNode: ["SENT", "NOT_REGISTERED", "SKIPPED"],
+  ChoiceCollectorNode: [],
 });
 export const EXTRA_TYPES: readonly string[] = Object.keys(EXTRA_OUTCOMES);
-/** Types whose outcome the harness cannot reproduce: they take it from `JourneyOptions.declaredOutcomes`. */
-export const STUB_TYPES: readonly string[] = ["product-CaptchaNode"];
+/**
+ * Types whose outcome the harness cannot reproduce: they take it from `JourneyOptions.declaredOutcomes`.
+ * `ValidatedUsernameNode` is one only with `validateInput: true`, whose policy callback is not modelled.
+ */
+export const STUB_TYPES: readonly string[] = [
+  "product-CaptchaNode",
+  "ValidatedUsernameNode",
+  "PushWaitNode",
+  "PushResultVerifierNode",
+  "PushRegistrationNode",
+  "product-Saml2Node",
+  "OneTimePasswordSmtpSenderNode",
+  "OneTimePasswordSmsSenderNode",
+  "DisplayUserNameNode",
+  "AnonymousSessionUpgradeNode",
+  "RecoveryCodeDisplayNode",
+  "PollingWaitNode",
+  "PushAuthenticationSenderNode",
+];
+/** Pure stubs: no behaviour at all, only a declared outcome. */
+const PURE_STUBS = STUB_TYPES.filter(
+  (type) => type !== "product-CaptchaNode" && type !== "ValidatedUsernameNode",
+);
+/** Vocabularies that depend on the node's configuration, measured with `listOutcomes` (2026-11-25). */
+export function extraOutcomes(type: string, node: NodeDocument): readonly string[] | undefined {
+  if (type === "ChoiceCollectorNode")
+    return Array.isArray(node.choices)
+      ? [...new Set(node.choices.filter((c): c is string => typeof c === "string"))]
+      : [];
+  if (type === "PollingWaitNode") return node.exitable === true ? ["DONE", "EXITED"] : ["DONE"];
+  if (type === "PushAuthenticationSenderNode")
+    return node.mandatory === true
+      ? ["SENT", "NOT_REGISTERED"]
+      : ["SENT", "NOT_REGISTERED", "SKIPPED"];
+  return undefined;
+}
 
 const SOURCE = "docs/api/25-journey-runtime.md (built-in node types, 2026-11-25)";
 const SYSTEM_PROPERTIES = [
@@ -388,6 +444,281 @@ export class ExtraNodes {
     return { outcome, callbacks: [] };
   }
 
+  private anonymous(config: NodeDocument, shared: Document): NodeResult {
+    const name = config.anonymousUserName === undefined ? "anonymous" : config.anonymousUserName;
+    if (typeof name !== "string") this.ctx.missing("AnonymousUserNode anonymousUserName type");
+    setOwn(shared, "username", name);
+    this.ctx.evidence.measured(
+      "AnonymousUserNode writes shared username as anonymousUserName (default anonymous), and a journey ending there succeeds",
+      SOURCE,
+    );
+    return { outcome: "outcome", callbacks: [] };
+  }
+
+  private successUrl(config: NodeDocument, shared: Document): NodeResult {
+    if (config.successUrl !== undefined && typeof config.successUrl !== "string")
+      this.ctx.missing("SetSuccessUrlNode successUrl type");
+    setOwn(shared, "successUrl", config.successUrl ?? null);
+    this.ctx.evidence.measured(
+      "SetSuccessUrlNode writes shared successUrl, which the success response carries; with none configured the response says null",
+      SOURCE,
+    );
+    return { outcome: "outcome", callbacks: [] };
+  }
+
+  private setState(config: NodeDocument, shared: Document): NodeResult {
+    const attributes = config.attributes;
+    if (attributes !== undefined && !isDocument(attributes))
+      this.ctx.missing("SetStateNode attributes configuration");
+    for (const [key, value] of Object.entries(attributes ?? {})) {
+      if (typeof value !== "string") this.ctx.missing(`SetStateNode attribute value type: ${key}`);
+      setOwn(shared, key, value);
+    }
+    this.ctx.evidence.measured(
+      "SetStateNode writes each configured attribute to shared state as the literal string (no ${...} expansion), overwriting an existing key",
+      SOURCE,
+    );
+    return { outcome: "outcome", callbacks: [] };
+  }
+
+  private authLevel(config: NodeDocument, shared: Document, decide: boolean): NodeResult {
+    const level = shared.authLevel;
+    if (typeof level !== "number") this.ctx.missing("authLevel that is not a number");
+    const key = decide ? "authLevelRequirement" : "authLevelIncrement";
+    const amount = config[key] === undefined ? 0 : config[key];
+    if (typeof amount !== "number") this.ctx.missing(`${key} configuration`);
+    if (!decide) {
+      setOwn(shared, "authLevel", level + amount);
+      this.ctx.evidence.measured(
+        "ModifyAuthLevelNode adds authLevelIncrement (negative allowed) to the numeric shared authLevel",
+        SOURCE,
+      );
+      return { outcome: "outcome", callbacks: [] };
+    }
+    this.ctx.evidence.measured(
+      "AuthLevelDecisionNode takes true when shared authLevel is at least authLevelRequirement, else false",
+      SOURCE,
+    );
+    return { outcome: level >= amount ? "true" : "false", callbacks: [] };
+  }
+
+  private message(config: NodeDocument, submitted: CallbackEffect[]): NodeResult {
+    const text = (key: string, fallback: string): string => {
+      const map = config[key];
+      if (map === undefined) return fallback;
+      if (!isDocument(map)) this.ctx.missing(`MessageNode ${key} configuration`);
+      const first = Object.values(map)[0];
+      if (first === undefined) return fallback;
+      if (typeof first !== "string") this.ctx.missing(`MessageNode ${key} value type`);
+      return first;
+    };
+    this.ctx.evidence.measured(
+      'MessageNode sends a TextOutputCallback (messageType "0") and a ConfirmationCallback (options yes then no, default option 1); answer 0 takes true, any other index false; no state is written',
+      SOURCE,
+    );
+    this.ctx.evidence.assumed(
+      "MessageNode uses the first entry of each language map; only single-entry maps were measured",
+    );
+    if (!submitted.length)
+      return {
+        outcome: null,
+        callbacks: [
+          {
+            type: "TextOutputCallback",
+            message: text("message", "Default message"),
+            messageType: "0",
+          },
+          {
+            type: "ConfirmationCallback",
+            prompt: "",
+            messageType: 0,
+            options: [text("messageYes", "Yes"), text("messageNo", "No")],
+            optionType: -1,
+            defaultOption: 1,
+          },
+        ],
+      };
+    const answer = submitted.length === 2 ? submitted[1] : undefined;
+    if (answer?.type !== "ConfirmationCallback")
+      this.ctx.missing("MessageNode callback submission");
+    const index = typeof answer.value === "string" ? Number(answer.value) : answer.value;
+    if (typeof index !== "number" || !Number.isInteger(index))
+      this.ctx.missing(`MessageNode answer: ${JSON.stringify(answer.value)}`);
+    return { outcome: index === 0 ? "true" : "false", callbacks: [] };
+  }
+
+  private choice(config: NodeDocument, submitted: CallbackEffect[]): NodeResult {
+    const choices = config.choices;
+    if (!Array.isArray(choices) || !choices.length || choices.some((c) => typeof c !== "string"))
+      this.ctx.missing("ChoiceCollectorNode choices configuration");
+    const list = choices as string[];
+    this.ctx.evidence.measured(
+      "ChoiceCollectorNode sends one ChoiceCallback (prompt, choices, defaultChoice index; 0 when the default is absent or not a choice) and takes the outcome named by the answered index; an index outside the list, or no prompt, fails the journey with 401 Login failure; no state is written",
+      SOURCE,
+    );
+    if (typeof config.prompt !== "string")
+      return { outcome: null, callbacks: [], abort: structuredClone(LOGIN_FAILURE) };
+    if (!submitted.length) {
+      const preferred =
+        typeof config.defaultChoice === "string" ? list.indexOf(config.defaultChoice) : -1;
+      return {
+        outcome: null,
+        callbacks: [
+          {
+            type: "ChoiceCallback",
+            prompt: config.prompt,
+            choices: list,
+            defaultChoice: Math.max(preferred, 0),
+          },
+        ],
+      };
+    }
+    const answer = submitted.length === 1 ? submitted[0] : undefined;
+    if (answer?.type !== "ChoiceCallback")
+      this.ctx.missing("ChoiceCollectorNode callback submission");
+    const index = typeof answer.value === "string" ? Number(answer.value) : answer.value;
+    if (typeof index !== "number" || !Number.isInteger(index) || index < 0 || index >= list.length)
+      return { outcome: null, callbacks: [], abort: structuredClone(LOGIN_FAILURE) };
+    return { outcome: list[index] ?? null, callbacks: [] };
+  }
+
+  private validatedUsername(
+    config: NodeDocument,
+    shared: Document,
+    id: string,
+    submitted: CallbackEffect[],
+  ): NodeResult {
+    if (config.validateInput !== false) {
+      // The policy callback carries the tenant's policy set and re-sends on policy failures; not modelled.
+      const outcome = this.ctx.declared?.(id);
+      if (outcome === undefined)
+        this.ctx.missing(
+          "ValidatedUsernameNode validateInput: true; declare its outcome in JourneyOptions.declaredOutcomes",
+        );
+      this.ctx.evidence.assumed(`declared by test: ValidatedUsernameNode/${id} -> ${outcome}`);
+      return { outcome, callbacks: [] };
+    }
+    if (config.usernameAttribute !== "userName")
+      this.ctx.missing("ValidatedUsernameNode usernameAttribute other than userName");
+    this.ctx.evidence.measured(
+      "ValidatedUsernameNode with validateInput false sends a NameCallback (prompt User Name), accepts any answer, and writes shared username and objectAttributes.userName; an empty answer writes nothing",
+      SOURCE,
+    );
+    if (!submitted.length)
+      return {
+        outcome: null,
+        callbacks: [{ type: "NameCallback", prompt: "User Name" }],
+      };
+    const answer = submitted.length === 1 ? submitted[0] : undefined;
+    if (answer?.type !== "NameCallback" || typeof answer.value !== "string")
+      this.ctx.missing("ValidatedUsernameNode callback submission");
+    if (answer.value !== "") {
+      setOwn(shared, "username", answer.value);
+      setOwn(shared, "objectAttributes", { userName: answer.value });
+    }
+    return { outcome: "outcome", callbacks: [] };
+  }
+
+  private otpCollector(
+    config: NodeDocument,
+    shared: Document,
+    submitted: CallbackEffect[],
+  ): NodeResult {
+    const expiry = config.passwordExpiryTime === undefined ? 5 : config.passwordExpiryTime;
+    if (typeof expiry !== "number") this.ctx.missing("passwordExpiryTime configuration");
+    this.ctx.evidence.measured(
+      "OneTimePasswordCollectorDecisionNode sends a PasswordCallback (prompt One Time Password), re-sends on an empty answer, and takes true only for the shared oneTimePassword answered within passwordExpiryTime minutes of oneTimePasswordTimestamp; a wrong, expired or absent password is false",
+      SOURCE,
+    );
+    this.ctx.evidence.assumed(
+      "OneTimePasswordCollectorDecisionNode's expiry boundary (exactly passwordExpiryTime minutes) is unmeasured",
+    );
+    if (!submitted.length)
+      return {
+        outcome: null,
+        callbacks: [{ type: "PasswordCallback", prompt: "One Time Password" }],
+      };
+    const answer = submitted.length === 1 ? submitted[0] : undefined;
+    if (answer?.type !== "PasswordCallback" || typeof answer.value !== "string")
+      this.ctx.missing("OneTimePasswordCollectorDecisionNode callback submission");
+    if (answer.value === "")
+      return {
+        outcome: null,
+        callbacks: [{ type: "PasswordCallback", prompt: "One Time Password" }],
+      };
+    const otp = own(shared, "oneTimePassword");
+    const stamp = own(shared, "oneTimePasswordTimestamp");
+    const fresh = typeof stamp === "number" && this.ctx.now() / 1000 - stamp <= expiry * 60;
+    return {
+      outcome: typeof otp === "string" && otp === answer.value && fresh ? "true" : "false",
+      callbacks: [],
+    };
+  }
+
+  private async persistentCookieDecision(
+    config: NodeDocument,
+    shared: Document,
+    resource: string,
+    cookies: Readonly<Record<string, string>> | undefined,
+  ): Promise<NodeResult> {
+    const { evidence } = this.ctx;
+    if (config.enforceClientIp === true)
+      this.ctx.missing("PersistentCookieDecisionNode enforceClientIp: true");
+    const name =
+      typeof config.persistentCookieName === "string" ? config.persistentCookieName : "session-jwt";
+    const key =
+      typeof config.hmacSigningKey === "string" && config.hmacSigningKey !== ""
+        ? config.hmacSigningKey
+        : undefined;
+    if (key === undefined) this.ctx.missing("PersistentCookieDecisionNode without hmacSigningKey");
+    evidence.measured(
+      "PersistentCookieDecisionNode takes false for no cookie, another signing key, another cookie name or an altered cookie, aborts with 401 for a value that is not a JWT, and on true writes shared username",
+      SOURCE,
+    );
+    const value = cookies?.[name];
+    if (value === undefined) return { outcome: "false", callbacks: [] };
+    const parts = value.split(".");
+    if (parts.length !== 3)
+      return { outcome: null, callbacks: [], abort: structuredClone(LOGIN_FAILURE) };
+    const expected = createHmac("sha256", Buffer.from(key, "base64"))
+      .update(`${parts[0]}.${parts[1]}`)
+      .digest("base64url");
+    if (expected !== parts[2]) return { outcome: "false", callbacks: [] };
+    let claims: unknown;
+    try {
+      claims = JSON.parse(Buffer.from(parts[1] ?? "", "base64url").toString("utf8"));
+    } catch {
+      return { outcome: "false", callbacks: [] };
+    }
+    if (!isDocument(claims) || typeof claims.sub !== "string" || typeof claims.exp !== "number")
+      return { outcome: "false", callbacks: [] };
+    evidence.assumed(
+      "PersistentCookieDecisionNode's rule for an expired cookie, and idleTimeout, are unmeasured; a cookie past its exp is taken as false",
+    );
+    if (claims.exp * 1000 < this.ctx.now()) return { outcome: "false", callbacks: [] };
+    // Measured: for a user the identity store holds, shared username becomes the user's _id; for a name it does not hold, it is the name.
+    const matches = await this.query(resource, "userName", claims.sub);
+    if (matches.length > 1)
+      this.ctx.missing("PersistentCookieDecisionNode lookup matched multiple records");
+    const id = matches[0]?._id;
+    evidence.measured(
+      "PersistentCookieDecisionNode writes shared username as the cookie user's identity _id when the user exists, else the name from the cookie",
+      SOURCE,
+    );
+    setOwn(shared, "username", typeof id === "string" ? id : claims.sub);
+    return { outcome: "true", callbacks: [] };
+  }
+
+  private stub(type: string, id: string): NodeResult {
+    const outcome = this.ctx.declared?.(id);
+    if (outcome === undefined)
+      this.ctx.missing(
+        `${type} needs infrastructure the harness cannot model; declare its outcome in JourneyOptions.declaredOutcomes`,
+      );
+    this.ctx.evidence.assumed(`declared by test: ${type}/${id} -> ${outcome}`);
+    return { outcome, callbacks: [] };
+  }
+
   async run(
     type: string,
     id: string,
@@ -396,8 +727,30 @@ export class ExtraNodes {
     transient: Document,
     submitted: CallbackEffect[],
     defaultResource: string,
+    cookies?: Readonly<Record<string, string>>,
   ): Promise<NodeResult> {
+    if (PURE_STUBS.includes(type)) return this.stub(type, id);
     switch (type) {
+      case "AnonymousUserNode":
+        return this.anonymous(config, shared);
+      case "SetSuccessUrlNode":
+        return this.successUrl(config, shared);
+      case "SetStateNode":
+        return this.setState(config, shared);
+      case "ModifyAuthLevelNode":
+        return this.authLevel(config, shared, false);
+      case "AuthLevelDecisionNode":
+        return this.authLevel(config, shared, true);
+      case "MessageNode":
+        return this.message(config, submitted);
+      case "ChoiceCollectorNode":
+        return this.choice(config, submitted);
+      case "ValidatedUsernameNode":
+        return this.validatedUsername(config, shared, id, submitted);
+      case "OneTimePasswordCollectorDecisionNode":
+        return this.otpCollector(config, shared, submitted);
+      case "PersistentCookieDecisionNode":
+        return this.persistentCookieDecision(config, shared, defaultResource, cookies);
       case "DataStoreDecisionNode":
         return this.dataStore(shared, transient, defaultResource);
       case "SetSessionPropertiesNode":
@@ -416,4 +769,75 @@ export class ExtraNodes {
         return this.ctx.missing(`node type: ${type}`);
     }
   }
+}
+
+/**
+ * A node type built in the console's node designer, as `GET /am/json/node-designer/node-type` stores it
+ * (docs/api/25-journey-runtime.md, "Custom node types"). A tree node of it has `nodeType` "designer-<serviceName>".
+ */
+export type CustomNodeType = {
+  readonly outcomes: readonly string[];
+  readonly script: string;
+  readonly errorOutcome?: boolean;
+  readonly inputs?: readonly string[];
+  readonly outputs?: readonly string[];
+  readonly displayName?: string;
+  readonly properties?: Readonly<
+    Record<
+      string,
+      { readonly type?: string; readonly required?: boolean; readonly multivalued?: boolean }
+    >
+  >;
+  readonly [key: string]: unknown;
+};
+export const SCRIPT_ERROR_OUTCOME = "Script Error";
+/** `listOutcomes` for a custom type: its outcomes, plus "Script Error" when it has an error outcome. */
+export function customOutcomes(def: CustomNodeType): readonly string[] {
+  return def.errorOutcome === true ? [...def.outcomes, SCRIPT_ERROR_OUTCOME] : def.outcomes;
+}
+/**
+ * The decision script a custom node runs as: its script with `properties` bound from the instance and the
+ * assigned `outcome` routed. Absent properties follow the measured shape: a multivalued one is an empty array,
+ * any other is undefined. A missing required property is `undefined` here and is the caller's 401.
+ */
+export function customNodeSource(
+  def: CustomNodeType,
+  node: NodeDocument,
+  missing: (name: string) => never,
+): { source: string } | { abort: true } {
+  const inputs = def.inputs ?? [];
+  if (inputs.some((name) => name !== "*"))
+    missing(
+      "custom node type with named inputs (reads of other state keys are restricted on the tenant)",
+    );
+  const declared = def.properties ?? {};
+  const properties: Record<string, JsonValue> = {};
+  for (const [name, spec] of Object.entries(declared)) {
+    const value = node[name];
+    if (value === undefined) {
+      if (spec.required === true) return { abort: true };
+      if (spec.multivalued === true) properties[name] = [];
+      continue;
+    }
+    properties[name] = value as JsonValue;
+  }
+  const allowed = JSON.stringify(def.outcomes);
+  const failure =
+    def.errorOutcome === true ? `outcome = ${JSON.stringify(SCRIPT_ERROR_OUTCOME)};` : "throw e;";
+  const source = [
+    `var properties = ${JSON.stringify(properties)};`,
+    "var outcome;",
+    "try {",
+    def.script,
+    "} catch (e) {",
+    failure,
+    "}",
+    `if (${allowed}.indexOf(outcome) < 0 && outcome !== ${JSON.stringify(SCRIPT_ERROR_OUTCOME)}) {`,
+    def.errorOutcome === true
+      ? `  outcome = ${JSON.stringify(SCRIPT_ERROR_OUTCOME)};`
+      : '  throw "custom node outcome";',
+    "}",
+    "action.goTo(outcome);",
+  ].join("\n");
+  return { source };
 }

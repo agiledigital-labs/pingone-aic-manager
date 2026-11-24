@@ -22,7 +22,7 @@ and never print a `tokenId`.** Read the fields an experiment needs by name.
 
 ## Verified against
 
-Sandbox tenant, realm `alpha`, **2026-11-02 to 2026-11-04** and, for "Built-in node types", **2026-11-25**, next-gen scripted decisions
+Sandbox tenant, realm `alpha`, **2026-11-02 to 2026-11-04** and, for "Built-in node types" and the sections after it, **2026-11-25**, next-gen scripted decisions
 (`evaluatorVersion: "2.0"`). Every section names the
 `scripts/experiment-journey-*.sh` run that established it; those scripts
 create their own `zzemu-*` trees, nodes, scripts and users and delete them on
@@ -480,6 +480,18 @@ Not measured: the value's claims (it looks like a signed JWT), the effect of
 | Answers | `true` or the string `"true"` takes `outcome`. `false`, `"false"` and `""` send the same callback again, writing nothing | — |
 | State | **Shared** `termsAccepted`, a **string** `{ "acceptDate": "<ISO instant, nanoseconds>", "termsVersion": "<version>" }`, and `termsVersion` | Both survived the round trip |
 
+### Username and Password collectors (`listOutcomes`: `["outcome"]`)
+
+Measured 2026-11-25 alone and in a Page of both, answers `""`, `"  "`, a name and a
+password, with a dump script after.
+
+| Question | Observed | Control |
+| --- | --- | --- |
+| Empty username, alone | The `NameCallback` is sent again (HTTP 200, a new `authId`); nothing is written | `"  "` (spaces) was **accepted** and written as `username` |
+| Empty username, empty password or both, in a Page | The Page is sent again with both callbacks | A name and a password: the Page completes and writes `username` and `password` |
+
+Not measured: whether a re-sent `NameCallback` echoes the submitted value.
+
 ### CAPTCHA (`product-CaptchaNode`, `listOutcomes`: `["true","false"]`)
 
 Only the callback was measured: a `ReCaptchaCallback` with outputs
@@ -490,6 +502,115 @@ one, ended the journey with 401 `Login failure` (not `false`), with the
 provider's published always-pass test keys as well as with fake ones, so
 neither outcome was reached; verification calls a provider that the harness
 cannot reproduce, and the emulator takes the verdict from the caller.
+
+### Message, choice and state nodes (2026-11-25)
+
+All measured on the sandbox with `kdemo-nt-` trees, deleted afterwards.
+
+- `MessageNode` (`listOutcomes`: `["true","false"]`): `TextOutputCallback`
+  (`message`, `messageType` the string `"0"`), then `ConfirmationCallback`
+  (`prompt` empty, `options` `[yes, no]`, `optionType` -1, `defaultOption` 1);
+  the input is `IDToken2` from 0. Defaults are "Default message", "Yes", "No".
+  Answer 0 or "0" takes `true`; 1 and 7 take `false`. No state is written.
+- `ChoiceCollectorNode`: outcomes are the configured choices. One
+  `ChoiceCallback` (`prompt`, `choices`, `defaultChoice`), input `IDToken1`
+  starting at the default index; `defaultChoice` is 0 when absent or not a
+  choice. A missing prompt is `401` at the first request; an index outside
+  0..n-1 is `401`; the string "1" is accepted; duplicate choices are allowed.
+  No state is written.
+- `SetStateNode` (`["outcome"]`) writes shared `k=v` literally (no `${...}`
+  expansion), overwrites an existing key (`username` included), and accepts an
+  empty map.
+- `ModifyAuthLevelNode` (`["outcome"]` ) adds the increment (negative allowed)
+  to the numeric shared `authLevel`; seeding `authLevel` with a string is a
+  `400`.
+- `AuthLevelDecisionNode` (`["true","false"]`): `true` iff `authLevel >=`
+  the requirement (5 at level 5 is `true`).
+- `AnonymousUserNode` (`["outcome"]`) writes shared `username` =
+  `anonymousUserName` (default `anonymous`); a journey ending there succeeds
+  with `200`, `successUrl` `/enduser/?realm=/alpha`.
+- `SetSuccessUrlNode` writes shared `successUrl`, which the success body
+  carries; with an empty config the response `successUrl` is `null`.
+
+### Validated Username (2026-11-25)
+
+With `validateInput: true` the node sends `ValidatedCreateUsernameCallback`
+carrying a large `policies` payload from the realm's `userName` policy set
+(`REQUIRED`, `MIN_LENGTH`, `VALID_TYPE`, `VALID_USERNAME`,
+`CANNOT_CONTAIN_CHARACTERS` `/`, `MAX_LENGTH`). An empty answer or an existing
+username re-sends it; "ab" and "has space!" are accepted. It writes shared
+`username` and `objectAttributes.userName`. With `validateInput: false` it
+sends a plain `NameCallback` "User Name" and accepts anything; an empty answer
+writes nothing and takes the outcome. The bucket of `objectAttributes` was not
+re-checked for the standalone node.
+
+### One Time Password Collector Decision (2026-11-25)
+
+`listOutcomes`: `["true","false"]`; `PasswordCallback` "One Time Password"; an
+empty answer re-sends it. The right password within `passwordExpiryTime`
+minutes is `true`. A wrong one, one with leading zeros dropped, an expired one,
+a missing OTP or a missing timestamp are `false`. 290 s old in a 5 minute
+window is `true`, 400 s `false`, 90 s in a 1 minute window `false`, expiry 0
+`false`. The exact boundary and whether the OTP is consumed are unmeasured.
+
+### Persistent Cookie Decision (2026-11-25)
+
+`listOutcomes`: `["true","false"]`. The cookie is a three-part dotted value
+(header `typ` JWT, `cty` JWT, `alg` HS256; the middle part is not plain JSON).
+A valid cookie takes `true` and writes shared `username` = the IDM user's
+`_id` when the user exists, else the name unchanged. No cookie, a tampered
+one, the wrong key or the wrong cookie name take `false`; "notajwt" is `401`.
+`enforceClientIp: true` with the same IP and `idleTimeout` 0 or 1 on a fresh
+cookie still took `true`; expiry and idle behaviour are otherwise unmeasured.
+
+### Custom (Node Designer) node types (2026-11-25)
+
+The sandbox allows creating them. A type is stored at
+`/am/json/node-designer/node-type/<serviceName>-1` (header
+`Accept-API-Version: protocol=2.0,resource=1.0`; `PUT` 201, `DELETE` 200) with
+`serviceName` (32 hex), `version` 1, `displayName`, `description`, `outcomes`,
+`outputs`, `inputs`, `script`, `errorOutcome`, `tags`, `libraries` and
+`properties` (`{name: {title, description, type BOOLEAN|STRING|NUMBER,
+required, multivalued}}`). A tree node references it as
+`nodeType: "designer-<serviceName>"`; the instance `PUT` at
+`.../nodes/designer-<sn>/<id>` carries the property values flat, and the stored
+document adds `_type` and `_outcomes`. `?_action=schema` and `?_action=template`
+are `400` there. `listOutcomes` is the type's outcomes plus `Script Error` when
+`errorOutcome` is true. The AM-NODE-LOGIN-COMPLETED `nodeType` is
+`designer-<serviceName>`.
+
+Script bindings: `properties` (STRING a string, BOOLEAN a boolean, multivalued
+an array, an absent multivalued property `[]`, any other absent property
+`undefined`), `nodeState` (`get`, `putShared`) and the assigned global
+`outcome`. A throw, an undeclared outcome or an unset outcome take `Script
+Error` when `errorOutcome` is true and keep state written before the throw;
+with `errorOutcome: false` a throw is `401`. A missing required property is
+`401`. With `inputs: ["username"]`, reading another key (even one just
+written) returned `null`; an `outputs` list did not restrict writes.
+
+### Stub node vocabularies (2026-11-25)
+
+`listOutcomes` measured with template configs: `PollingWaitNode` `[DONE]`
+(+`EXITED` if `exitable`); `PushWaitNode` `[DONE, EXITED]`;
+`PushAuthenticationSenderNode` `[SENT, NOT_REGISTERED]` (+`SKIPPED` if
+`mandatory` is false); `PushResultVerifierNode` `[TRUE, FALSE, EXPIRED,
+WAITING]`; `PushRegistrationNode` the three configured outcome names;
+`product-Saml2Node` `[ACCOUNT_EXISTS, NO_ACCOUNT]`; the OTP SMTP and SMS
+senders, `DisplayUserNameNode`, `AnonymousSessionUpgradeNode` and
+`RecoveryCodeDisplayNode` `[outcome]`. The emulator models none of their
+behaviour; the outcome comes from `declaredOutcomes`.
+
+### Success-tree audit record (2026-11-25)
+
+A tree ending in a successful `AnonymousUserNode` produced, in order:
+`AM-ACCESS-ATTEMPT`, `AM-NODE-LOGIN-COMPLETED`, `AM-SESSION-CREATED`
+(`am-activity`, component `Session`, `CREATE`, `userId`
+`id=<name>,ou=user,o=alpha,ou=services,ou=am-config`), `AM-TREE-LOGIN-COMPLETED`
+and `AM-ACCESS-OUTCOME`. The tree record (source `am-authentication`) has
+`component` `Authentication`, `entries[0].info` `{authLevel: "0", ipAddress,
+treeName}`, `principal` `["<name>"]`, `realm` `/alpha`, `result` `SUCCESSFUL`,
+`topic` `authentication`, `transactionId` `<tx>/0` and the same `userId`. The
+node record's `nodeType` was `AnonymousUserNode`.
 
 ## Not yet measured
 
