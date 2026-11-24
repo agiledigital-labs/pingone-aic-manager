@@ -635,3 +635,76 @@ it("product-CaptchaNode v3 is missing", async () => {
   );
   expect(await request(emu)).toMatchObject({ status: 501 });
 });
+
+// Username/Password collectors (docs/api/25, 2026-11-25): an empty answer re-sends the callback, alone or in
+// a Page; a whitespace-only answer is accepted.
+function collectorFlow(page: boolean): JourneyConfigInput {
+  const dumpSource = `callbacksBuilder.hiddenValueCallback('state',JSON.stringify({branch:'out',username:nodeState.get('username')}));`;
+  const kids = [
+    { _id: "user", nodeType: "UsernameCollectorNode", displayName: "u" },
+    { _id: "pass", nodeType: "PasswordCollectorNode", displayName: "p" },
+  ];
+  return {
+    realm: "alpha",
+    trees: {
+      invented: {
+        entryNodeId: page ? "page" : "user",
+        nodes: page
+          ? {
+              page: { nodeType: "PageNode", connections: { outcome: "dump" } },
+              dump: { nodeType: "ScriptedDecisionNode", connections: {} },
+            }
+          : {
+              user: { nodeType: "UsernameCollectorNode", connections: { outcome: "dump" } },
+              dump: { nodeType: "ScriptedDecisionNode", connections: {} },
+            },
+      },
+    },
+    nodes: {
+      ...(page ? { PageNode: { page: { nodes: kids } } } : {}),
+      UsernameCollectorNode: { user: {} },
+      PasswordCollectorNode: { pass: {} },
+      ScriptedDecisionNode: { dump: { script: "dump", outcomes: [] } },
+    },
+    scripts: { dump: script(dumpSource) },
+  };
+}
+const answers = (body: JsonValue, values: string[]): JsonValue => {
+  const b = structuredClone(body) as {
+    callbacks: { input: { name: string; value: JsonValue }[] }[];
+  };
+  b.callbacks.forEach((cb, i) => {
+    const input = cb.input[0];
+    if (input && values[i] !== undefined) input.value = values[i];
+  });
+  return b as unknown as JsonValue;
+};
+const types = (body: JsonValue): string[] =>
+  (body as { callbacks: { type: string }[] }).callbacks.map((cb) => cb.type);
+it("UsernameCollectorNode re-sends its callback on an empty answer, then accepts a real one", async () => {
+  const emu = make(collectorFlow(false));
+  const first = await request(emu);
+  // Discriminating: the old behaviour accepted "" and ran the dump with username "".
+  const empty = await request(emu, answers(first.body, [""]));
+  expect(types(empty.body)).toEqual(["NameCallback"]);
+  const ok = await request(emu, answers(empty.body, ["alice"]));
+  expect(dump(ok.body).username).toBe("alice");
+});
+it("a whitespace-only username is accepted (not empty)", async () => {
+  const emu = make(collectorFlow(false));
+  const first = await request(emu);
+  const spaces = await request(emu, answers(first.body, ["  "]));
+  expect(dump(spaces.body).username).toBe("  ");
+});
+it.each([
+  ["empty username", ["", "pw-1"]],
+  ["empty password", ["alice", ""]],
+  ["both empty", ["", ""]],
+] as const)("a Page of collectors re-sends the whole Page: %s", async (_n, values) => {
+  const emu = make(collectorFlow(true));
+  const first = await request(emu);
+  const again = await request(emu, answers(first.body, [...values]));
+  expect(types(again.body)).toEqual(["NameCallback", "PasswordCallback"]);
+  const ok = await request(emu, answers(again.body, ["alice", "pw-1"]));
+  expect(dump(ok.body).username).toBe("alice");
+});

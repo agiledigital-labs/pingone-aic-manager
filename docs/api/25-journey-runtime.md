@@ -411,6 +411,18 @@ Not measured: the value's claims (it looks like a signed JWT), the effect of
 | Answers | `true` or the string `"true"` takes `outcome`. `false`, `"false"` and `""` send the same callback again, writing nothing | — |
 | State | **Shared** `termsAccepted`, a **string** `{ "acceptDate": "<ISO instant, nanoseconds>", "termsVersion": "<version>" }`, and `termsVersion` | Both survived the round trip |
 
+### Username and Password collectors (`listOutcomes`: `["outcome"]`)
+
+Measured 2026-11-25 alone and in a Page of both, answers `""`, `"  "`, a name and a
+password, with a dump script after.
+
+| Question | Observed | Control |
+| --- | --- | --- |
+| Empty username, alone | The `NameCallback` is sent again (HTTP 200, a new `authId`); nothing is written | `"  "` (spaces) was **accepted** and written as `username` |
+| Empty username, empty password or both, in a Page | The Page is sent again with both callbacks | A name and a password: the Page completes and writes `username` and `password` |
+
+Not measured: whether a re-sent `NameCallback` echoes the submitted value.
+
 ### CAPTCHA (`product-CaptchaNode`, `listOutcomes`: `["true","false"]`)
 
 Only the callback was measured: a `ReCaptchaCallback` with outputs

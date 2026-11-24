@@ -140,6 +140,23 @@ export class JourneyNodes {
       )
         this.missing(`${type} callback submission`);
       const answer = submitted[0].value;
+      // Measured 2026-11-25: an empty answer re-sends the callback (alone or in a Page),
+      // writing nothing; a whitespace-only answer is accepted. ValidatedPasswordNode is unmeasured.
+      if (answer === "" && type !== "ValidatedPasswordNode") {
+        this.evidence.measured(
+          "UsernameCollectorNode and PasswordCollectorNode re-send their callback on an empty answer and write nothing",
+          "docs/api/25-journey-runtime.md (built-in node types, 2026-11-25)",
+        );
+        return {
+          outcome: null,
+          callbacks: [
+            {
+              type: username ? "NameCallback" : "PasswordCallback",
+              prompt: username ? "User Name" : "Password",
+            },
+          ],
+        };
+      }
       // Doc 25 measured the write over no transient objectAttributes only; over
       // existing keys, replace versus merge is unmeasured.
       if (type === "ValidatedPasswordNode" && Object.hasOwn(transient, "objectAttributes"))
