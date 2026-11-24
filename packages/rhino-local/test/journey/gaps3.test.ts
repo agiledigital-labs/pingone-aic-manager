@@ -460,3 +460,128 @@ describe("nodes as page children", () => {
     expect((await run(make(pageInput([strict], ["outcome"])), "invented")).status).toBe(501);
   });
 });
+
+// ---------------------------------------------------------------------------------------------
+// AttributeCollector boolean attributes (batch 3 G19, batch 4 G27). Doc 25, "Attribute Collector
+// boolean attributes".
+describe("attribute collector boolean attributes", () => {
+  const widget = () =>
+    new IdmEmulator(
+      new IdmConfig({
+        sync: { mappings: [] },
+        managed: {
+          objects: [
+            {
+              name: "widget",
+              schema: {
+                properties: {
+                  givenName: { type: "string", title: "First Name" },
+                  trusted: { type: "boolean", title: "Trust this device" },
+                  preferences: {
+                    type: "object",
+                    properties: { remember: { type: "boolean", title: "Remember me" } },
+                  },
+                },
+              },
+            },
+          ],
+        },
+      }),
+      runner,
+    );
+  const tree = (attributes: string[], extra: Record<string, unknown> = {}): JourneyConfigInput => ({
+    realm: "alpha",
+    trees: {
+      invented: {
+        entryNodeId: "at",
+        nodes: {
+          at: { nodeType: "AttributeCollectorNode", connections: { outcome: "dump" } },
+          dump: { nodeType: "ScriptedDecisionNode", connections: { true: SUCCESS } },
+        },
+      },
+    },
+    nodes: {
+      AttributeCollectorNode: {
+        at: { identityResource: "managed/widget", attributesToCollect: attributes, validateInputs: false, required: false, ...extra },
+      },
+      ScriptedDecisionNode: { dump: { script: "dump", outcomes: ["true"] } },
+    },
+    scripts: {
+      dump: script(
+        `var oa = nodeState.get('objectAttributes'); var t = oa.get('trusted');` +
+          `callbacksBuilder.hiddenValueCallback('state', JSON.stringify({trusted: t === null ? null : String(t), typeofTrusted: typeof t, nested: JSON.stringify(oa.get('preferences')), given: String(oa.get('givenName'))}));`,
+      ),
+    },
+  });
+  type Wire = { callbacks: { type: string; output: { name: string; value: JsonValue }[]; input: { name: string; value: JsonValue }[] }[] };
+  const answerWith = (body: JsonValue, values: JsonValue[]): JsonValue => {
+    const copy = structuredClone(body) as Wire;
+    copy.callbacks.forEach((cb, i) => {
+      const input = cb.input[0];
+      if (input) input.value = values[i] ?? input.value;
+    });
+    return copy as unknown as JsonValue;
+  };
+
+  it("sends a BooleanAttributeInputCallback defaulting to false, with a validateOnly input", async () => {
+    const first = await run(make(tree(["trusted", "givenName"]), {}, widget()), "invented");
+    const [boolean, string] = (first.body as Wire).callbacks;
+    expect(boolean?.type).toBe("BooleanAttributeInputCallback");
+    expect(Object.fromEntries((boolean?.output ?? []).map((f) => [f.name, f.value]))).toEqual({
+      name: "trusted",
+      prompt: "Trust this device",
+      required: false,
+      policies: {},
+      failedPolicies: [],
+      validateOnly: false,
+      value: false,
+    });
+    expect(boolean?.input.map((i) => [i.name, i.value])).toEqual([
+      ["IDToken1", false],
+      ["IDToken1validateOnly", false],
+    ]);
+    // Control: the string attribute beside it stays a String callback numbered after it.
+    expect(string?.type).toBe("StringAttributeInputCallback");
+    expect(string?.input[0]?.name).toBe("IDToken2");
+  });
+
+  it("stores the boolean as a boolean, not the string \"true\"", async () => {
+    const emu = make(tree(["trusted", "givenName"]), {}, widget());
+    const first = await run(emu, "invented");
+    const done = await run(emu, "invented", { body: answerWith(first.body, [true, "Zz"]) });
+    // Discriminating: an implementation that types every attribute as string (the demo's workaround)
+    // would store "true" and report typeof string.
+    expect(dump(done.body)).toMatchObject({ trusted: "true", typeofTrusted: "boolean", given: "Zz" });
+  });
+
+  it("false is a value: a required boolean answered false leaves the node and is stored", async () => {
+    const emu = make(tree(["trusted"], { required: true }), {}, widget());
+    const first = await run(emu, "invented");
+    const done = await run(emu, "invented", { body: answerWith(first.body, [false]) });
+    expect(dump(done.body)).toMatchObject({ trusted: "false", typeofTrusted: "boolean" });
+  });
+
+  it("a nested boolean path stores nested", async () => {
+    const emu = make(tree(["preferences/remember"]), {}, widget());
+    const first = await run(emu, "invented");
+    const done = await run(emu, "invented", { body: answerWith(first.body, [true]) });
+    expect(dump(done.body).nested).toBe('{"remember":true}');
+  });
+
+  it("validateInputs true over a boolean needs no policy and sends empty policies", async () => {
+    const emu = make(tree(["trusted"], { validateInputs: true }), { attributePolicies: {} }, widget());
+    const first = await run(emu, "invented");
+    expect(Object.fromEntries((first.body as Wire).callbacks[0]!.output.map((f) => [f.name, f.value])).policies).toEqual({});
+    const done = await run(emu, "invented", { body: answerWith(first.body, [true]) });
+    expect(dump(done.body).trusted).toBe("true");
+  });
+
+  it("answering a boolean attribute with a string is a 400, not a coercion", async () => {
+    const emu = make(tree(["trusted"]), {}, widget());
+    const first = await run(emu, "invented");
+    const bad = structuredClone(first.body) as Wire;
+    (bad.callbacks[0]!.input[0] as { value: JsonValue }).value = "true";
+    const next = await run(emu, "invented", { body: bad as unknown as JsonValue });
+    expect(next).toMatchObject({ status: 400, body: { code: 400, reason: "Bad Request" } });
+  });
+});

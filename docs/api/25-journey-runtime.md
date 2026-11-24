@@ -126,8 +126,26 @@ boolean it does have.
 | Stored value | **Nested**: shared `objectAttributes` held `{"preferences":{"remember":true}}`, with no flat `preferences/remember` key | — |
 | Key order | `["preferences/remember","givenName"]` stored `{"givenName":…,"preferences":{…}}`, and the flat `["sn","givenName"]` stored `{"givenName":…,"sn":…}`: top-level keys are **alphabetical**, not in collection order | Both orders collected the same pair the other way round |
 
-A boolean property is a `BooleanAttributeInputCallback` with a boolean `value` and `IDToken1` input; that callback
-is not built by the emulator. A **string** slash path was not measured (no such property on the sandbox).
+A boolean property is a `BooleanAttributeInputCallback`; see the next section. A **string** slash path was not
+measured (no such property on the sandbox).
+
+### Attribute Collector boolean attributes (verified 2026-11-25)
+
+`AttributeCollectorNode` over the nested boolean `preferences/remember` (title `Trust this device`) on the sandbox with
+throwaway `kdemo-g3-` objects (all deleted; get-after 404). Probe: `scripts/experiment-journey-attribute-boolean.sh`.
+
+| Case | Measured |
+| --- | --- |
+| First callback | `BooleanAttributeInputCallback`; output `name` (the path as written), `prompt` (the schema title), `required`, `policies` `{}`, `failedPolicies` `[]`, `validateOnly` false, `value` **false**; inputs `IDToken<n>` (a boolean) and `IDToken<n>validateOnly` |
+| Answered `true` / `false` | Stored as a JSON **boolean** (`{ "preferences": { "remember": true } }`), nested by the path |
+| `required: true`, answered `false` | Accepted: `false` is a value, the page does not stay |
+| `validateInputs: true` | Same callback, `policies` still `{}`; `true` accepted |
+| Answered with the string `"true"` | `400 {"code":400,"reason":"Bad Request","message":"Bad Request"}`; not coerced and not a retry |
+| Beside a string attribute | The string stays a `StringAttributeInputCallback` (`IDToken2`), in collection order; stored keys alphabetical as before |
+
+Not measured: a boolean that is not nested (this realm's only boolean attribute is `preferences/remember`; the path
+walk is the same), a policy attached to a boolean, `validateOnly` true on a boolean, and a re-sent page echoing a
+boolean answer. The emulator refuses a supplied `attributePolicies` entry with requirements on a boolean as missing.
 
 ## Inner Tree
 
