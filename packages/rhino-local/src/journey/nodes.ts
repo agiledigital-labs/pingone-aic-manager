@@ -54,13 +54,34 @@ export class JourneyNodes {
     this.evidence = evidence;
     this.missing = missing;
   }
+  /**
+   * The attributes an identity node acts on. With both buckets holding `objectAttributes` (a
+   * Validated Password page leaves exactly that) they are overlaid key by key, transient winning:
+   * Create, Patch and Identify were each measured so on 2026-11-25 (docs/api/25, "split"), and
+   * none of them rewrites either bucket's own map. Only flat values were measured, so a key both
+   * buckets hold as objects is missing.
+   */
   private attributes(shared: Document, transient: Document): Document | undefined {
+    const both = Object.hasOwn(transient, "objectAttributes") && Object.hasOwn(shared, "objectAttributes");
     const attrs = Object.hasOwn(transient, "objectAttributes")
       ? transient.objectAttributes
       : shared.objectAttributes;
     if (attrs === undefined) return undefined;
     if (!isDocument(attrs)) this.missing("objectAttributes is not an object");
-    return attrs;
+    if (!both) return attrs;
+    const base = shared.objectAttributes;
+    if (!isDocument(base)) this.missing("objectAttributes is not an object");
+    const merged: Document = { ...base };
+    for (const [key, value] of Object.entries(attrs)) {
+      if (isDocument(value) && isDocument(base[key]))
+        this.missing("split objectAttributes sharing a nested object key");
+      setOwn(merged, key, value);
+    }
+    this.evidence.measured(
+      "identity nodes read split objectAttributes as the shared map overlaid by the transient one, key by key, and rewrite neither bucket's map",
+      "docs/api/25-journey-runtime.md (split objectAttributes, 2026-11-25)",
+    );
+    return merged;
   }
   /** Shared objectAttributes a node merges into; a non-object one is unmeasured. */
   private sharedAttributes(shared: Document, type: string): Document {
@@ -237,8 +258,6 @@ export class JourneyNodes {
     const resource =
       typeof config.identityResource === "string" ? config.identityResource : defaultResource;
     if (type === "CreateObjectNode") {
-      if (Object.hasOwn(shared, "objectAttributes") && Object.hasOwn(transient, "objectAttributes"))
-        this.missing("CreateObjectNode split objectAttributes across shared and transient");
       if (!attrs) this.missing("CreateObjectNode missing objectAttributes");
       const result = await this.call("create", [resource, null, attrs]);
       this.evidence.measured(
@@ -256,9 +275,6 @@ export class JourneyNodes {
     }
     if (!["IdentifyExistingUserNode", "PatchObjectNode"].includes(type))
       this.missing(`node type: ${type}`);
-    // Doc 25 measured every identity node with objectAttributes in one bucket only.
-    if (Object.hasOwn(shared, "objectAttributes") && Object.hasOwn(transient, "objectAttributes"))
-      this.missing(`${type} split objectAttributes across shared and transient`);
     if (type === "PatchObjectNode") {
       if (config.patchAsObject !== false)
         this.missing("PatchObjectNode patchAsObject: true or unspecified");

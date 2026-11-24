@@ -2940,7 +2940,7 @@ collectors accept an empty answer where the tenant re-prompts (measured with a
 Page of collectors in front of `DataStoreDecisionNode`).
 
 Attribute policy evaluation/validateOnly, validated-password validation,
-split objectAttributes passed to Create/Patch/Identify, conflicting identity
+a key held as an object in both split objectAttributes maps, conflicting identity
 sources for Patch, a null identity source, `httpClient.send` with no URL, Identify with no identity value at all, Patch with neither an
 identity value nor objectAttributes, a non-object shared objectAttributes under
 AttributeCollector or Identify, `ValidatedPasswordNode` over an existing

@@ -1005,26 +1005,6 @@ it.each(["PatchObjectNode"])("conflicting identity sources are missing: %s", asy
     ),
   ).toMatchObject({ status: 501, emulation: { missing: [cause] } });
 });
-it.each(["CreateObjectNode", "PatchObjectNode", "IdentifyExistingUserNode"])(
-  "split objectAttributes is missing: %s",
-  async (type) => {
-    const cause = `${type} split objectAttributes across shared and transient`;
-    expectEmulationFailure(cause);
-    expect(
-      await request(
-        make(
-          flow(
-            type,
-            { patchAsObject: false },
-            "nodeState.putShared('objectAttributes',{userName:'invented'});nodeState.putTransient('objectAttributes',{password:'secret'});",
-          ),
-          {},
-          storage(),
-        ),
-      ),
-    ).toMatchObject({ status: 501, emulation: { missing: [cause] } });
-  },
-);
 it("Patch patchAsObject is missing", async () => {
   const cause = "PatchObjectNode patchAsObject: true or unspecified";
   expectEmulationFailure(cause);

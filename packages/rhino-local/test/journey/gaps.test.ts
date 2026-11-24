@@ -236,3 +236,213 @@ describe("G12: httpClient.send form option", () => {
     expect(result.status).toBe(501);
   });
 });
+
+const userStore = () =>
+  new IdmEmulator(
+    new IdmConfig({
+      sync: { mappings: [] },
+      managed: {
+        objects: [
+          {
+            name: "alpha_user",
+            schema: {
+              properties: {
+                userName: { type: "string", title: "Username" },
+                mail: { type: "string", title: "Email Address" },
+                givenName: { type: "string", title: "First Name" },
+                sn: { type: "string", title: "Last Name" },
+                password: { type: "string", title: "Password" },
+              },
+            },
+          },
+        ],
+      },
+    }),
+    runner,
+  );
+
+/** seed script, then one identity node whose every outcome ends the journey in a state dump. */
+function identityFlow(
+  type: string,
+  node: Record<string, unknown>,
+  seed: string,
+  idm: IdmEmulator,
+  outcomes: string[],
+) {
+  const dump = (tag: string) =>
+    `if (callbacks.isEmpty()) {
+       callbacksBuilder.hiddenValueCallback("r", JSON.stringify({tag: "${tag}", attrs: nodeState.get("objectAttributes"), username: nodeState.get("username")}));
+     } else { action.goTo("done"); }`;
+  return new JourneyEmulator(
+    new JourneyConfig({
+      realm: "alpha",
+      trees: {
+        invented: {
+          entryNodeId: "seed",
+          nodes: {
+            seed: { nodeType: "ScriptedDecisionNode", connections: { next: "node" } },
+            node: {
+              nodeType: type,
+              connections: Object.fromEntries(outcomes.map((o) => [o, `dump-${o}`])),
+            },
+            ...Object.fromEntries(
+              outcomes.map((o) => [
+                `dump-${o}`,
+                { nodeType: "ScriptedDecisionNode", connections: { done: `after-${o}` } },
+              ]),
+            ),
+            ...Object.fromEntries(
+              outcomes.map((o) => [
+                `after-${o}`,
+                { nodeType: "ScriptedDecisionNode", connections: { done: SUCCESS } },
+              ]),
+            ),
+          },
+        },
+      },
+      nodes: {
+        [type]: { node },
+        ScriptedDecisionNode: {
+          seed: { script: "seed", outcomes: ["next"] },
+          ...Object.fromEntries(
+            outcomes.flatMap((o) => [
+              [`dump-${o}`, { script: `dump-${o}`, outcomes: ["done"] }],
+              [`after-${o}`, { script: `after-${o}`, outcomes: ["done"] }],
+            ]),
+          ),
+        },
+      },
+      scripts: {
+        seed: decision(`${seed}; action.goTo("next");`),
+        ...Object.fromEntries(
+          outcomes.flatMap((o) => [
+            [`dump-${o}`, decision(dump(o))],
+            [`after-${o}`, decision(dump(`after-${o}`))],
+          ]),
+        ),
+      },
+    }),
+    runner,
+    idm,
+  );
+}
+const dumpOf = (body: unknown): { tag: string; attrs: JsonValue; username: JsonValue } =>
+  JSON.parse(
+    String(
+      (body as { callbacks: { output: { name: string; value: JsonValue }[] }[] }).callbacks[0]?.output.find(
+        (field) => field.name === "value",
+      )?.value,
+    ),
+  ) as { tag: string; attrs: JsonValue; username: JsonValue };
+const post = (emu: JourneyEmulator, body: JsonValue = {}) =>
+  emu.request({
+    method: "POST",
+    path: "authenticate",
+    query: { authIndexType: "service", authIndexValue: "invented" },
+    body,
+  });
+const UID = "5b1f4c0e-7d5a-4c8e-9a3b-0c2d4e6f8a10";
+const row = async (idm: IdmEmulator, userName: string) => {
+  const found = await idm.request({
+    method: "GET",
+    path: "managed/alpha_user",
+    query: { _queryFilter: `userName eq "${userName}"` },
+  });
+  return (found.body as { result: Record<string, JsonValue>[] }).result[0];
+};
+
+describe("G11: objectAttributes split across shared and transient", () => {
+  const create = { identityResource: "managed/alpha_user" };
+  const patch = { ...create, identityAttribute: "userName", patchAsObject: false, ignoredFields: [] };
+  const identify = { identityAttribute: "mail", identifier: "userName" };
+
+  it("Create reads the shared map overlaid by the transient one, and neither bucket changes", async () => {
+    const idm = userStore();
+    const emu = identityFlow(
+      "CreateObjectNode",
+      create,
+      `nodeState.putShared("objectAttributes", {userName: "c1", givenName: "G", sn: "SharedSn", mail: "c1@example.com"});
+       nodeState.putTransient("objectAttributes", {sn: "TransientSn", password: "Kdemo-Pw-1x!"});`,
+      idm,
+      ["CREATED", "FAILURE"],
+    );
+    const first = await post(emu);
+    // Transient-first lookup alone would hold only {sn, password}; the record has all five.
+    expect(dumpOf(first.body)).toMatchObject({ tag: "CREATED" });
+    const record = await row(idm, "c1");
+    expect(record).toMatchObject({ givenName: "G", sn: "TransientSn", mail: "c1@example.com" });
+    // After a round trip only shared remains, exactly as seeded: Create wrote no state.
+    const second = await post(emu, first.body as JsonValue);
+    expect(dumpOf(second.body)).toMatchObject({
+      tag: "after-CREATED",
+      attrs: { userName: "c1", givenName: "G", sn: "SharedSn", mail: "c1@example.com" },
+    });
+  });
+
+  it("Patch applies both buckets, finding the user from either", async () => {
+    const idm = userStore();
+    await idm.request({
+      method: "PUT",
+      path: `managed/alpha_user/${UID}`,
+      body: { userName: "p1", password: "Passw0rd!x", givenName: "Orig", sn: "Orig", mail: "p1@example.com" },
+    });
+    const emu = identityFlow(
+      "PatchObjectNode",
+      patch,
+      `nodeState.putShared("objectAttributes", {sn: "SharedSn"});
+       nodeState.putTransient("objectAttributes", {userName: "p1", givenName: "TransientGn"});`,
+      idm,
+      ["PATCHED", "FAILURE"],
+    );
+    expect(dumpOf((await post(emu)).body)).toMatchObject({ tag: "PATCHED" });
+    expect(await row(idm, "p1")).toMatchObject({ givenName: "TransientGn", sn: "SharedSn" });
+  });
+
+  it("Identify looks up the transient value when both buckets hold the key, and adds userName to shared only", async () => {
+    const idm = userStore();
+    await idm.request({
+      method: "PUT",
+      path: `managed/alpha_user/${UID}`,
+      body: { userName: "i1", password: "Passw0rd!x", mail: "i1@example.com" },
+    });
+    const hit = identityFlow(
+      "IdentifyExistingUserNode",
+      identify,
+      `nodeState.putShared("objectAttributes", {mail: "nobody@example.com", sn: "kept"});
+       nodeState.putTransient("objectAttributes", {mail: "i1@example.com"});`,
+      idm,
+      ["true", "false"],
+    );
+    const first = await post(hit);
+    expect(dumpOf(first.body)).toMatchObject({ tag: "true", username: "i1" });
+    // Shared keeps its own mail and sn and gains userName; the lookup used the transient mail.
+    const second = await post(hit, first.body as JsonValue);
+    expect(dumpOf(second.body)).toMatchObject({
+      tag: "after-true",
+      attrs: { mail: "nobody@example.com", sn: "kept", userName: "i1" },
+    });
+    // The reverse: a shared hit under a transient miss is a miss, so the transient value decides.
+    const miss = identityFlow(
+      "IdentifyExistingUserNode",
+      identify,
+      `nodeState.putShared("objectAttributes", {mail: "i1@example.com"});
+       nodeState.putTransient("objectAttributes", {mail: "nobody@example.com"});`,
+      idm,
+      ["true", "false"],
+    );
+    expect(dumpOf((await post(miss)).body)).toMatchObject({ tag: "false" });
+  });
+
+  it("a key both buckets hold as an object is missing, not guessed", async () => {
+    expectEmulationFailure("split objectAttributes sharing a nested object key");
+    const emu = identityFlow(
+      "CreateObjectNode",
+      create,
+      `nodeState.putShared("objectAttributes", {userName: "n1", prefs: {a: "1"}});
+       nodeState.putTransient("objectAttributes", {prefs: {b: "2"}});`,
+      userStore(),
+      ["CREATED", "FAILURE"],
+    );
+    expect((await post(emu)).status).toBe(501);
+  });
+});

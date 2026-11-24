@@ -491,13 +491,27 @@ provider's published always-pass test keys as well as with fake ones, so
 neither outcome was reached; verification calls a provider that the harness
 cannot reproduce, and the emulator takes the verdict from the caller.
 
+## Split `objectAttributes` (verified 2026-11-25)
+
+Create Object, Patch Object and Identify Existing User each read the shared
+`objectAttributes` map **overlaid** by the transient one, key by key, the
+transient value winning. Measured on the sandbox with throwaway trees:
+
+- Create wrote the union (shared keys plus transient keys) to the new record
+  and wrote no state.
+- Patch found the user from the identity attribute held in either map and
+  applied the union.
+- Identify looked up the merged value, and wrote `userName`, `_id` and
+  `username` to the **shared** map only; neither map was otherwise rewritten.
+
+**Not measured:** a key held as an object in both maps (the emulator reports it
+missing rather than guessing a deep merge).
+
 ## Not yet measured
 
 None of these was exercised; do not build on them as measured:
 
-- Create Object / Patch Object fed a **split** `objectAttributes` (part
-  shared, part transient, as a Validated Password page leaves it); Patch
-  Object with `patchAsObject: true`, or with `ignoredFields`.
+- Patch Object with `patchAsObject: true`, or with `ignoredFields`.
 - `ValidatedPasswordNode` with `validateInput: true` (expected to emit
   `ValidatedCreatePasswordCallback`; not observed), and the effect of
   `IDTokenNvalidateOnly: true` on any validated callback.
