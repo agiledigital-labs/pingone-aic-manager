@@ -403,22 +403,33 @@ gate "rhino-local package smoke (installed, no javac)" \
 
 # --- budgets -----------------------------------------------------------------
 
-# Wall-clock budget on the unit suite. The grep guard in src/lib.rs catches
+# Wall-clock budget on the lib unit suite. The grep guard in src/lib.rs catches
 # cryptographic keygen called DIRECTLY from a test module; it cannot see a test
 # that calls a production helper which generates a key one level down, which is
 # exactly how the 2026-08-06 instance got in (0.33s -> 8.31s). This catches the
 # transitive case, and anything else that quietly makes the suite slow.
 #
-# Budget is deliberately loose — ~10x the current ~0.3s — so it flags a step
-# change, not ordinary growth. Raise it when the suite legitimately outgrows it,
-# but read why it grew first.
+# Scoped to the `unittests src/lib.rs` binaries (both feature sets), not the
+# integration tests under tests/: some of those deliberately wait out real
+# deadlines (relationship_activation_cli.rs waits --wait-activation=3 twice,
+# ~6s), and their time says nothing about keygen leaking into a unit test.
+#
+# Budget is deliberately loose — the suite runs ~2.4s (2026-11-25) — so it flags
+# a step change, not ordinary growth. Raise it when the suite legitimately
+# outgrows it, but read why it grew first.
 BUDGET_MS=3000
-slowest="$(awk '/^test result: ok/ {
-  for (i = 1; i <= NF; i++)
-    if ($i == "in") { gsub(/s$/, "", $(i + 1)); if ($(i + 1) + 0 > max) max = $(i + 1) + 0 }
-} END { printf "%d", max * 1000 }' "$LOG")"
-if [ "${slowest:-0}" -gt "$BUDGET_MS" ]; then
-  fail "unit suite took ${slowest}ms, over the ${BUDGET_MS}ms budget.
+slowest="$(awk '
+  /Running unittests src\/lib\.rs/ { lib = 1; next }
+  /Running / { lib = 0; next }
+  lib && /^test result: ok/ {
+    for (i = 1; i <= NF; i++)
+      if ($i == "in") { gsub(/s$/, "", $(i + 1)); if ($(i + 1) + 0 > max) max = $(i + 1) + 0 }
+    lib = 0
+  }
+  END { printf "%d", max * 1000 }' "$LOG")"
+[ "${slowest:-0}" -gt 0 ] || fail "found no lib unit-suite timing in the cargo log; the budget check has nothing to measure"
+if [ "$slowest" -gt "$BUDGET_MS" ]; then
+  fail "lib unit suite took ${slowest}ms, over the ${BUDGET_MS}ms budget.
   Usually cryptographic key generation reachable from a test — assert against a
   stub instead, or gate the real thing behind #[ignore]. See REVIEW.md."
 fi
