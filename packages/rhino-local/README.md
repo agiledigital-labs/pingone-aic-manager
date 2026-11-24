@@ -3008,7 +3008,10 @@ API_KEY_ID=... API_KEY_SECRET=... KIKORI_CLOCK=clock.json \
 ```
 
 It starts the logs server, then runs the driver on the shared clock until
-SIGINT. It prints a status line every 30 s (journeys started, finished, lag).
+SIGINT. It runs journeys on Java 25 like the rest of the package; from a source
+checkout (not the packed tarball, which ships prebuilt classes) that has to be a
+JDK, since the runner classes are compiled on first use: point `JAVA_HOME` (or
+`AIC_SCRIPT_TESTER_JAVA_HOME`) at a JDK 25, or it fails with `spawn javac ENOENT`. It prints a status line every 30 s (journeys started, finished, lag).
 
 **Journeys file.** One JSON object: the `JourneyConfig` input (`realm`, `trees`,
 `nodes`, `scripts`) plus an optional `idm` key (an IDM config) for nodes that
