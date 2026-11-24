@@ -847,3 +847,104 @@ describe("product-CaptchaNode reCaptchaV3", () => {
     expect(dump((await run(emu, "invented", { body: answer(first.body, "any-token") })).body).branch).toBe("false");
   });
 });
+
+// ---------------------------------------------------------------------------------------------
+// Batch 3's G30: a nested object put into objectAttributes failed the state check with
+// "non-enumerable property at objectAttributes.preferences.__noSuchMethod__". Rebuilt from the
+// trusted-device flow of the journey that hit it, generically: a "remember this device" boolean is
+// collected into objectAttributes by an AttributeCollectorNode (nested `preferences/remember`), a
+// library helper then sets a dotted path on a copy of the objectAttributes the script read and
+// writes the whole object back, and a later script (after a persistent cookie found the user) does
+// the same. Round two could not reproduce the failure at its commit; this pins the exact shape.
+describe("batch 3 G30: nested objectAttributes read back and written by a library helper", () => {
+  const lib = {
+    name: "lib-attrs",
+    evaluatorVersion: "2.0",
+    language: "JAVASCRIPT",
+    context: "LIBRARY",
+    script: b64(`
+      exports.put = function (nodeState, path, value) {
+        var current = nodeState.get('objectAttributes');
+        var copy = current ? JSON.parse(JSON.stringify(current)) : {};
+        var parts = path.split('.');
+        var at = copy;
+        for (var i = 0; i < parts.length - 1; i++) { if (typeof at[parts[i]] !== 'object' || at[parts[i]] === null) at[parts[i]] = {}; at = at[parts[i]]; }
+        at[parts[parts.length - 1]] = value;
+        nodeState.putShared('objectAttributes', copy);
+      };
+      exports.putInPlace = function (nodeState, path, value) {
+        var current = nodeState.get('objectAttributes');
+        var parts = path.split('.');
+        var at = current;
+        for (var i = 0; i < parts.length - 1; i++) { if (typeof at[parts[i]] !== 'object' || at[parts[i]] === null) at[parts[i]] = {}; at = at[parts[i]]; }
+        at[parts[parts.length - 1]] = value;
+        nodeState.putShared('objectAttributes', current);
+      };`),
+  };
+  const input = (helper: string): JourneyConfigInput => ({
+    realm: "alpha",
+    trees: {
+      invented: {
+        entryNodeId: "collect",
+        identityResource: "managed/widget",
+        nodes: {
+          collect: { nodeType: "AttributeCollectorNode", connections: { outcome: "mark" } },
+          mark: { nodeType: "ScriptedDecisionNode", connections: { true: "mark2" } },
+          mark2: { nodeType: "ScriptedDecisionNode", connections: { true: "dump" } },
+          dump: { nodeType: "ScriptedDecisionNode", connections: {} },
+        },
+      },
+    },
+    nodes: {
+      AttributeCollectorNode: {
+        collect: { identityResource: "managed/widget", attributesToCollect: ["preferences/remember", "givenName"], validateInputs: false, required: false },
+      },
+      ScriptedDecisionNode: {
+        mark: { script: "mark", outcomes: ["true"] },
+        mark2: { script: "mark2", outcomes: ["true"] },
+        dump: { script: "dump", outcomes: [] },
+      },
+    },
+    scripts: {
+      "lib-attrs": lib,
+      mark: script(`var a = require('lib-attrs'); a.${helper}(nodeState, 'preferences.remember', true); a.${helper}(nodeState, 'preferences.theme', 'dark'); action.goTo('true');`),
+      mark2: script(`var a = require('lib-attrs'); var oa = nodeState.get('objectAttributes'); a.${helper}(nodeState, 'preferences.seen', String(oa.preferences.remember)); action.goTo('true');`),
+      dump: script(`callbacksBuilder.hiddenValueCallback('state', JSON.stringify({oa: JSON.stringify(nodeState.get('objectAttributes'))}));`),
+    },
+  });
+  const widget = () =>
+    new IdmEmulator(
+      new IdmConfig({
+        sync: { mappings: [] },
+        managed: {
+          objects: [
+            {
+              name: "widget",
+              schema: {
+                properties: {
+                  givenName: { type: "string", title: "First Name" },
+                  preferences: { type: "object", properties: { remember: { type: "boolean", title: "Remember me" } } },
+                },
+              },
+            },
+          ],
+        },
+      }),
+      runner,
+    );
+  it.each(["put", "putInPlace"])("the collected nested boolean is read, extended and written back by %s", async (helper) => {
+    const emu = make(input(helper), {}, widget());
+    const first = await run(emu, "invented");
+    const body = structuredClone(first.body) as { callbacks: { input: { value: JsonValue }[] }[] };
+    body.callbacks[0]!.input[0]!.value = true;
+    body.callbacks[1]!.input[0]!.value = "Zz";
+    const done = await run(emu, "invented", { body: body as unknown as JsonValue });
+    // Discriminating: the reported failure was a state-check refusal (status not 200 / emulation failure)
+    // naming __noSuchMethod__; a full pass reads every nested key back as written.
+    expect(done.status).toBe(200);
+    expect(JSON.parse(String(dump(done.body).oa))).toEqual({
+      givenName: "Zz",
+      preferences: { remember: true, theme: "dark", seen: "true" },
+    });
+  });
+});
