@@ -130,6 +130,8 @@ const PAGE_CHILDREN: readonly string[] = [
   "ValidatedUsernameNode",
   "MessageNode",
   "GetAuthenticatorAppNode",
+  "OneTimePasswordCollectorDecisionNode",
+  "ChoiceCollectorNode",
 ];
 /**
  * A node's stored outcome vocabulary, as doc 25's listOutcomes table reports it;
@@ -647,6 +649,7 @@ export class JourneyEmulator {
             callbacks,
             ...(result.header !== undefined ? { header: result.header } : {}),
             ...(result.description !== undefined ? { description: result.description } : {}),
+            ...(result.stage !== undefined ? { stage: result.stage } : {}),
           },
         };
       }
@@ -980,6 +983,14 @@ export class JourneyEmulator {
     );
     return value === "" ? {} : { [wire]: value };
   }
+  /** A Page's `stage` string as the top-level `stage`; empty or absent sends none (doc 25, 2026-11-25). */
+  private pageStage(config: NodeDocument): { stage?: string } {
+    const stage = config.stage;
+    if (stage === undefined || stage === "") return {};
+    if (typeof stage !== "string") this.missing("PageNode stage shape");
+    this.measured("a PageNode sends its non-empty stage as a top-level stage beside callbacks; a re-sent page repeats it");
+    return { stage };
+  }
   private async page(
     config: NodeDocument,
     state: State,
@@ -988,10 +999,12 @@ export class JourneyEmulator {
     request: AuthenticateRequest,
     log?: RequestLog,
   ): Promise<NodeResult> {
-    if (state.frames.length > 1) this.missing("PageNode inside an inner tree");
+    // A Page in an inner tree is the same machinery: this tree's own properties, no outer page's
+    // (doc 25, "A Page inside an inner tree", 2026-11-25).
     const texts = {
       ...this.pageText(config, "pageHeader", "header", request),
       ...this.pageText(config, "pageDescription", "description", request),
+      ...this.pageStage(config),
     };
     if (!Array.isArray(config.nodes) || !config.nodes.length)
       this.missing("PageNode child configuration");
@@ -1076,10 +1089,15 @@ export class JourneyEmulator {
         return { outcome, callbacks: [] };
       }
       state.page = { counts, effects: structuredClone(collected) };
-      // Measured: a page whose only child is a Message or Get Authenticator App node leaves no
-      // pageNodeCallbacks at all (doc 25, "Nodes as Page children").
+      // Measured: a page whose only child is one of these nodes leaves no pageNodeCallbacks at all
+      // (doc 25, "Nodes as Page children"; the one-time password and choice nodes 2026-11-25).
       const display = config.nodes.length === 1 && isDocument(config.nodes[0]) &&
-        ["MessageNode", "GetAuthenticatorAppNode"].includes(String(config.nodes[0].nodeType));
+        [
+          "MessageNode",
+          "GetAuthenticatorAppNode",
+          "OneTimePasswordCollectorDecisionNode",
+          "ChoiceCollectorNode",
+        ].includes(String(config.nodes[0].nodeType));
       if (!display) {
         state.shared.pageNodeCallbacks = toWire(collected, (name) => this.missing(name)) as JsonValue;
         this.evidence.assumed(
@@ -1180,7 +1198,7 @@ export class JourneyEmulator {
   private async host(call: HostCall): Promise<JsonValue> {
     if (call.method !== "http") {
       try {
-        const result = await this.idm.onCall(call);
+        const result = await this.idm.onCall(call, true);
         this.checkHostValue(result);
         return result;
       } catch (error) {

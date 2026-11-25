@@ -185,6 +185,26 @@ transient `zzOT`) → inner 1 (writes `zz1S`/`zz1T`) → inner 2 (writes `zz2S`/
 | `journey.name()` / `innerJourney()` | The innermost executing tree's name at each level; `true` in both inner trees, `false` outside | — |
 
 
+### A Page inside an inner tree (verified 2026-11-25)
+
+Measured on the sandbox with `scripts/experiment-journey-inner-page.sh` (throwaway `kdemo-g4-` trees, scripts and nodes, all
+deleted, deletion confirmed by a `GET`). Outer tree: script, then `InnerTreeEvaluatorNode`, then dump nodes for `true` and
+`false`; the inner tree holds the page.
+
+| Question | Observed | Control |
+| --- | --- | --- |
+| Callbacks and properties the client sees | The inner page's callbacks, in page order, with its own `header`, `description` and `stage` (`IN-H`, `IN-D`, `IN-S`) beside `callbacks` | The same page as an outer page sends the same shape |
+| An outer page's properties | **Do not leak**: an outer page with `OUT-H`/`OUT-D`/`OUT-S` was answered, and the inner page (configured with none) came back with no `header`, `description` or `stage` | The outer page's own response carried all three |
+| Resuming | The submission resumes **inside the inner tree**: the inner script after the page ran (it saw the answers) and the inner tree's success routed the outer evaluator to `true` | — |
+| Shared state across the boundary | Outer shared written before the inner tree is read inside it (`os`); inner shared written after the page is read by the outer dump (`is`); the page's `username` is shared and read at every level | — |
+| Transient state across the boundary | Outer transient is **`null` inside** the inner tree (as in the Inner Tree table above); the page's transient `password` was readable (length 13) by the inner script after the page, and **`null` in the outer dump** after the evaluator | The inner script's own `putTransient` is likewise `null` outside |
+| A page visited twice (inner script after the page goes back to the page unless `username == "right"`) | `wrong1`, `wrong2`: the page is sent again each time with `header` and `description`, the outer tree not touched; `right` leaves and the outer dump (`true`) reads `username = "right"` | The `NameCallback` of the revisit carries an empty `input` value (no prefill from the shared `username`) |
+| Empty answers in an inner page | The whole page is sent again with its `header`/`description`; a later answer continues | — |
+| The inner tree ends by its failure node after the page | The outer evaluator takes `false` (the `false` dump ran) | — |
+| Two deep (outer, middle evaluator, innermost page) | The page's callbacks are the first response; its answer resumes in the innermost tree; its shared writes are visible to the middle tree's script and the outer dump | — |
+| `stage` | A page's non-empty `stage` is a top-level string beside `callbacks`, repeated when the page is re-sent; `stage: ""` and no `stage` send none (outer pages, same run) | Three pages differing only in `stage` |
+| Callback `_id` and `pageNodeCallbacks` | Every callback the journey sends carries a top-level numeric `_id`, counting up across the whole journey (`0`, `1`, then `2`, `3` on a re-send; `0` then `1` on a revisit). Shared `pageNodeCallbacks` is a **map of callback `_id` to child index** (`{ "0": 0, "1": 1 }`) that **accumulates** one entry per callback of every visit to a page, a re-sent or revisited one included (`{ "0": 0, "1": 1, "2": 0, "3": 1 }` after a re-send). **Not modelled**: the emulator sends no `_id` and stores the wire array there | — |
+
 ## Identify Existing User
 
 Measured 2026-11-02 with `scripts/experiment-journey-identity-nodes.sh`
@@ -233,6 +253,25 @@ the node overwrites `username` with the found user's `identifier`. The page
 rows show the realistic shape (collector writes shared `username`, attribute
 collector writes shared `objectAttributes.mail`) behaves exactly as the seeded
 one.
+
+### Which `username` key it reads (verified 2026-11-25)
+
+Measured with `scripts/experiment-journey-identify-key.sh` (throwaway `kdemo-g4-` trees and users, all deleted).
+The node's `identityAttribute` was `userName`, two users existed, and a dump node after each outcome read both keys.
+
+| Seed | Outcome | Identified |
+| --- | --- | --- |
+| shared `username = A` | `true` | user A |
+| shared `userName = A` (camel case only) | `false` | nobody; `userName` is not a lookup key |
+| shared `username = A`, shared `userName = B` | `true` | user **A**: the lower-case key wins |
+| shared `username = B`, shared `userName = A` | `true` | user **B** |
+| transient `username = A` | `false` | nobody: a transient value is **not** read |
+| transient `userName = A` | `false` | nobody |
+| shared `userName = B`, transient `username = A` | `false` | nobody |
+
+So Identify Existing User reads the **shared** `username` only. Neither the camel-case key nor the transient state is
+consulted, and a camel-case value beside a lower-case one is ignored. The emulator used to read a transient
+`username` like any other `nodeState.get`; it now reads shared state only.
 
 ### A blank or `null` lookup value, and letter case (2026-11-04)
 
@@ -313,6 +352,18 @@ So Create Object reads `objectAttributes` through the same transient-first
 lookup as `nodeState.get`, and **does not return the new `_id` in state**. A
 journey that needs the new user's id must look it up afterwards (for example
 with Identify Existing User).
+
+### Create Object without a password, and what a journey reads of `alpha_user` (verified 2026-11-25)
+
+Measured with `scripts/experiment-journey-create-nopassword.sh` (throwaway `kdemo-g4-` users, deleted by name).
+
+- A Create Object whose `objectAttributes` carry no `password` is `CREATED`: the tenant accepts an `alpha_user`
+  without one. A `password pr` filter finds a user created with a password and not one created without.
+- Inside a **journey** script, `openidm.read` (default, `["*"]` and `["password"]`) and `openidm.query` (default and
+  `_fields: "password"`) of `alpha_user` never return `password`, for a user created with one and for one created
+  without. (`docs/api/10-managed-objects.md` records an internal read that does expose the hash; that is the
+  `script?_action=eval` caller, not a journey, which is why the emulator now distinguishes the two.)
+- A later `openidm.patch` of another field on that user succeeds.
 
 ### Patch Object (`listOutcomes`: `["PATCHED","FAILURE"]`)
 
@@ -865,6 +916,22 @@ Measured on the sandbox with throwaway journeys, each node run standalone and as
   true` as a child; `GetAuthenticatorAppNode` messages with other wildcards
   (`{{appleLabel}}`, `{{googleLabel}}`) or a quote, backslash or line break.
 
+### One Time Password Collector Decision and Choice Collector as Page children (verified 2026-11-25)
+
+Measured with `scripts/experiment-journey-page-choice-otp.sh`, each node alone and as a page child (alone, and after a
+`UsernameCollectorNode`), with shared `oneTimePassword = 123456` seeded.
+
+| Node | Callbacks as a child | Answer | Outcome |
+| --- | --- | --- | --- |
+| `OneTimePasswordCollectorDecisionNode` | one `PasswordCallback`, prompt `One Time Password`; after a username child its input is `IDToken2` | `123456` | `true`; shared `oneTimePassword` and `oneTimePasswordTimestamp` are **removed** |
+| | | `000000` | `false`; both keys stay |
+| | | empty | the same page is sent again, no outcome |
+| `ChoiceCollectorNode` (choices alpha, beta, gamma) | one `ChoiceCallback`, prompt `Pick`, `choices`, `defaultChoice` 1 | index 0 / 2 | outcome `alpha` / `gamma` |
+| | | index 7 | `401 Login failure` |
+
+Standalone and as a child the behaviour is the same. `pageNodeCallbacks` is the `{ "0": 0, "1": 1 }` map of
+callback to child as above. Both types were previously refused as page children.
+
 ## DataStoreDecisionNode and accountStatus (2026-11-25)
 
 Measured on the sandbox: one throwaway `alpha_user` per `accountStatus`, all with the same password; a seed script put
@@ -946,8 +1013,9 @@ None of these was exercised; do not build on them as measured:
   `action.suspend()` or `withHeader` inside a page; a `pageHeader` with
   several locales under an `Accept-Language` request.
 - `withLockoutMessage` on an account that is actually locked out.
-- Inner Tree with `displayErrorOutcome: true` when the inner tree throws; a
-  Page inside an inner tree.
+- Inner Tree with `displayErrorOutcome: true` when the inner tree throws; an
+  inner-tree Page whose child is not a collector, a scripted decision, Terms and
+  Conditions, Captcha, a one-time-password collector or a choice collector; an inner Page after a rejection by a non-collector child.
 - Replaying the `authId` of a step that led to **success** (whether a second
   session is minted).
 - Message Node, Choice Collector, Polling Wait, Email Suspend and other node
