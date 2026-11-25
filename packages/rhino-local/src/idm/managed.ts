@@ -18,6 +18,8 @@ export type Operation = {
   request: RestRequest;
   context: Document;
   internal: boolean;
+  /** An AM journey's call: its reads of alpha_user never carry `password` (doc 25, 2026-11-25). */
+  journey?: boolean;
 };
 export type Reply = { status: number; body: JsonValue; rawBody?: string };
 
@@ -227,8 +229,11 @@ export class ManagedStore {
     return this.projectVisible(type, object, selectors, op);
   }
 
-  private encodePassword(type: ManagedType, object: Document): void {
+  private encodePassword(type: ManagedType, object: Document, prior: Document | null = null): void {
     if (!Object.hasOwn(object, "password")) return;
+    // A record created without a password is stored with `password: null` (materialize fills every schema
+    // property). Writing it back unchanged is not a password write; a change to or from null stays loud.
+    if (type.name === "alpha_user" && object.password === null && prior?.password === null) return;
     if (type.name === "bravo_user") missing(this.evidence, "bravo_user password semantics");
     if (type.name !== "alpha_user") return;
     if (typeof object.password !== "string") missing(this.evidence, "alpha_user password without measured string value");
@@ -253,7 +258,16 @@ export class ManagedStore {
     if (type.name === "bravo_user" && Object.hasOwn(object, "password")) missing(this.evidence, "bravo_user password semantics");
     const result = project(object, selectors, this.evidence);
     if (type.name !== "alpha_user") return result;
-    if (op.internal) {
+    if (op.internal && op.journey) {
+      // Measured 2026-11-25 inside a journey script: openidm.read (default, ["*"], ["password"]) and
+      // openidm.query (default and _fields "password") never return `password`, for a user created with
+      // one (a `password pr` filter proves it is stored) and one created without.
+      this.evidence.measured(
+        "a journey's openidm read and query of alpha_user never carry password, stored or not",
+        "docs/api/25-journey-runtime.md (Create Object without a password, 2026-11-25)",
+      );
+      delete result.password;
+    } else if (op.internal) {
       if (Object.hasOwn(result, "password")) {
         if (typeof result.password !== "string") missing(this.evidence, "alpha_user password without measured string value");
         if (!result.password.startsWith("{PBKDF2-HMAC-SHA256}")) missing(this.evidence, "alpha_user password representation after retrieval hooks");
@@ -377,7 +391,7 @@ export class ManagedStore {
     if (op.request.method === "PATCH") {
       const patched = this.patch(type, oldObject, op);
       if (isDeepStrictEqual(oldObject, patched)) {
-        this.encodePassword(type, patched);
+        this.encodePassword(type, patched, oldObject);
         this.evidence.measured("no-change PATCH only runs read hooks");
         return { status: 200, body: project(oldObject, fields(op.request.query?._fields), this.evidence) };
       }
@@ -389,7 +403,7 @@ export class ManagedStore {
     }
     this.evidence.assumed("revisions are monotonic decimal strings starting at zero");
     this.implicitSync(type, "update");
-    this.encodePassword(type, object);
+    this.encodePassword(type, object, oldObject);
     const injected = new Set<string>();
     const record = this.materialize(type, { ...object, _id: id, _rev: String(Number(oldObject._rev) + 1) }, injected);
     this.records.set(this.key(type, id), structuredClone(record));

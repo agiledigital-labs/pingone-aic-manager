@@ -52,6 +52,8 @@ const IGNORED_SOURCE =
   "docs/api/25-journey-runtime.md (Patch Object ignoredFields, 2026-11-25)";
 const EMPTY_SOURCE =
   "docs/api/25-journey-runtime.md (Identify Existing User with no identity value, 2026-11-25)";
+const KEY_SOURCE =
+  "docs/api/25-journey-runtime.md (Identify Existing User: which key, 2026-11-25)";
 /** Writes `value` at a slash path, creating the intermediate objects (a sibling path shares them). */
 function setNested(target: Document, path: string[], value: JsonValue): void {
   const [head, ...rest] = path;
@@ -228,13 +230,16 @@ export class JourneyNodes {
     method: HostCall["method"],
     args: JsonValue[],
   ): Promise<RestResult> {
-    const response = await this.idm.hostRequest({
-      type: "call",
-      id: "journey-node",
-      seq: 0,
-      method,
-      args,
-    });
+    const response = await this.idm.hostRequest(
+      {
+        type: "call",
+        id: "journey-node",
+        seq: 0,
+        method,
+        args,
+      },
+      true,
+    );
     for (const entry of response.provenance)
       this.evidence.add(entry.kind, entry.behavior, entry.source);
     if (response.emulation) throw new EmulationFailure(response.emulation);
@@ -613,9 +618,13 @@ export class JourneyNodes {
     const objectValue = attrs
       ? own(attrs, config.identityAttribute)
       : undefined;
-    const username = Object.hasOwn(transient, "username")
-      ? transient.username
-      : shared.username;
+    // Doc 25 (2026-11-25): Identify Existing User reads only shared `username` as its fallback lookup
+    // value: not `userName`, and not a transient `username` (a transient-only one takes false).
+    // Patch Object's transient reading below is unmeasured and left as it was.
+    const username =
+      type === "IdentifyExistingUserNode" || !Object.hasOwn(transient, "username")
+        ? shared.username
+        : transient.username;
     let lookup: JsonValue | undefined;
     if (type === "IdentifyExistingUserNode") {
       // Doc 25 (2026-11-04): objectAttributes[identityAttribute], when present and not null, is
@@ -623,6 +632,14 @@ export class JourneyNodes {
       // null, and a miss never falls back.
       const present = objectValue !== undefined && objectValue !== null;
       lookup = present ? objectValue : username;
+      if (
+        lookup === username &&
+        (Object.hasOwn(shared, "userName") || Object.hasOwn(transient, "username"))
+      )
+        this.evidence.measured(
+          "IdentifyExistingUserNode reads shared username only: a shared userName is ignored and a transient username is not read",
+          KEY_SOURCE,
+        );
       if (lookup === undefined || lookup === null) {
         // Doc 25 (2026-11-25): no usable identity value is a miss, never an error; nothing is
         // written. A null username with no usable objectAttributes value is the same.

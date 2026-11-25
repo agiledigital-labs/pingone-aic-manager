@@ -59,7 +59,7 @@ const dump = (body: JsonValue): Record<string, unknown> => {
 };
 
 // Scripts. `dumpOf` is the outer tree's terminal reporter: it sends one HiddenValue callback.
-const KEYS = ["username", "password", "outerShared", "outerTransient", "inShared", "inTransient", "sawOuterS", "sawOuterT", "sawUser", "sawPw", "midSawUser"];
+const KEYS = ["userName", "oneTimePassword", "oneTimePasswordTimestamp", "pageNodeCallbacks", "username", "password", "outerShared", "outerTransient", "inShared", "inTransient", "sawOuterS", "sawOuterT", "sawUser", "sawPw", "midSawUser"];
 const dumpOf = (branch: string) =>
   `var o={branch:'${branch}'};${JSON.stringify(KEYS)}.forEach(function(k){var v=nodeState.get(k);o[k]=v===null?null:String(v);});` +
   `callbacksBuilder.hiddenValueCallback('state',JSON.stringify(o));`;
@@ -74,7 +74,12 @@ const CHECK = `action.goTo(String(nodeState.get('username'))==='right'?'true':'f
 const MID = `nodeState.putShared('midSawUser',String(nodeState.get('username')));action.goTo('true');`;
 
 type PageSpec = { id: string; children: string[]; header?: string; description?: string; stage?: string };
-const COLLECTORS: Record<string, string> = { u: "UsernameCollectorNode", p: "PasswordCollectorNode" };
+const COLLECTORS: Record<string, string> = {
+  u: "UsernameCollectorNode",
+  p: "PasswordCollectorNode",
+  o: "OneTimePasswordCollectorDecisionNode",
+  c: "ChoiceCollectorNode",
+};
 function input(spec: {
   pages: PageSpec[];
   trees: JourneyConfigInput["trees"];
@@ -84,6 +89,8 @@ function input(spec: {
     PageNode: {},
     UsernameCollectorNode: { u: {} },
     PasswordCollectorNode: { p: {} },
+    OneTimePasswordCollectorDecisionNode: { o: { passwordExpiryTime: 5 } },
+    ChoiceCollectorNode: { c: { prompt: "Pick", choices: ["alpha", "beta", "gamma"], defaultChoice: "beta" } },
     ScriptedDecisionNode: {},
     InnerTreeEvaluatorNode: {},
   };
@@ -108,7 +115,8 @@ const dumps = {
   dT: { nodeType: "ScriptedDecisionNode", connections: { true: SUCCESS } },
   dF: { nodeType: "ScriptedDecisionNode", connections: { true: SUCCESS } },
 };
-const SCRIPTS = { dT: dumpOf("T"), dF: dumpOf("F"), outer: OUTER, inner: INNER, check: CHECK, mid: MID };
+const SEED = `nodeState.putShared('oneTimePassword','123456');nodeState.putShared('oneTimePasswordTimestamp',Math.floor(new Date().getTime()/1000));action.goTo('true');`;
+const SCRIPTS = { seed: SEED, dA: dumpOf("alpha"), dB: dumpOf("beta"), dG: dumpOf("gamma"), dT: dumpOf("T"), dF: dumpOf("F"), outer: OUTER, inner: INNER, check: CHECK, mid: MID };
 
 describe("a Page inside an inner tree (doc 25, 2026-11-25)", () => {
   it("sends the inner page's callbacks and own properties, then resumes inside the inner tree", async () => {
@@ -317,5 +325,257 @@ describe("a Page's stage (doc 25, 2026-11-25)", () => {
       const resent = await run(emu, "page", answer(first.body, { 0: "", 1: "" }));
       expect((resent.body as Wire).stage).toBe(expected);
     }
+  });
+});
+
+// E42: OneTimePasswordCollectorDecisionNode and ChoiceCollectorNode as Page children (doc 25, 2026-11-25).
+describe("one-time password and choice nodes as Page children", () => {
+  const pageTree = (children: string[], connections: Record<string, string>) =>
+    make(
+      input({
+        pages: [{ id: "pg", children }],
+        scripts: SCRIPTS,
+        trees: {
+          page: {
+            entryNodeId: "seed",
+            nodes: {
+              seed: { nodeType: "ScriptedDecisionNode", connections: { true: "pg" } },
+              pg: { nodeType: "PageNode", connections },
+              dT: dumps.dT,
+              dF: dumps.dF,
+              dA: dumps.dT,
+              dB: dumps.dT,
+              dG: dumps.dT,
+            },
+          },
+        },
+      }),
+    );
+  const otp = (children: string[]) => pageTree(children, { true: "dT", false: "dF" });
+  const choice = (children: string[]) => pageTree(children, { alpha: "dA", beta: "dB", gamma: "dG" });
+
+  it("a one-time password child: one PasswordCallback; right answer takes true and consumes the password, wrong takes false and keeps it", async () => {
+    for (const [answerText, branch, kept] of [["123456", "T", null], ["000000", "F", "123456"]] as const) {
+      const emu = otp(["o"]);
+      const first = await run(emu, "page");
+      expect(types(first.body)).toEqual(["PasswordCallback"]);
+      expect((first.body as Wire).callbacks[0]?.input[0]?.name).toBe("IDToken1");
+      const done = dump((await run(emu, "page", answer(first.body, { 0: answerText }))).body);
+      expect(done).toMatchObject({ branch, oneTimePassword: kept, pageNodeCallbacks: null });
+      expect(done.oneTimePasswordTimestamp === null).toBe(kept === null);
+    }
+  });
+
+  it("after a username collector the one-time password input is IDToken2, and the page records both callbacks", async () => {
+    const emu = otp(["u", "o"]);
+    const first = await run(emu, "page");
+    expect(types(first.body)).toEqual(["NameCallback", "PasswordCallback"]);
+    expect((first.body as Wire).callbacks[1]?.input[0]?.name).toBe("IDToken2");
+    const done = dump((await run(emu, "page", answer(first.body, { 0: "kdemo-user", 1: "123456" }))).body);
+    expect(done).toMatchObject({ branch: "T", username: "kdemo-user" });
+    // Present with a collector beside it (its value is the emulator's wire array, the tenant's a map: assumed).
+    expect(done.pageNodeCallbacks).not.toBeNull();
+  });
+
+  it("an empty one-time password re-sends the whole page", async () => {
+    const emu = otp(["u", "o"]);
+    const first = await run(emu, "page");
+    const resent = await run(emu, "page", answer(first.body, { 0: "kdemo-user", 1: "" }));
+    expect(types(resent.body)).toEqual(["NameCallback", "PasswordCallback"]);
+  });
+
+  it("a choice child: default index sent, the answered index names the page outcome, an index outside the list fails", async () => {
+    for (const [index, branch] of [[0, "alpha"], [1, "beta"], [2, "gamma"]] as const) {
+      const emu = choice(["c"]);
+      const first = await run(emu, "page");
+      expect(types(first.body)).toEqual(["ChoiceCallback"]);
+      expect((first.body as Wire).callbacks[0]?.input[0]?.value).toBe(1);
+      const done = dump((await run(emu, "page", answer(first.body, { 0: index }))).body);
+      expect(done).toMatchObject({ branch, pageNodeCallbacks: null });
+    }
+    const emu = choice(["c"]);
+    const first = await run(emu, "page");
+    expect((await run(emu, "page", answer(first.body, { 0: 7 }))).status).toBe(401);
+  });
+
+  it("a choice after a username collector is IDToken2 and records both callbacks", async () => {
+    const emu = choice(["u", "c"]);
+    const first = await run(emu, "page");
+    expect((first.body as Wire).callbacks[1]?.input[0]?.name).toBe("IDToken2");
+    const done = dump((await run(emu, "page", answer(first.body, { 0: "kdemo-user", 1: 2 }))).body);
+    expect(done).toMatchObject({ branch: "gamma", username: "kdemo-user" });
+    // Present with a collector beside it (its value is the emulator's wire array, the tenant's a map: assumed).
+    expect(done.pageNodeCallbacks).not.toBeNull();
+  });
+});
+
+// E49: Identify Existing User reads shared `username` (doc 25, 2026-11-25).
+describe("Identify Existing User's lookup key", () => {
+  const A = "00000000-0000-0000-0000-0000000000a1";
+  const B = "00000000-0000-0000-0000-0000000000b2";
+  async function identify(seed: string) {
+    const idm = new IdmEmulator(
+      new IdmConfig({
+        sync: { mappings: [] },
+        managed: { objects: [{ name: "alpha_user", schema: { properties: { userName: { type: "string", title: "Username" } } } }] },
+      }),
+      runner,
+    );
+    for (const [id, userName] of [[A, "kdemo-ua"], [B, "kdemo-ub"]] as const)
+      await idm.request({ method: "PUT", path: `managed/alpha_user/${id}`, body: { userName } });
+    const emu = new JourneyEmulator(
+      new JourneyConfig({
+        realm: "alpha",
+        trees: {
+          t: {
+            entryNodeId: "seed",
+            nodes: {
+              seed: { nodeType: "ScriptedDecisionNode", connections: { true: "id" } },
+              id: { nodeType: "IdentifyExistingUserNode", connections: { true: "dT", false: "dF" } },
+              dT: { nodeType: "ScriptedDecisionNode", connections: { true: SUCCESS } },
+              dF: { nodeType: "ScriptedDecisionNode", connections: { true: SUCCESS } },
+            },
+          },
+        },
+        nodes: {
+          ScriptedDecisionNode: {
+            seed: { script: "seed", outcomes: ["true"] },
+            dT: { script: "dT", outcomes: ["true"] },
+            dF: { script: "dF", outcomes: ["true"] },
+          },
+          IdentifyExistingUserNode: { id: { identityAttribute: "userName", identifier: "userName" } },
+        },
+        scripts: {
+          seed: script(`${seed} action.goTo('true');`),
+          dT: script(dumpOf("T")),
+          dF: script(dumpOf("F")),
+        },
+      }),
+      runner,
+      idm,
+      {},
+    );
+    return dump((await run(emu, "t")).body);
+  }
+  it("a shared username is looked up and written back; a shared userName alone is not read", async () => {
+    expect(await identify(`nodeState.putShared('username','kdemo-ua');`)).toMatchObject({ branch: "T", username: "kdemo-ua" });
+    const camel = await identify(`nodeState.putShared('userName','kdemo-ua');`);
+    expect(camel).toMatchObject({ branch: "F", username: null, userName: "kdemo-ua" });
+  });
+  it("with both set, username decides, whichever user each names", async () => {
+    const a = await identify(`nodeState.putShared('username','kdemo-ua');nodeState.putShared('userName','kdemo-ub');`);
+    expect(a).toMatchObject({ branch: "T", username: "kdemo-ua" });
+    const b = await identify(`nodeState.putShared('username','kdemo-ub');nodeState.putShared('userName','kdemo-ua');`);
+    expect(b).toMatchObject({ branch: "T", username: "kdemo-ub" });
+  });
+  it("a transient username is not read", async () => {
+    expect(await identify(`nodeState.putTransient('username','kdemo-ua');`)).toMatchObject({ branch: "F" });
+  });
+});
+
+// E48: a Create Object on alpha_user without a password, and a journey's view of alpha_user (doc 25, 2026-11-25).
+describe("alpha_user in a journey: no password, and no password in any read", () => {
+  const WITH = "00000000-0000-0000-0000-0000000000c3";
+  const READ = `
+    var shape = function (o) { return { has: Object.prototype.hasOwnProperty.call(o, 'password'), inJson: JSON.stringify(o).indexOf('"password"') >= 0 }; };
+    var q = openidm.query('managed/alpha_user', { _queryFilter: 'userName eq "kdemo-created"' });
+    var c = q.result[0];
+    var rows = { created: { read: shape(openidm.read('managed/alpha_user/' + c._id)), star: shape(openidm.read('managed/alpha_user/' + c._id, null, ['*'])),
+                            only: shape(openidm.read('managed/alpha_user/' + c._id, null, ['password'])), query: shape(c) },
+                 withPw: { read: shape(openidm.read('managed/alpha_user/${WITH}')), query: shape(openidm.query('managed/alpha_user', { _queryFilter: 'userName eq "kdemo-with"' }).result[0]) } };
+    callbacksBuilder.hiddenValueCallback('state', JSON.stringify(rows));
+  `;
+  it("creates the user and reads it back without a password key, as it reads a user that has one", async () => {
+    const idm = new IdmEmulator(
+      new IdmConfig({
+        sync: { mappings: [] },
+        managed: {
+          objects: [
+            { name: "alpha_user", schema: { properties: { userName: { type: "string" }, mail: { type: "string" }, password: { type: "string" } } } },
+          ],
+        },
+      }),
+      runner,
+    );
+    await idm.request({ method: "PUT", path: `managed/alpha_user/${WITH}`, body: { userName: "kdemo-with", mail: "w@example.com", password: "Kdemo-Pw-12345" } });
+    const emu = new JourneyEmulator(
+      new JourneyConfig({
+        realm: "alpha",
+        trees: {
+          t: {
+            entryNodeId: "seed",
+            nodes: {
+              seed: { nodeType: "ScriptedDecisionNode", connections: { true: "create" } },
+              create: { nodeType: "CreateObjectNode", connections: { CREATED: "read", FAILURE: SUCCESS } },
+              read: { nodeType: "ScriptedDecisionNode", connections: { true: SUCCESS } },
+            },
+          },
+        },
+        nodes: {
+          ScriptedDecisionNode: { seed: { script: "seed", outcomes: ["true"] }, read: { script: "read", outcomes: ["true"] } },
+          CreateObjectNode: { create: { identityResource: "managed/alpha_user" } },
+        },
+        scripts: {
+          seed: script(`nodeState.putShared('objectAttributes', {userName: 'kdemo-created', mail: 'c@example.com'}); action.goTo('true');`),
+          read: script(READ),
+        },
+      }),
+      runner,
+      idm,
+      {},
+    );
+    const reply = await run(emu, "t");
+    expect(reply.status).toBe(200);
+    const rows = dump(reply.body) as Record<string, Record<string, { has: boolean; inJson: boolean }>>;
+    for (const group of Object.values(rows))
+      for (const shape of Object.values(group)) expect(shape).toEqual({ has: false, inJson: false });
+  });
+  // Discriminating case: the stored record carries a null password (nothing was supplied), and a later patch of
+  // some other field writes the whole record back. A wrong model treats that null as a password write and fails.
+  it("patches another field of a user created without a password", async () => {
+    const idm = new IdmEmulator(
+      new IdmConfig({
+        sync: { mappings: [] },
+        managed: {
+          objects: [
+            { name: "alpha_user", schema: { properties: { userName: { type: "string" }, mail: { type: "string" }, sn: { type: "string" }, password: { type: "string" } } } },
+          ],
+        },
+      }),
+      runner,
+    );
+    const emu = new JourneyEmulator(
+      new JourneyConfig({
+        realm: "alpha",
+        trees: {
+          t: {
+            entryNodeId: "seed",
+            nodes: {
+              seed: { nodeType: "ScriptedDecisionNode", connections: { true: "create" } },
+              create: { nodeType: "CreateObjectNode", connections: { CREATED: "patch", FAILURE: SUCCESS } },
+              patch: { nodeType: "ScriptedDecisionNode", connections: { true: SUCCESS } },
+            },
+          },
+        },
+        nodes: {
+          ScriptedDecisionNode: { seed: { script: "seed", outcomes: ["true"] }, patch: { script: "patch", outcomes: ["true"] } },
+          CreateObjectNode: { create: { identityResource: "managed/alpha_user" } },
+        },
+        scripts: {
+          seed: script(`nodeState.putShared('objectAttributes', {userName: 'kdemo-p', mail: 'p@example.com'}); action.goTo('true');`),
+          patch: script(`
+            var c = openidm.query('managed/alpha_user', { _queryFilter: 'userName eq "kdemo-p"' }).result[0];
+            openidm.patch('managed/alpha_user/' + c._id, null, [{ operation: 'replace', field: '/sn', value: 'Patched' }]);
+            callbacksBuilder.hiddenValueCallback('state', JSON.stringify({ sn: openidm.read('managed/alpha_user/' + c._id).sn }));
+          `),
+        },
+      }),
+      runner,
+      idm,
+      {},
+    );
+    const reply = await run(emu, "t");
+    expect(reply.status).toBe(200);
+    expect(dump(reply.body)).toEqual({ sn: "Patched" });
   });
 });

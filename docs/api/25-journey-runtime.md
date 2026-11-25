@@ -254,6 +254,25 @@ rows show the realistic shape (collector writes shared `username`, attribute
 collector writes shared `objectAttributes.mail`) behaves exactly as the seeded
 one.
 
+### Which `username` key it reads (verified 2026-11-25)
+
+Measured with `scripts/experiment-journey-identify-key.sh` (throwaway `kdemo-g4-` trees and users, all deleted).
+The node's `identityAttribute` was `userName`, two users existed, and a dump node after each outcome read both keys.
+
+| Seed | Outcome | Identified |
+| --- | --- | --- |
+| shared `username = A` | `true` | user A |
+| shared `userName = A` (camel case only) | `false` | nobody; `userName` is not a lookup key |
+| shared `username = A`, shared `userName = B` | `true` | user **A**: the lower-case key wins |
+| shared `username = B`, shared `userName = A` | `true` | user **B** |
+| transient `username = A` | `false` | nobody: a transient value is **not** read |
+| transient `userName = A` | `false` | nobody |
+| shared `userName = B`, transient `username = A` | `false` | nobody |
+
+So Identify Existing User reads the **shared** `username` only. Neither the camel-case key nor the transient state is
+consulted, and a camel-case value beside a lower-case one is ignored. The emulator used to read a transient
+`username` like any other `nodeState.get`; it now reads shared state only.
+
 ### A blank or `null` lookup value, and letter case (2026-11-04)
 
 Measured with `scripts/experiment-journey-defaults-case.sh`, run twice with the same result. One user A
@@ -333,6 +352,18 @@ So Create Object reads `objectAttributes` through the same transient-first
 lookup as `nodeState.get`, and **does not return the new `_id` in state**. A
 journey that needs the new user's id must look it up afterwards (for example
 with Identify Existing User).
+
+### Create Object without a password, and what a journey reads of `alpha_user` (verified 2026-11-25)
+
+Measured with `scripts/experiment-journey-create-nopassword.sh` (throwaway `kdemo-g4-` users, deleted by name).
+
+- A Create Object whose `objectAttributes` carry no `password` is `CREATED`: the tenant accepts an `alpha_user`
+  without one. A `password pr` filter finds a user created with a password and not one created without.
+- Inside a **journey** script, `openidm.read` (default, `["*"]` and `["password"]`) and `openidm.query` (default and
+  `_fields: "password"`) of `alpha_user` never return `password`, for a user created with one and for one created
+  without. (`docs/api/10-managed-objects.md` records an internal read that does expose the hash; that is the
+  `script?_action=eval` caller, not a journey, which is why the emulator now distinguishes the two.)
+- A later `openidm.patch` of another field on that user succeeds.
 
 ### Patch Object (`listOutcomes`: `["PATCHED","FAILURE"]`)
 
@@ -885,6 +916,22 @@ Measured on the sandbox with throwaway journeys, each node run standalone and as
   true` as a child; `GetAuthenticatorAppNode` messages with other wildcards
   (`{{appleLabel}}`, `{{googleLabel}}`) or a quote, backslash or line break.
 
+### One Time Password Collector Decision and Choice Collector as Page children (verified 2026-11-25)
+
+Measured with `scripts/experiment-journey-page-choice-otp.sh`, each node alone and as a page child (alone, and after a
+`UsernameCollectorNode`), with shared `oneTimePassword = 123456` seeded.
+
+| Node | Callbacks as a child | Answer | Outcome |
+| --- | --- | --- | --- |
+| `OneTimePasswordCollectorDecisionNode` | one `PasswordCallback`, prompt `One Time Password`; after a username child its input is `IDToken2` | `123456` | `true`; shared `oneTimePassword` and `oneTimePasswordTimestamp` are **removed** |
+| | | `000000` | `false`; both keys stay |
+| | | empty | the same page is sent again, no outcome |
+| `ChoiceCollectorNode` (choices alpha, beta, gamma) | one `ChoiceCallback`, prompt `Pick`, `choices`, `defaultChoice` 1 | index 0 / 2 | outcome `alpha` / `gamma` |
+| | | index 7 | `401 Login failure` |
+
+Standalone and as a child the behaviour is the same. `pageNodeCallbacks` is the `{ "0": 0, "1": 1 }` map of
+callback to child as above. Both types were previously refused as page children.
+
 ## DataStoreDecisionNode and accountStatus (2026-11-25)
 
 Measured on the sandbox: one throwaway `alpha_user` per `accountStatus`, all with the same password; a seed script put
@@ -968,7 +1015,7 @@ None of these was exercised; do not build on them as measured:
 - `withLockoutMessage` on an account that is actually locked out.
 - Inner Tree with `displayErrorOutcome: true` when the inner tree throws; an
   inner-tree Page whose child is not a collector, a scripted decision, Terms and
-  Conditions or Captcha; an inner Page after a rejection by a non-collector child.
+  Conditions, Captcha, a one-time-password collector or a choice collector; an inner Page after a rejection by a non-collector child.
 - Replaying the `authId` of a step that led to **success** (whether a second
   session is minted).
 - Message Node, Choice Collector, Polling Wait, Email Suspend and other node

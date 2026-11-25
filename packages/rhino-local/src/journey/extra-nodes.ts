@@ -740,10 +740,18 @@ export class ExtraNodes {
     const otp = own(shared, "oneTimePassword");
     const stamp = own(shared, "oneTimePasswordTimestamp");
     const fresh = typeof stamp === "number" && this.ctx.now() / 1000 - stamp <= expiry * 60;
-    return {
-      outcome: typeof otp === "string" && otp === answer.value && fresh ? "true" : "false",
-      callbacks: [],
-    };
+    if (typeof otp === "string" && otp === answer.value && fresh) {
+      // Doc 25 (2026-11-25): a right answer consumes the password, both shared keys are gone afterwards;
+      // a wrong one leaves them. What an expired right answer leaves is unmeasured and left as it is.
+      this.ctx.evidence.measured(
+        "OneTimePasswordCollectorDecisionNode removes shared oneTimePassword and oneTimePasswordTimestamp when it takes true; a wrong answer leaves them",
+        SOURCE,
+      );
+      delete shared.oneTimePassword;
+      delete shared.oneTimePasswordTimestamp;
+      return { outcome: "true", callbacks: [] };
+    }
+    return { outcome: "false", callbacks: [] };
   }
 
   private async persistentCookieDecision(

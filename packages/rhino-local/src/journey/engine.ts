@@ -130,6 +130,8 @@ const PAGE_CHILDREN: readonly string[] = [
   "ValidatedUsernameNode",
   "MessageNode",
   "GetAuthenticatorAppNode",
+  "OneTimePasswordCollectorDecisionNode",
+  "ChoiceCollectorNode",
 ];
 /**
  * A node's stored outcome vocabulary, as doc 25's listOutcomes table reports it;
@@ -1087,10 +1089,15 @@ export class JourneyEmulator {
         return { outcome, callbacks: [] };
       }
       state.page = { counts, effects: structuredClone(collected) };
-      // Measured: a page whose only child is a Message or Get Authenticator App node leaves no
-      // pageNodeCallbacks at all (doc 25, "Nodes as Page children").
+      // Measured: a page whose only child is one of these nodes leaves no pageNodeCallbacks at all
+      // (doc 25, "Nodes as Page children"; the one-time password and choice nodes 2026-11-25).
       const display = config.nodes.length === 1 && isDocument(config.nodes[0]) &&
-        ["MessageNode", "GetAuthenticatorAppNode"].includes(String(config.nodes[0].nodeType));
+        [
+          "MessageNode",
+          "GetAuthenticatorAppNode",
+          "OneTimePasswordCollectorDecisionNode",
+          "ChoiceCollectorNode",
+        ].includes(String(config.nodes[0].nodeType));
       if (!display) {
         state.shared.pageNodeCallbacks = toWire(collected, (name) => this.missing(name)) as JsonValue;
         this.evidence.assumed(
@@ -1191,7 +1198,7 @@ export class JourneyEmulator {
   private async host(call: HostCall): Promise<JsonValue> {
     if (call.method !== "http") {
       try {
-        const result = await this.idm.onCall(call);
+        const result = await this.idm.onCall(call, true);
         this.checkHostValue(result);
         return result;
       } catch (error) {
