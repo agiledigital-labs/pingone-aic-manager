@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf, is_separator};
 use clap::Subcommand;
 use serde_json::Value;
 
-use crate::cli::force::OperationAndBackupForce;
+use crate::cli::force::{OperationAndBackupForce, OperationAndReuseForce};
 use crate::cli::{
     confirm_destructive, ensure_prod_confirmed, print_json, print_table, protected_pull_prompt,
     realm_arg, tenant_for,
@@ -43,8 +43,8 @@ pub enum JourneyCommand {
     Push {
         /// Journey (authentication tree) name.
         name: String,
-        #[arg(long)]
-        force: bool,
+        #[command(flatten)]
+        force: OperationAndReuseForce,
         #[arg(long)]
         realm: Option<String>,
         #[arg(long)]
@@ -203,6 +203,9 @@ enum PushBlockReason {
         tree_changed: bool,
         nodes_changed: usize,
     },
+    /// Existing nodes the push would newly attach, whose content differs
+    /// (`api::PushPreflight::reused`), as `type/id` labels.
+    Reuse(Vec<String>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -212,28 +215,32 @@ enum PushDecision {
     NothingToDo,
 }
 
+/// `force` overrides the snapshot checks (bare `--force`); `reuse`
+/// (`--force=reuse`) is the only override for `reused`, and is independent.
 fn push_decision(
     local: &Value,
     remote: &Value,
     snapshot: Option<&Value>,
     force: bool,
+    reuse: bool,
+    reused: &[String],
 ) -> PushDecision {
     if api::content_equal(local, remote) {
         return PushDecision::NothingToDo;
     }
-
-    let Some(snapshot) = snapshot else {
-        return if force {
-            PushDecision::Push
-        } else {
-            PushDecision::Blocked(PushBlockReason::MissingSnapshot)
-        };
-    };
-
-    if api::content_equal(remote, snapshot) || force {
+    if !force {
+        match snapshot {
+            None => return PushDecision::Blocked(PushBlockReason::MissingSnapshot),
+            Some(snapshot) if !api::content_equal(remote, snapshot) => {
+                return PushDecision::Blocked(remote_drift_reason(remote, snapshot));
+            }
+            Some(_) => {}
+        }
+    }
+    if reused.is_empty() || reuse {
         PushDecision::Push
     } else {
-        PushDecision::Blocked(remote_drift_reason(remote, snapshot))
+        PushDecision::Blocked(PushBlockReason::Reuse(reused.to_vec()))
     }
 }
 
@@ -298,6 +305,12 @@ fn push_block_message(name: &str, reason: &PushBlockReason) -> String {
                 "remote journey {name} changed since you last pulled ({changed}); re-pull or pass --force"
             )
         }
+        PushBlockReason::Reuse(nodes) => format!(
+            "journey {name} would overwrite existing node(s) {} — not part of this journey on \
+             the tenant, so not in its snapshot, and different from the export. Another \
+             journey may use them. Pass --force=reuse to overwrite them",
+            nodes.join(", ")
+        ),
     }
 }
 
@@ -578,20 +591,32 @@ struct Row {
     notes: Vec<String>,
 }
 
-/// The note for a copy whose tree lists nodes it does not carry. Not a
+/// The notes for a copy that lists nodes it does not carry. Not a
 /// refusal: the tenant's copy is read strictly (only a 404 leaves a node out),
 /// so such a node is either deleted on the tenant — a dangling reference every
 /// copy then shares — or missing from a file an older `aic` wrote while
 /// skipping unread nodes, which the comparison against the tenant shows.
-fn missing_note(side: &str, copy: &Value) -> Option<String> {
+///
+/// A copy whose references are malformed is noted too
+/// ([`drift::reference_problems`]): it is compared on every reference that
+/// can be read, and the note says which could not.
+fn copy_notes(side: &str, copy: &Value) -> Vec<String> {
     let missing = drift::missing_nodes(copy);
-    (!missing.is_empty()).then(|| {
+    let problems = drift::reference_problems(copy);
+    let missing = (!missing.is_empty()).then(|| {
         format!(
             "the {side} lists node(s) it does not carry: {} — deleted on the tenant, or left \
              out by an older pull",
             missing.join(", ")
         )
-    })
+    });
+    let problems = (!problems.is_empty()).then(|| {
+        format!(
+            "the {side}'s node references are not all readable: {}",
+            problems.join("; ")
+        )
+    });
+    missing.into_iter().chain(problems).collect()
 }
 
 fn api_not_found(error: &Error) -> bool {
@@ -748,11 +773,11 @@ pub async fn run(cmd: JourneyCommand) -> Result<()> {
             let path = export_path(&tenant, &realm, &name)?;
             let snapshot = snapshot_path(&tenant, &realm, &name)?;
             let (local_export, local_value) = read_export(&path, &name)?;
-            let remote_export = match api::pull(&tenant, &realm, &name).await {
-                Ok(export) => Some(export),
-                Err(error) if api_not_found(&error) => None,
-                Err(error) => return Err(error),
-            };
+            let api::PushPreflight {
+                remote: remote_export,
+                reused,
+            } = api::push_preflight(&tenant, &realm, &name, &local_export).await?;
+            let reused: Vec<String> = reused.iter().map(api::NodeRef::label).collect();
             let remote_value = remote_export
                 .as_ref()
                 .map(export_value)
@@ -760,7 +785,14 @@ pub async fn run(cmd: JourneyCommand) -> Result<()> {
                 .unwrap_or(Value::Null);
             let snapshot_value = read_snapshot(&snapshot)?;
 
-            match push_decision(&local_value, &remote_value, snapshot_value.as_ref(), force) {
+            match push_decision(
+                &local_value,
+                &remote_value,
+                snapshot_value.as_ref(),
+                force.operation(),
+                force.reuse(),
+                &reused,
+            ) {
                 PushDecision::NothingToDo => {
                     if let Some(remote_export) = remote_export.as_ref() {
                         write_snapshot(&tenant, &realm, &name, remote_export)?;
@@ -835,7 +867,11 @@ pub async fn run(cmd: JourneyCommand) -> Result<()> {
                     ("tenant's copy", &remote),
                 ]
                 .into_iter()
-                .filter_map(|(side, copy)| copy.as_ref().and_then(|copy| missing_note(side, copy)))
+                .flat_map(|(side, copy)| {
+                    copy.as_ref()
+                        .map(|copy| copy_notes(side, copy))
+                        .unwrap_or_default()
+                })
                 .collect();
                 if !problems.is_empty() {
                     rows.push(Row {
@@ -850,7 +886,7 @@ pub async fn run(cmd: JourneyCommand) -> Result<()> {
                 }
                 let state = drift::state(local.as_ref(), snapshot.as_ref(), remote.as_ref());
                 let parts = |a: Option<&Value>, b: Option<&Value>| match (a, b) {
-                    (Some(a), Some(b)) => drift::changed_parts(a, b),
+                    (Some(a), Some(b)) => drift::changed_parts(a, b, remote.as_ref()),
                     _ => Vec::new(),
                 };
                 rows.push(Row {
@@ -1016,11 +1052,14 @@ pub async fn run(cmd: JourneyCommand) -> Result<()> {
                 )
             };
             for (label, copy) in [(left_label, &left), (right_label, &right)] {
-                if let Some(note) = missing_note(label, copy) {
+                for note in copy_notes(label, copy) {
                     eprintln!("note: journey {name}: {note}");
                 }
             }
-            let parts = drift::changed_parts(&left, &right);
+            // The right side is the tenant's copy unless only local and
+            // snapshot are compared.
+            let current = (!local_vs_snapshot).then_some(&right);
+            let parts = drift::changed_parts(&left, &right, current);
             let shown = drift::shown_changes(&left, &right);
             if json {
                 print_json(&serde_json::json!({
@@ -1481,7 +1520,7 @@ mod tests {
         let remote = export_with("same", "script-a", "remote-rev");
 
         assert_eq!(
-            push_decision(&local, &remote, None, false),
+            push_decision(&local, &remote, None, false, false, &[]),
             PushDecision::NothingToDo
         );
     }
@@ -1493,7 +1532,7 @@ mod tests {
         let local = export_with("new", "script-a", "local-rev");
 
         assert_eq!(
-            push_decision(&local, &remote, Some(&snapshot), false),
+            push_decision(&local, &remote, Some(&snapshot), false, false, &[]),
             PushDecision::Push
         );
     }
@@ -1505,7 +1544,7 @@ mod tests {
         let local = export_with("local-change", "script-a", "local-rev");
 
         assert_eq!(
-            push_decision(&local, &remote, Some(&snapshot), false),
+            push_decision(&local, &remote, Some(&snapshot), false, false, &[]),
             PushDecision::Blocked(PushBlockReason::RemoteDrift {
                 tree_changed: true,
                 nodes_changed: 1,
@@ -1520,7 +1559,7 @@ mod tests {
         let local = export_with("local-change", "script-a", "local-rev");
 
         assert_eq!(
-            push_decision(&local, &remote, Some(&snapshot), true),
+            push_decision(&local, &remote, Some(&snapshot), true, false, &[]),
             PushDecision::Push
         );
     }
@@ -1531,7 +1570,7 @@ mod tests {
         let local = export_with("new", "script-a", "local-rev");
 
         assert_eq!(
-            push_decision(&local, &remote, None, false),
+            push_decision(&local, &remote, None, false, false, &[]),
             PushDecision::Blocked(PushBlockReason::MissingSnapshot)
         );
     }
@@ -1542,7 +1581,7 @@ mod tests {
         let local = export_with("new", "script-a", "local-rev");
 
         assert_eq!(
-            push_decision(&local, &remote, None, true),
+            push_decision(&local, &remote, None, true, false, &[]),
             PushDecision::Push
         );
     }

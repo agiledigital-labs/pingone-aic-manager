@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
 use crate::aic::api::ApiCall;
+use crate::saml::write::{MeasuredRefusal, WriteFailure, WriteStatus};
 use crate::{Error, Result};
 
 const API_VERSION: &str = "protocol=2.0,resource=1.0";
@@ -261,7 +262,7 @@ const PAGE_NODE: &str = "PageNode";
 
 /// One node a journey references: listed by the tree, or by a page's config.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct NodeRef {
+pub struct NodeRef {
     pub id: String,
     pub node_type: String,
     pub display_name: Option<String>,
@@ -270,7 +271,7 @@ pub(crate) struct NodeRef {
 }
 
 impl NodeRef {
-    fn label(&self) -> String {
+    pub fn label(&self) -> String {
         format!("{}/{}", self.node_type, self.id)
     }
 }
@@ -331,7 +332,11 @@ pub(crate) fn page_children(
 /// walk carries on with what it can address. [`journey_refs`] is the strict
 /// form every read from or write to the tenant goes through.
 ///
+/// A node the tree and a page both list counts as that page's child
+/// (`page` is set): membership is not lost to the deduplication of writes.
+///
 /// The problems:
+/// - **a tree entry without a string `nodeType`.**
 /// - **one id under two node types.** A node is a realm object at
 ///   `…/nodes/<type>/<id>`, and the export keeps one config per id, so which
 ///   endpoint that config came from or goes to would be a guess. The first
@@ -344,6 +349,10 @@ pub(crate) fn walk_refs(tree: &Value, nodes: &Map<String, Value>) -> (Vec<NodeRe
     struct Walk<'a> {
         nodes: &'a Map<String, Value>,
         types: std::collections::HashMap<String, String>,
+        /// A page listing each page-listed id, recorded on every listing —
+        /// including one deduplicated away — so a node the tree also lists
+        /// still counts as a page's child.
+        listed_by: std::collections::HashMap<String, String>,
         refs: Vec<NodeRef>,
         problems: Vec<String>,
     }
@@ -356,6 +365,11 @@ pub(crate) fn walk_refs(tree: &Value, nodes: &Map<String, Value>) -> (Vec<NodeRe
                     node.id
                 ));
                 return;
+            }
+            if let Some(page) = &node.page {
+                self.listed_by
+                    .entry(node.id.clone())
+                    .or_insert_with(|| page.clone());
             }
             if let Some(first) = self.types.get(&node.id) {
                 if *first != node.node_type {
@@ -380,29 +394,46 @@ pub(crate) fn walk_refs(tree: &Value, nodes: &Map<String, Value>) -> (Vec<NodeRe
     let mut walk = Walk {
         nodes,
         types: Default::default(),
+        listed_by: Default::default(),
         refs: Vec::new(),
         problems: Vec::new(),
     };
-    match node_refs(tree) {
-        Ok(listed) => {
-            let tree_nodes = tree.get("nodes");
-            for (id, node_type) in listed {
-                let display_name = tree_nodes
-                    .and_then(|nodes| nodes.get(&id))
-                    .and_then(|meta| meta.get("displayName"))
-                    .and_then(Value::as_str)
-                    .map(str::to_owned);
+    // Entry by entry rather than through `node_refs`, so one malformed entry
+    // is a problem beside every valid ref, not the loss of all of them.
+    match tree.get("nodes").and_then(Value::as_object) {
+        Some(listed) => {
+            for (id, meta) in listed {
+                let field = |key| meta.get(key).and_then(Value::as_str).map(str::to_owned);
+                let Some(node_type) = field("nodeType") else {
+                    walk.problems.push(format!(
+                        "journey node {id:?} has no string `nodeType`: {meta}"
+                    ));
+                    continue;
+                };
                 walk.visit(NodeRef {
-                    id,
+                    id: id.clone(),
                     node_type,
-                    display_name,
+                    display_name: field("displayName"),
                     page: None,
                 });
             }
         }
-        Err(error) => walk.problems.push(error.to_string()),
+        None => walk
+            .problems
+            .push(format!("journey tree has no `nodes` object: {tree}")),
     }
-    (walk.refs, walk.problems)
+    let Walk {
+        mut refs,
+        listed_by,
+        problems,
+        ..
+    } = walk;
+    for node in &mut refs {
+        if node.page.is_none() {
+            node.page = listed_by.get(&node.id).cloned();
+        }
+    }
+    (refs, problems)
 }
 
 /// [`walk_refs`], refusing any problem: nothing that reads a journey from the
@@ -484,6 +515,91 @@ pub async fn pull(tenant: &str, realm: &str, name: &str) -> Result<JourneyExport
     .await
 }
 
+/// What `journey push` reads before it decides: the tenant's copy of the
+/// journey, and the existing nodes the push would newly attach.
+#[derive(Debug)]
+pub struct PushPreflight {
+    /// The tenant's copy, or `None` when the tree is a 404.
+    pub remote: Option<JourneyExport>,
+    /// Nodes the local export carries and references that the tenant's copy
+    /// does not reference, which already exist on the tenant with different
+    /// content. Pushing overwrites them, and nothing in this journey's
+    /// snapshot is a baseline for them — another journey may be using them.
+    pub reused: Vec<NodeRef>,
+}
+
+/// The push preflight: [`pull`]'s read of the tenant's copy, then a read of
+/// every node the local export would newly attach — top level or page child.
+///
+/// The drift check compares the tenant's copy with the snapshot, and so can
+/// only see nodes the journey already references. An existing realm node the
+/// export starts to reference is outside both, so it is read here, through
+/// the same node reader: a 404 is a fresh id, equal content (ignoring `_rev`,
+/// as everywhere) is harmless reuse, and anything else is in
+/// [`PushPreflight::reused`] for the caller to refuse. Any other read error
+/// fails the preflight, as an unread node does in [`assemble_export_with`].
+/// One extra read per newly referenced node; none on an ordinary update.
+async fn push_preflight_with<T, TF, F, Fut>(
+    local: &JourneyExport,
+    read_tree: T,
+    mut fetch_node: F,
+) -> Result<PushPreflight>
+where
+    T: FnOnce() -> TF,
+    TF: Future<Output = Result<Value>>,
+    F: FnMut(String, String) -> Fut,
+    Fut: Future<Output = Result<Value>>,
+{
+    let local_refs = journey_refs(&local.tree, &local.nodes)?;
+    let remote = match read_tree().await {
+        Ok(tree) => Some(assemble_export_with(tree, &mut fetch_node).await?),
+        Err(Error::Api { status: 404, .. }) => None,
+        Err(error) => return Err(error),
+    };
+    let referenced: HashSet<String> = match &remote {
+        Some(remote) => journey_refs(&remote.tree, &remote.nodes)?
+            .into_iter()
+            .map(|node| node.id)
+            .collect(),
+        None => HashSet::new(),
+    };
+    let mut reused = Vec::new();
+    for node in local_refs {
+        let Some(config) = local.nodes.get(&node.id) else {
+            continue;
+        };
+        if referenced.contains(&node.id) {
+            continue;
+        }
+        match fetch_node(node.node_type.clone(), node.id.clone()).await {
+            Ok(existing) if content_equal(&existing, config) => {}
+            Ok(_) => reused.push(node),
+            Err(Error::Api { status: 404, .. }) => {}
+            Err(error) => {
+                return Err(Error::Config(format!(
+                    "could not read node {}, which this push would newly attach: {error}",
+                    node.label()
+                )));
+            }
+        }
+    }
+    Ok(PushPreflight { remote, reused })
+}
+
+pub async fn push_preflight(
+    tenant: &str,
+    realm: &str,
+    name: &str,
+    local: &JourneyExport,
+) -> Result<PushPreflight> {
+    push_preflight_with(
+        local,
+        || read_tree(tenant, realm, name),
+        |node_type, node_id| async move { read_node(tenant, realm, &node_type, &node_id).await },
+    )
+    .await
+}
+
 /// The node writes a push makes, in order, and the tree-listed nodes it skips
 /// because the export carries no config for them.
 ///
@@ -526,48 +642,93 @@ fn push_plan(export: &JourneyExport) -> Result<(Vec<NodeRef>, Vec<NodeRef>)> {
     Ok((writes, absent))
 }
 
-/// A push that stopped partway: what landed before the failing write.
+/// The answers to a node `PUT` measured as refusals: answered, and not
+/// applied (2026-11-25, `docs/api/09-journeys.md`). Every other error from a
+/// write — any other status, a lost connection, an unreadable reply — leaves
+/// its outcome unknown. The tree `PUT` has no measured refusal at all.
+const NODE_REFUSALS: &[MeasuredRefusal] = &[
+    MeasuredRefusal {
+        status: 400,
+        message: "Node does not exist",
+    },
+    MeasuredRefusal {
+        status: 400,
+        message: "Illegal child node type",
+    },
+];
+
+/// A push that stopped partway, in three groups: the writes the tenant
+/// acknowledged, the one in flight when it stopped, and those never sent.
 ///
-/// The writes are separate requests with no transaction, so a failure after
-/// the first leaves those before it on the tenant — a child already rewritten
-/// is live in an existing page. Reporting only the error would tell the
-/// operator nothing changed (`.ai/core.md` §5, the batch rule). The snapshot
-/// is not advanced: the next `status` compares against the tenant as it is.
+/// The writes are separate requests with no transaction, so the acknowledged
+/// ones stay on the tenant — a child already rewritten is live in an existing
+/// page. Reporting only the error would tell the operator nothing changed
+/// (`.ai/core.md` §5, the batch rule). The in-flight write is counted as
+/// neither: unless its answer is a measured refusal it **may have landed**
+/// (a reply lost after the tenant applied it reads exactly like one that
+/// never arrived), which is `saml::write::WriteStatus`'s rule, shared rather
+/// than restated. The snapshot is not advanced.
 #[derive(Debug)]
 pub struct PushError {
-    landed: Vec<String>,
-    failed: String,
-    total: usize,
+    acknowledged: Vec<String>,
+    stopped_at: String,
+    status: WriteStatus,
+    not_attempted: Vec<String>,
     source: Box<Error>,
 }
 
 impl PushError {
-    /// The writes that completed before the failure, as `type/id` or `tree`.
-    pub fn landed(&self) -> &[String] {
-        &self.landed
+    /// Writes the tenant acknowledged, as `type/id` or `tree`.
+    pub fn acknowledged(&self) -> &[String] {
+        &self.acknowledged
+    }
+
+    /// The write in flight when the push stopped.
+    pub fn stopped_at(&self) -> &str {
+        &self.stopped_at
+    }
+
+    /// Whether that write was refused, or may have landed.
+    pub fn status(&self) -> WriteStatus {
+        self.status
+    }
+
+    /// Writes never sent.
+    pub fn not_attempted(&self) -> &[String] {
+        &self.not_attempted
     }
 }
 
 impl std::fmt::Display for PushError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let outcome = match self.status {
+            WriteStatus::Refused => "was refused and not applied",
+            WriteStatus::AcceptedUnverified | WriteStatus::Unknown => {
+                "may have landed: whether it was applied is unknown, so do not assume it was not"
+            }
+        };
+        write!(f, "{} {outcome}: {}", self.stopped_at, self.source)?;
+        let list = |writes: &[String]| {
+            if writes.is_empty() {
+                "none".to_string()
+            } else {
+                writes.join(", ")
+            }
+        };
         write!(
             f,
-            "{} of {} writes landed, then {} failed: {}",
-            self.landed.len(),
-            self.total,
-            self.failed,
-            self.source
+            "\n  acknowledged by the tenant ({}): {}\n  not attempted ({}): {}",
+            self.acknowledged.len(),
+            list(&self.acknowledged),
+            self.not_attempted.len(),
+            list(&self.not_attempted)
         )?;
-        if !self.landed.is_empty() {
-            write!(
-                f,
-                "\n  already written to the tenant: {}",
-                self.landed.join(", ")
-            )?;
-        }
         write!(
             f,
-            "\n  the snapshot was not updated; `aic journey status` shows the tenant as it now is"
+            "\n  the snapshot was not updated. `aic journey status` reads only the nodes the \
+             tenant's tree reaches, so a node written by a create that stopped here, or newly \
+             attached by this push, will not show there — check the writes above before \
+             pushing again"
         )
     }
 }
@@ -598,35 +759,39 @@ where
     T: FnOnce(Value) -> TF,
     TF: Future<Output = Result<Value>>,
 {
-    let total = writes.len() + 1;
-    let mut landed = Vec::new();
+    let mut pending: VecDeque<String> = writes.iter().map(NodeRef::label).collect();
+    pending.push_back("tree".into());
+    let mut acknowledged = Vec::new();
+    let stop = |acknowledged: Vec<String>,
+                mut pending: VecDeque<String>,
+                source: Error,
+                measured: &[MeasuredRefusal]| {
+        let failure = WriteFailure::from_send(source, measured);
+        PushError {
+            acknowledged,
+            stopped_at: pending.pop_front().unwrap_or_default(),
+            status: failure.status,
+            not_attempted: pending.into(),
+            source: Box::new(failure.source),
+        }
+    };
     for node in writes {
-        let label = node.label();
         let body = export.nodes[&node.id].clone();
         if let Err(source) = send_node(node, body).await {
-            return Err(PushError {
-                landed,
-                failed: label,
-                total,
-                source: Box::new(source),
-            });
+            return Err(stop(acknowledged, pending, source, NODE_REFUSALS));
         }
-        landed.push(label);
+        acknowledged.extend(pending.pop_front());
     }
     if let Err(source) = send_tree(export.tree.clone()).await {
-        return Err(PushError {
-            landed,
-            failed: "tree".into(),
-            total,
-            source: Box::new(source),
-        });
+        return Err(stop(acknowledged, pending, source, &[]));
     }
-    Ok(total - 1)
+    Ok(acknowledged.len())
 }
 
 /// Push an export: its nodes, then its tree. Planned in full before the first
 /// write, so a malformed export leaves nothing on the tenant; a write that
-/// fails after that is a [`PushError`] naming what landed.
+/// fails after that is a [`PushError`] naming what was acknowledged, what may
+/// have landed and what was never sent.
 pub async fn push(
     tenant: &str,
     realm: &str,
@@ -1062,71 +1227,117 @@ mod tests {
         );
     }
 
-    /// Regression (review P1-1): a failure on the second child returned the
-    /// bare error, so the operator was not told the first child had already
-    /// been rewritten on the tenant.
-    #[tokio::test]
-    async fn a_push_that_fails_partway_names_what_landed() {
+    /// Runs the real write loop over [`whole_export`], failing the write
+    /// labelled `fail` with `error()`.
+    async fn push_failing_at(fail: &str, error: fn() -> Error) -> PushError {
         let export = whole_export();
-        let sent = std::cell::RefCell::new(Vec::new());
         let (writes, _) = push_plan(&export).unwrap();
-        let error = push_with(
+        let outcome = |label: String| async move {
+            if label == fail {
+                Err(error())
+            } else {
+                Ok(json!({}))
+            }
+        };
+        push_with(
             &export,
             writes,
-            |node, _| {
-                sent.borrow_mut().push(node.label());
-                let busy = node.id == "script";
-                async move {
-                    if busy {
-                        Err(Error::Api {
-                            status: 503,
-                            body: "unavailable".into(),
-                        })
-                    } else {
-                        Ok(json!({}))
-                    }
-                }
-            },
-            |_| {
-                sent.borrow_mut().push("tree".to_string());
-                async { Ok(json!({})) }
-            },
+            |node, _| outcome(node.label()),
+            |_| outcome("tree".into()),
         )
         .await
-        .expect_err("the second child fails");
-        // Nothing after the failing write is attempted.
-        assert_eq!(
-            sent.into_inner(),
-            ["UsernameCollectorNode/user", "ScriptedDecisionNode/script"]
-        );
-        assert_eq!(error.landed(), ["UsernameCollectorNode/user"]);
-        let message = error.to_string();
-        assert!(
-            message.contains("1 of 5 writes landed, then ScriptedDecisionNode/script failed"),
-            "{message}"
-        );
-        assert!(
-            message.contains("already written to the tenant: UsernameCollectorNode/user"),
-            "{message}"
-        );
+        .expect_err("a write fails")
+    }
 
-        // A failed tree write: every node landed.
-        let (writes, _) = push_plan(&export).unwrap();
-        let error = push_with(
-            &export,
-            writes,
-            |_, _| async { Ok(json!({})) },
-            |_| async {
-                Err(Error::Api {
-                    status: 400,
-                    body: "bad tree".into(),
-                })
-            },
-        )
-        .await
-        .expect_err("the tree fails");
-        assert_eq!(error.landed().len(), 4);
-        assert!(error.to_string().contains("then tree failed"));
+    /// Regression (review round 1 P1-1, round 2 P1-2): a push that stopped
+    /// partway used to return the bare error, and then counted the write in
+    /// flight as not landed. A reply lost after the tenant applied a write
+    /// reads exactly like one that never arrived, so only a measured refusal
+    /// — for the endpoint that gave it — is "not applied". The discriminating
+    /// inputs are a lost reply on the first child (old: "0 of 5 landed") and
+    /// on the tree (old: "4 of 5 landed"), and the page's measured 400 sent
+    /// back by the tree instead, which is not a refusal measured there.
+    #[tokio::test]
+    async fn a_push_that_stops_partway_reports_three_groups() {
+        fn lost() -> Error {
+            Error::Transport("connection reset".into())
+        }
+        fn busy() -> Error {
+            Error::Api {
+                status: 503,
+                body: "unavailable".into(),
+            }
+        }
+        fn absent_child() -> Error {
+            Error::Api {
+                status: 400,
+                body: "Invalid config: Node does not exist: user".into(),
+            }
+        }
+        const USER: &str = "UsernameCollectorNode/user";
+        const SCRIPT: &str = "ScriptedDecisionNode/script";
+        const PAGE: &str = "PageNode/page";
+        const AFTER: &str = "SetSuccessUrlNode/zafter";
+        let cases: [(&str, fn() -> Error, &[&str], WriteStatus, &[&str]); 5] = [
+            (
+                USER,
+                lost,
+                &[],
+                WriteStatus::Unknown,
+                &[SCRIPT, PAGE, AFTER, "tree"],
+            ),
+            (
+                SCRIPT,
+                busy,
+                &[USER],
+                WriteStatus::Unknown,
+                &[PAGE, AFTER, "tree"],
+            ),
+            (
+                PAGE,
+                absent_child,
+                &[USER, SCRIPT],
+                WriteStatus::Refused,
+                &[AFTER, "tree"],
+            ),
+            (
+                "tree",
+                lost,
+                &[USER, SCRIPT, PAGE, AFTER],
+                WriteStatus::Unknown,
+                &[],
+            ),
+            (
+                "tree",
+                absent_child,
+                &[USER, SCRIPT, PAGE, AFTER],
+                WriteStatus::Unknown,
+                &[],
+            ),
+        ];
+        for (fail, error, acknowledged, status, not_attempted) in cases {
+            let pushed = push_failing_at(fail, error).await;
+            let case = format!("{fail}: {pushed}");
+            assert_eq!(pushed.acknowledged(), acknowledged, "{case}");
+            assert_eq!(pushed.stopped_at(), fail, "{case}");
+            assert_eq!(pushed.status(), status, "{case}");
+            assert_eq!(pushed.not_attempted(), not_attempted, "{case}");
+        }
+
+        let message = push_failing_at(USER, lost).await.to_string();
+        assert!(
+            message.contains("UsernameCollectorNode/user may have landed"),
+            "{message}"
+        );
+        assert!(
+            message.contains("acknowledged by the tenant (0): none"),
+            "{message}"
+        );
+        assert!(message.contains("not attempted (4)"), "{message}");
+        assert!(
+            message.contains("reads only the nodes the tenant's tree reaches"),
+            "{message}"
+        );
     }
 
     /// Regression (review P2-1): an export pulled before children were

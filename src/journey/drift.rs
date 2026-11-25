@@ -142,18 +142,36 @@ impl Part {
 /// as `api::walk_refs` reads it. Lenient: a copy whose references are
 /// ambiguous is compared on what can be addressed; the tenant's copy never is
 /// one, because `api::pull` refuses it.
-fn refs(copy: &Value) -> Vec<NodeRef> {
+fn walk(copy: &Value) -> (Vec<NodeRef>, Vec<String>) {
     let empty = Map::new();
     let nodes = copy
         .get("nodes")
         .and_then(Value::as_object)
         .unwrap_or(&empty);
-    walk_refs(copy.get("tree").unwrap_or(&Value::Null), nodes).0
+    walk_refs(copy.get("tree").unwrap_or(&Value::Null), nodes)
+}
+
+fn refs(copy: &Value) -> Vec<NodeRef> {
+    walk(copy).0
+}
+
+/// What makes a copy's node references ambiguous or unreadable — a tree
+/// entry without a `nodeType`, one id under two types, a page inside a page,
+/// a page listing that cannot be read. The comparison carries on with every
+/// reference it can address; these say what it could not.
+pub fn reference_problems(copy: &Value) -> Vec<String> {
+    walk(copy).1
 }
 
 /// The parts that differ between two copies: the tree, then each node whose
 /// config differs or exists on one side only, in id order.
-pub fn changed_parts(left: &Value, right: &Value) -> Vec<Part> {
+///
+/// A node's type, page and display name come from the first copy that lists
+/// it, trying `current` first: the tenant's copy where one was read, since a
+/// child may have moved between pages since the snapshot, and its page is
+/// what `shared_with` reads sharing from. The display name falls through to
+/// a later copy when the first has none.
+pub fn changed_parts(left: &Value, right: &Value, current: Option<&Value>) -> Vec<Part> {
     let mut out = Vec::new();
     let tree_equal = match (left.get("tree"), right.get("tree")) {
         (Some(a), Some(b)) => content_equal(a, b),
@@ -170,7 +188,11 @@ pub fn changed_parts(left: &Value, right: &Value) -> Vec<Part> {
             .unwrap_or_default()
     };
     let (a, b) = (nodes(left), nodes(right));
-    let listed: Vec<NodeRef> = refs(left).into_iter().chain(refs(right)).collect();
+    let listed: Vec<NodeRef> = current
+        .into_iter()
+        .chain([left, right])
+        .flat_map(refs)
+        .collect();
     let ids: BTreeSet<&String> = a.keys().chain(b.keys()).collect();
     for id in ids {
         let same = match (a.get(id), b.get(id)) {
@@ -178,12 +200,16 @@ pub fn changed_parts(left: &Value, right: &Value) -> Vec<Part> {
             _ => false,
         };
         if !same {
-            let node = listed.iter().find(|node| node.id == *id);
+            let mut found = listed.iter().filter(|node| node.id == *id);
+            let first = found.next();
             out.push(Part::Node {
                 id: id.clone(),
-                node_type: node.map(|node| node.node_type.clone()),
-                display_name: node.and_then(|node| node.display_name.clone()),
-                page: node.and_then(|node| node.page.clone()),
+                node_type: first.map(|node| node.node_type.clone()),
+                display_name: first
+                    .into_iter()
+                    .chain(found)
+                    .find_map(|node| node.display_name.clone()),
+                page: first.and_then(|node| node.page.clone()),
             });
         }
     }
@@ -406,13 +432,13 @@ mod tests {
 
     #[test]
     fn changed_parts_name_the_node_from_its_tree_entry() {
-        let parts = changed_parts(&export("a", "s"), &export("b", "s"));
+        let parts = changed_parts(&export("a", "s"), &export("b", "s"), None);
         assert_eq!(parts.len(), 1);
         assert_eq!(parts[0].label(), "PageNode p (Page)");
         let mut retargeted = export("a", "s");
         retargeted["tree"]["entryNodeId"] = json!("c");
         assert_eq!(
-            changed_parts(&export("a", "s"), &retargeted),
+            changed_parts(&export("a", "s"), &retargeted, None),
             vec![Part::Tree]
         );
     }
@@ -488,7 +514,7 @@ mod tests {
     fn a_changed_page_child_is_named_from_its_pages_listing() {
         let mut remote = paged(true);
         remote["nodes"]["k"]["x"] = json!(1);
-        let parts = changed_parts(&paged(true), &remote);
+        let parts = changed_parts(&paged(true), &remote, None);
         assert_eq!(
             parts,
             vec![Part::Node {
@@ -516,7 +542,7 @@ mod tests {
         decoy(&mut left);
         decoy(&mut right);
         right["nodes"]["k"]["x"] = json!(1);
-        let parts = changed_parts(&left, &right);
+        let parts = changed_parts(&left, &right, None);
         assert_eq!(parts.len(), 1);
         assert_eq!(parts[0].label(), "UsernameCollectorNode k (user) in page p");
         // Nor does such a config make its entries count as missing.

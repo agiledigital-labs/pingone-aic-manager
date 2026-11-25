@@ -10,6 +10,10 @@
 //!   verb's own gate, which names what would change.
 //! - [`WriteStatus`] / [`WriteFailure`]: a failed write says which side of the
 //!   send it failed on, because "it failed" is two different claims.
+//!
+//! Outside SAML, `journey::api`'s push classifies the write it stopped on with
+//! [`WriteFailure::from_send`], so a journey push and a SAML write call the
+//! same lost reply by the same name.
 
 use crate::{Error, Result};
 
