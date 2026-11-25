@@ -1397,8 +1397,20 @@ the workspace. A page node's child nodes are part of the journey: they sit in
 the export's `nodes` map beside the page, `push` writes them before the page
 (AM refuses a page naming a child that does not exist), `status`/`diff` compare
 them, `using-script` looks inside pages, and `delete` removes them with the tree.
-An export pulled by an older `aic` holds the page without its children; pull
-again to get them.
+An export pulled by an older `aic` holds the page without its children: `push`
+refuses it before writing anything and says to pull again. `pull` and `push`
+both refuse a journey whose nodes are ambiguous — one id listed under two node
+types, or a page inside a page (which AM refuses) — naming the nodes.
+
+`push` writes each node, then the tree, as separate requests. When one fails,
+the error names the writes that already landed — they stay on the tenant — and
+the snapshot is not updated, so `status` shows the tenant as it now is.
+
+**Known limitation:** an unforced `push` checks for drift in the nodes the
+tenant's copy of the journey references. A node the local export newly
+references — an existing realm node id the tenant's journey does not list yet,
+in the tree or in a page — is written without being read first, so a change
+made to it elsewhere is overwritten. A fresh id has no such problem.
 
 ```bash
 aic journey list [--realm alpha] [--json]              # journey names
@@ -1440,26 +1452,30 @@ They compare the way `push` does, ignoring `_rev` everywhere.
   `not compared` when the tenant's copy could not be read whole — any node
   read failing with something other than 404. The row names the problem, and
   the command exits non-zero. A node that answers 404 is deleted on the
-  tenant, and is compared as absent. A copy whose tree lists a node it does not
-  carry is noted under its row (and in `notes` in `--json`) but still
+  tenant, and is compared as absent. A copy that lists a node it does not carry
+  — in its tree, or in a page's `nodes` — is noted under its row (and in `notes` in `--json`) but still
   compared. With no
   names it covers every journey that has an export or a snapshot in the realm.
   Under each row it lists the parts that moved — `tree`, or a node by type, id
-  and display name — on the `local` side (export vs snapshot) and the `remote`
+  and display name, plus `in page <id>` for a page's child — on the `local` side (export vs snapshot) and the `remote`
   side (snapshot vs tenant).
 - **Shared nodes.** A node's config is a realm object keyed by its id, so two
   journeys listing the same id share it, and pushing either rewrites it for
   both. When any node moved, `status` reads every tree in the realm once and
   marks such a node `shared with <journey>, …`. Nothing is read for that when
-  only trees moved.
+  only trees moved. A page's child is in no tree, so it is marked shared
+  through its page — with every other journey listing that page; a child that
+  some other page lists directly is not seen.
 - `--check` exits non-zero unless every journey matches the tenant (`in sync`,
   `converged`, or `no snapshot` with local matching). `--json` prints
   `{ok, journeys: [{journey, realm, state, label, matches_tenant, problems,
   notes, local_changes, remote_changes}], sharing_unknown_for}`, each change carrying
-  `shared_with`; `state` is `null` for a journey not compared, and
+  `shared_with` and `page` (the listing page's id for a page's child, else
+  `null`); `state` is `null` for a journey not compared, and
   `sharing_unknown_for` lists the trees that could not be read while looking
   for shared nodes, so a node shared only with one of them is not marked.
-- `diff` notes on stderr a side whose tree lists a node it does not carry.
+- `diff` notes on stderr a side that lists a node it does not carry, in its
+  tree or in a page's `nodes`.
   It prints each difference as a JSON pointer under the part it belongs to,
   local against remote by default; `--local-vs-snapshot` shows your edits
   only, `--snapshot-vs-remote` remote drift only. It exits non-zero when the

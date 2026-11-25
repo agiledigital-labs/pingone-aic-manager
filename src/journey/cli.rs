@@ -776,7 +776,13 @@ pub async fn run(cmd: JourneyCommand) -> Result<()> {
                 }
                 PushDecision::Push => {
                     let pushed =
-                        api::push(&tenant, &realm, &name, &local_export, ok.confirmed_prod).await?;
+                        api::push(&tenant, &realm, &name, &local_export, ok.confirmed_prod)
+                            .await
+                            .map_err(|error| {
+                                Error::Config(format!(
+                                    "push of journey {name} to {tenant}/{realm} stopped: {error}"
+                                ))
+                            })?;
                     let refreshed = api::pull(&tenant, &realm, &name).await.map_err(|error| {
                         Error::Config(format!(
                             "pushed journey {name} ({pushed} nodes) -> {tenant}/{realm}, but the \
@@ -1583,5 +1589,43 @@ mod tests {
                 ("script".to_string(), "ScriptedDecisionNode".to_string())
             ]
         );
+    }
+
+    /// Drives the real search with a stub reader. The discriminating input
+    /// is a script used only by a page's child: a search that does not
+    /// queue a page's scripted children reads the page and stops.
+    #[tokio::test]
+    async fn a_script_used_only_inside_a_page_is_found() {
+        let tree = json!({"nodes": {
+            "page": {"nodeType": "PageNode"},
+            "plain": {"nodeType": "SetSuccessUrlNode"}
+        }});
+        let search = |script_id: &'static str| {
+            let tree = tree.clone();
+            async move {
+                let reads = std::cell::RefCell::new(Vec::new());
+                let found = journey_uses_script_with(&tree, script_id, |node_type, id| {
+                    reads.borrow_mut().push(format!("{node_type}/{id}"));
+                    async move {
+                        Ok(match id.as_str() {
+                            "page" => json!({"nodes": [
+                                {"_id": "user", "nodeType": "UsernameCollectorNode"},
+                                {"_id": "script", "nodeType": "ScriptedDecisionNode"}
+                            ]}),
+                            "script" => json!({"script": "used"}),
+                            _ => json!({}),
+                        })
+                    }
+                })
+                .await;
+                (found, reads.into_inner())
+            }
+        };
+        let (found, reads) = search("used").await;
+        assert!(found);
+        // Only script-typed children are read; the plain tree node never is.
+        assert_eq!(reads, ["PageNode/page", "ScriptedDecisionNode/script"]);
+        let (found, _) = search("other").await;
+        assert!(!found, "the control: a script nothing uses");
     }
 }

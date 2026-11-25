@@ -65,8 +65,13 @@ a username collector, a password collector and a scripted decision node):
 pulled into the same flat `nodes` map as every other node (the export layout is
 unchanged), pushed before the page that names them, compared by `status`/`diff`
 and found by `using-script`. An export written before this lists a page without
-its children; `status` notes that, and `push` still writes the page and warns
-for each child it has no config for.
+its children; `status` notes that, and `push` refuses it before any write,
+naming each child it has no config for and saying to pull again. Writing the
+page anyway would either be the 400 above (child absent) or silently adopt
+whatever child config the tenant holds — neither is the export pushed. A page
+config read without its `nodes` key is an incomplete read and fails the pull,
+as in [23-promotion](23-promotion.md); one id listed under two node types, and
+a page inside a page, are refused by both pull and push.
 
 ### Redirect validation
 
