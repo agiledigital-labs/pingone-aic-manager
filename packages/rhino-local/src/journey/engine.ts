@@ -63,6 +63,8 @@ type State = {
   session?: SessionDelta;
   /** Evidence gathered before a round trip; the eventual result depends on it too. */
   provenance?: Provenance[];
+  /** The `_id` the next callback sent in this journey carries (doc 25, callback `_id`). */
+  nextCallbackId?: number;
   /** The journey's log identity (`trackingIds[0]`), kept across every round trip of it. */
   tracking?: string;
 };
@@ -641,6 +643,7 @@ export class JourneyEmulator {
           "basic callback wire envelopes reuse binding effect fields; input defaults use empty strings except HiddenValue id and TextInput defaultText",
         );
         const callbacks = toWire(result.callbacks, (name) => this.missing(name));
+        this.numberCallbacks(state, callbacks, result.pageChildren);
         state.pending = callbacks;
         return {
           status: 200,
@@ -1098,19 +1101,19 @@ export class JourneyEmulator {
           "OneTimePasswordCollectorDecisionNode",
           "ChoiceCollectorNode",
         ].includes(String(config.nodes[0].nodeType));
-      if (!display) {
-        state.shared.pageNodeCallbacks = toWire(collected, (name) => this.missing(name)) as JsonValue;
-        this.evidence.assumed(
-          "pageNodeCallbacks stores the merged callback wire array; only shared presence and lifetime are measured (the tenant's value reads as a map of callback index to child index)",
-        );
-      }
+      const children = counts.flatMap((count, index) => Array<number>(count).fill(index));
       if (
         config.nodes.some((child) => isDocument(child) && child.nodeType === "ScriptedDecisionNode")
       )
         this.measured(
           "PageNode discovery runs every scripted child once, with real effects and retained state, and ignores its goTo; submission runs it again",
         );
-      return { outcome: null, callbacks: collected, ...texts };
+      return {
+        outcome: null,
+        callbacks: collected,
+        ...texts,
+        ...(display ? {} : { pageChildren: children }),
+      };
     }
     if (collected.length) {
       // Doc 25 measured a re-send only for collectors; what a script's effects do
@@ -1119,7 +1122,8 @@ export class JourneyEmulator {
       // A rejected collector re-sends the entire page. Doc 25 (out-coll page
       // step 2): a StringAttributeInputCallback echoes its submitted value; a
       // PasswordCallback goes out as first sent, prompt only, never the value.
-      const retry: CallbackEffect[] = [];
+      const retry: CallbackEffect[] = [],
+        children: number[] = [];
       let start = 0,
         firstShape = false;
       for (const [index, count] of previous.counts.entries()) {
@@ -1139,6 +1143,7 @@ export class JourneyEmulator {
           if (sent.some((cb) => cb.type !== "PasswordCallback")) firstShape = true;
           retry.push(...structuredClone(sent));
         }
+        children.push(...Array<number>(count).fill(index));
         start += count;
       }
       if (firstShape)
@@ -1146,16 +1151,43 @@ export class JourneyEmulator {
           "a re-sent Page repeats an accepted sibling's callbacks as first sent; measured for PasswordCallback only",
         );
       state.page = previous;
-      state.shared.pageNodeCallbacks = toWire(retry, (name) => this.missing(name)) as JsonValue;
-      this.evidence.assumed(
-        "pageNodeCallbacks stores the merged callback wire array; only shared presence and lifetime are measured",
-      );
       this.measured(
         "required empty attribute re-sends the whole page with echoed values and empty failedPolicies",
       );
-      return { outcome: null, callbacks: retry, ...texts };
+      // A lone display child leaves no pageNodeCallbacks on a re-send either; that is not
+      // separately measured, and only the collectors re-send.
+      return { outcome: null, callbacks: retry, ...texts, pageChildren: children };
     }
     return { outcome, callbacks: [] };
+  }
+  /**
+   * Numbers the callbacks a response sends and, for a Page, records which child sent each in
+   * shared `pageNodeCallbacks`, a map of callback `_id` to child index that accumulates across
+   * every visit and re-send (doc 25, "Callback `_id` and `pageNodeCallbacks`", 2026-11-25).
+   */
+  private numberCallbacks(
+    state: State,
+    callbacks: WireCallback[],
+    pageChildren: number[] | undefined,
+  ): void {
+    const first = state.nextCallbackId ?? 0;
+    for (const [index, callback] of callbacks.entries()) callback._id = first + index;
+    state.nextCallbackId = first + callbacks.length;
+    this.measured(
+      "every callback a journey sends carries a top-level numeric _id counting up across the whole journey",
+    );
+    if (!pageChildren) return;
+    if (pageChildren.length !== callbacks.length) throw new Error("page callback invariant");
+    const existing = Object.hasOwn(state.shared, "pageNodeCallbacks")
+      ? state.shared.pageNodeCallbacks
+      : {};
+    if (!isDocument(existing)) this.missing("pageNodeCallbacks that is not a map");
+    const map: Document = { ...existing };
+    for (const [index, child] of pageChildren.entries()) map[String(first + index)] = child;
+    state.shared.pageNodeCallbacks = map;
+    this.measured(
+      "shared pageNodeCallbacks maps each page callback's _id to the index of the child that sent it, accumulating over every visit and re-send",
+    );
   }
   private outcomes(type: string, config: NodeDocument): readonly string[] | undefined {
     return listOutcomes(this.config, type, config, (name) => this.missing(name));

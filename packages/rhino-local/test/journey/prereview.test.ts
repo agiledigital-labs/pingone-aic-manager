@@ -166,3 +166,35 @@ describe("P2-1 ValidatedUsernameNode merges into shared objectAttributes", () =>
     refused(await req(e, fill(first.body, { 0: "neo" })), name);
   });
 });
+
+describe("P2-2 callback _id and pageNodeCallbacks", () => {
+  const PAGE = {
+    PageNode: {
+      node: {
+        nodes: [
+          { _id: "u", nodeType: "UsernameCollectorNode" },
+          { _id: "p", nodeType: "PasswordCollectorNode" },
+        ],
+      },
+    },
+    UsernameCollectorNode: { u: {} },
+    PasswordCollectorNode: { p: {} },
+  };
+  it("numbers callbacks across the journey and maps each _id to its child", async () => {
+    const e = emu(PAGE, "PageNode");
+    const first = await req(e);
+    expect((first.body as Wire).callbacks.map((cb) => cb._id)).toEqual([0, 1]);
+    // An empty username re-sends the page; its callbacks are numbered on.
+    const again = await req(e, fill(first.body, { 0: "", 1: "pw" }));
+    expect((again.body as Wire).callbacks.map((cb) => cb._id)).toEqual([2, 3]);
+    const done = await req(e, fill(again.body, { 0: "neo", 1: "pw" }));
+    // The dump's own callback continues the count.
+    expect((done.body as Wire).callbacks.map((cb) => cb._id)).toEqual([4]);
+    expect(dumped(done.body).pageNodeCallbacks).toEqual({ "0": 0, "1": 1, "2": 0, "3": 1 });
+  });
+  it("refuses a pageNodeCallbacks that is not a map", async () => {
+    const name = "pageNodeCallbacks that is not a map";
+    expectEmulationFailure(name);
+    refused(await req(emu(PAGE, "PageNode", "nodeState.putShared('pageNodeCallbacks','x')")), name);
+  });
+});

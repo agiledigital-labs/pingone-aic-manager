@@ -37,6 +37,11 @@ export type NodeResult = {
   header?: string;
   description?: string;
   stage?: string;
+  /**
+   * For a Page: the index of the child that sent each callback, in callback order. The engine
+   * records it in shared `pageNodeCallbacks` once it has numbered the callbacks.
+   */
+  pageChildren?: number[];
   abort?: Omit<AuthenticateResult, "provenance">;
   /**
    * The script's `auditEntryDetail` (string or map), for the node's completion record. A Page's

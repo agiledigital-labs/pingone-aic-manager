@@ -484,6 +484,7 @@ it.each([false, true])(
         { name: "IDToken2", value: "" },
         { name: "IDToken2validateOnly", value: false },
       ],
+      _id: 1,
     });
     const rejected = await request(emu, answer(first.body, ["invented", "Given", "", "secret"]));
     expect(rejected.status).toBe(200);
@@ -1256,14 +1257,17 @@ it("a re-sent Page echoes Name and attribute values; Password goes out as first 
   const sent = first.body as WirePage,
     retry = rejected.body as WirePage;
   expect(JSON.stringify(retry)).not.toContain("super-secret-pw");
+  // The re-sent page's callbacks are numbered on from the first send's four (doc 25, callback _id).
   expect(retry.callbacks[0]).toEqual({
     ...sent.callbacks[0],
     input: [{ name: "IDToken1", value: "invented" }],
+    _id: 4,
   });
   expect(retry.callbacks[3]).toEqual({
     type: "PasswordCallback",
     output: [{ name: "prompt", value: "Password" }],
     input: [{ name: "IDToken4", value: "" }],
+    _id: 7,
   });
   expect(retry.callbacks[1]?.output.find((field) => field.name === "value")?.value).toBe("Given");
   // The re-sent page is what the snapshot expects back.
