@@ -421,15 +421,15 @@ it("unsupported node requires an explicit declared outcome, validated when the t
   ).toMatchObject({ status: 401, body: { message: "Login failure" } });
 });
 it("missing binding use cannot be swallowed in script code", async () => {
-  expectEmulationFailure("action.putSessionProperty");
+  expectEmulationFailure("action.withMaxIdleTime");
   const result = await request(
     make(
-      "try{action.putSessionProperty('secret','value');}catch(e){}nodeState.putShared('username','invented');action.goTo('true');",
+      "try{action.withMaxIdleTime(5);}catch(e){}nodeState.putShared('username','invented');action.goTo('true');",
     ),
   );
   expect(result).toMatchObject({
     status: 501,
-    emulation: { missing: ["action.putSessionProperty"] },
+    emulation: { missing: ["action.withMaxIdleTime"] },
   });
 });
 it.each([
@@ -867,8 +867,8 @@ it.each([
   [
     "replaced bridge closure (review repro)",
     "httpClient.send.__parent__.host=function(){return '{\"result\":null}';};",
-    "action.putSessionProperty('probe','value');",
-    "action.putSessionProperty",
+    "action.withMaxIdleTime(5);",
+    "action.withMaxIdleTime",
   ],
   [
     "replaced global stub hook",

@@ -189,6 +189,8 @@ final class AmHostBridge extends BaseFunction {
       "docs/api/12-script-bindings-matrix.md (httpClient.send body serialization)";
   private static final String NONJSON_SOURCE =
       "docs/api/12-script-bindings-matrix.md (§5 non-JSON values in an object body, 2026-11-04)";
+  private static final String FAILURE_SOURCE =
+      "docs/api/25-journey-runtime.md (httpClient connection failures, 2026-11-25)";
   private static final String FORM_SOURCE =
       "docs/api/12-script-bindings-matrix.md (§6 the httpClient.send form option, 2026-11-25)";
   private static final String CONS_SOURCE =
@@ -676,6 +678,32 @@ final class AmHostBridge extends BaseFunction {
     }
   }
 
+  /** The `.get()` of an httpClient future that could not connect. */
+  private final class ThrowConnectionFailure extends BaseFunction {
+    private final String tail;
+
+    ThrowConnectionFailure(String tail) {
+      this.tail = tail;
+    }
+
+    @Override
+    public Object call(Context cx, Scriptable scope, Scriptable thisObj, Object[] args) {
+      Scriptable error =
+          errorType.construct(
+              cx,
+              top,
+              new Object[] {
+                "java.util.concurrent.ExecutionException:"
+                    + " org.forgerock.openam.scripting.wrappers.HttpClientScriptException:"
+                    + " java.lang.RuntimeException: "
+                    + tail
+              });
+      // `name` is the constructor's, not an own enumerable key (docs/api/12, JavaException).
+      ScriptableObject.defineProperty(error, "name", "JavaException", ScriptableObject.DONTENUM);
+      throw new JavaScriptException(error, null, 0);
+    }
+  }
+
   /** Returns a fixed value; backs the response's json() and text(). */
   private final class Constant extends BaseFunction {
     private final Object value;
@@ -942,6 +970,18 @@ final class AmHostBridge extends BaseFunction {
       Object reply = invoke(cx, "http", input);
       if (!(reply instanceof Scriptable)) throw protocol("journey HTTP reply shape");
       Scriptable shape = (Scriptable) reply;
+      Object failure = ScriptableObject.getProperty(shape, "failure");
+      if (failure instanceof CharSequence) {
+        // docs/api/25-journey-runtime.md (httpClient connection failures, 2026-11-25): send()
+        // returns a future and the failure is thrown by get(), as a catchable JavaException.
+        calls.note(
+            "measured",
+            "httpClient.send to a host that cannot be reached returns a future whose get() throws a JavaException naming ExecutionException, HttpClientScriptException, RuntimeException and the connection error",
+            FAILURE_SOURCE);
+        Scriptable future = cx.newObject(top);
+        ScriptableObject.putProperty(future, "get", expose(new ThrowConnectionFailure(failure.toString())));
+        return future;
+      }
       Object status = ScriptableObject.getProperty(shape, "status");
       Object body = ScriptableObject.getProperty(shape, "body");
       Object headers = ScriptableObject.getProperty(shape, "headers");
@@ -1038,6 +1078,16 @@ final class AmHostBridge extends BaseFunction {
           .append("\":")
           .append(map);
     }
+    Object session = ScriptableObject.getProperty(runtime, "sessionProperties");
+    if (session != Scriptable.NOT_FOUND
+        && (!(session instanceof ScriptableObject) || session instanceof NativeArray)) {
+      throw missing("journey session properties container");
+    }
+    out.append(",\"sessionProperties\":");
+    out.append(
+        session == Scriptable.NOT_FOUND
+            ? "{}"
+            : new Encoder(cx, "journey session property: ", null).write(session, "").text());
     out.append(",\"callbacks\":");
     out.append(new Encoder(cx, "journey callbacks value: ", null).write(queued, "callbacks").text());
     out.append(",\"javaMapObjectAttributes\":{").append(maps).append("}}");

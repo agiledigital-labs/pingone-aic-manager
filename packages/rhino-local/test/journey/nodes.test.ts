@@ -1300,8 +1300,8 @@ it("a scripted Page child after a rejecting sibling is missing before it runs", 
   });
   expect(await widgetCount(idm)).toBe(1);
 });
-it("a ValidatedUsernameNode Page child is missing even with a declared outcome", async () => {
-  const cause = "PageNode child type: ValidatedUsernameNode";
+it("a ValidatedUsernameNode Page child that does not say validateInput: false is missing", async () => {
+  const cause = "ValidatedUsernameNode validateInput: true as a PageNode child";
   expectEmulationFailure(cause);
   const emu = make(
     collectorPage(

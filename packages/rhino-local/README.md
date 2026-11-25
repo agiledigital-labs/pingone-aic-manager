@@ -2745,6 +2745,10 @@ const result = await journey.request({
 });
 ```
 
+The `http` mock may also return `{ failure: { kind: "refused" | "unknown-host" } }` or
+`{ failure: { kind: "connect-timeout", address, port } }`: the script's `httpClient.send(...).get()` then throws the
+JavaException the tenant throws (doc 25, "httpClient connection failures").
+
 The caller supplies one IDM emulator per test, shared with the journey, so
 script `openidm` calls execute managed hooks in that instance. `fork()` shares
 frozen config and the runner, forks IDM records, copies authentication snapshots,
@@ -2923,9 +2927,20 @@ carrying the tenant's `400` text.
   successful `request` carries `session: {properties, maxIdleTime?,
   maxSessionTime?}` (minutes) and `cookies` (the persistent cookie, `Secure`
   always set, `Expires` = now + `maxLife` hours, `SameSite` lower-cased);
-  `journeyHttp` emits them as `Set-Cookie`. The persistent cookie's value is an
-  HS256 JWT over username, `iat` and `exp`, since the real claims are unmeasured, and a configuration with no
-  `hmacSigningKey` ends as the tenant's empty 500. The emulator does **not**
+  `journeyHttp` emits them as `Set-Cookie`. The persistent cookie's value has the
+  tenant's shape: an HS256 JWS (`cty` JWT) over a five-part JWE. The outer part
+  is a real HMAC under `hmacSigningKey` (a plain string, or `{"$string": ...}`
+  with a literal or an `&{esv.…}` placeholder from `JourneyOptions.esv`); the
+  inner part is sealed with A128CBC-HS256 under a constant key of the emulator's
+  own (`alg` is `dir`, not the tenant's RSA1_5), carrying `sub`, `iat` and `exp`,
+  which are the emulator's claim names. So a cookie one emulator issued is read
+  by any other, `PersistentCookieDecisionNode` takes the user from the sealed
+  part (not the signing key), and a hand-signed cookie with plain claims is a
+  401, as measured (doc 25, "Persistent cookie value"). Not modelled: the RSA
+  key wrap, the tenant's claim names, an expiry rule beyond `exp`, `idleTimeout`.
+  A configuration with no `hmacSigningKey` ends as the tenant's empty 500.
+  Request cookies need no `cookieName` option: they reach the nodes, and only
+  one whose value is a configured `sessions` key is refused for want of a name. The emulator does **not**
   mint a session cookie or build `existingSession` from a newly issued tokenId.
 - `OneTimePasswordGeneratorNode` writes shared `oneTimePassword` (digit string,
   leading zeros kept) and `oneTimePasswordTimestamp` (epoch seconds); lengths
@@ -2953,6 +2968,17 @@ Also implemented from the second batch (doc 25 sections of the same date):
 empty answer. Stubs whose outcome comes from `declaredOutcomes`: push nodes,
 `PollingWaitNode`, `product-Saml2Node`, the OTP senders and a few display
 nodes.
+
+`ValidatedUsernameNode` (with `validateInput: false`), `MessageNode` and
+`GetAuthenticatorAppNode` run standalone and as `PageNode` children, as measured
+(doc 25, "Nodes as Page children"). A `MessageNode` must be the last child, and a
+display-only page leaves no `pageNodeCallbacks`.
+
+ESV placeholders in node configuration (`&{esv.…}`, bare or wrapped as
+`{"$string": …}`, `{"$int": …}` or `{"$bool": …}`) resolve from
+`JourneyOptions.esv` for the emulated node types and for custom node
+properties; `$bool` follows Java's `parseBoolean` (doc 25, "ESV placeholders in
+custom node properties"). An unconfigured ESV is `missing`.
 
 Custom Node Designer types: put the type definition in
 `JourneyConfigInput.customNodeTypes`, keyed `designer-<serviceName>`

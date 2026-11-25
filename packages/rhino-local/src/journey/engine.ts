@@ -127,6 +127,9 @@ const PAGE_CHILDREN: readonly string[] = [
   "ValidatedPasswordNode",
   "AcceptTermsAndConditionsNode",
   "product-CaptchaNode",
+  "ValidatedUsernameNode",
+  "MessageNode",
+  "GetAuthenticatorAppNode",
 ];
 /**
  * A node's stored outcome vocabulary, as doc 25's listOutcomes table reports it;
@@ -178,7 +181,7 @@ function libraryBodies(config: JourneyConfig): Record<string, string> {
 const PLACEHOLDER = /&\{esv\.([^}|]+)(?:\|[^}]*)?\}/g;
 /**
  * A node's configuration with its ESV placeholders resolved from the configured ESVs. The tenant
- * wraps some fields as `{"$string": "&{esv.x}"}` / `{"$int": ...}` (docs/api/09-journeys.md): the
+ * wraps some fields as `{"$string": "&{esv.x}"}` / `{"$int": ...}` / `{"$bool": ...}` (docs/api/09-journeys.md): the
  * wrapper is read through, and a literal in one stays itself. A placeholder with no configured
  * value is missing behaviour: guessing one would make a field read as text it never held.
  */
@@ -201,14 +204,26 @@ function resolveEsv(
     if (keys.length === 1 && keys[0] === "$string" && typeof (value as Document).$string === "string")
       return text((value as { $string: string }).$string);
     if (keys.length === 1 && keys[0] === "$int" && typeof (value as Document).$int === "string") {
-      const resolved = Number(text((value as { $int: string }).$int));
-      if (!Number.isInteger(resolved)) missing("ESV placeholder resolved to a non-integer");
-      return resolved;
+      const written = text((value as { $int: string }).$int).trim();
+      // The tenant refuses a non-integer at write time (500, measured), so none reaches a run.
+      if (!/^-?\d+$/.test(written)) missing("ESV placeholder resolved to a non-integer");
+      return Number(written);
     }
+    // Measured on a node-designer BOOLEAN property: Java's parseBoolean, so any text but "true" in any case is false.
+    if (keys.length === 1 && keys[0] === "$bool" && typeof (value as Document).$bool === "string")
+      return text((value as { $bool: string }).$bool).trim().toLowerCase() === "true";
     return Object.fromEntries(keys.map((key) => [key, walk((value as Document)[key])]));
   };
   return walk(config) as NodeDocument;
 }
+/** Session properties AM owns: measured for the first four, listed by SetSessionPropertiesNode's validation for the rest. */
+const SESSION_OWNED_MEASURED = ["UserId", "AuthLevel", "Service", "Locale"];
+const SESSION_OWNED = [
+  ...SESSION_OWNED_MEASURED,
+  ...["clientType", "FullLoginURL", "Principals", "XUSRef", "amlbcookie", "loginURL", "logoutHooks"],
+  ...["HostName", "UserToken", "IndexType", "webhooks", "UserProfile", "CharSet", "authInstant"],
+  ...["Host", "AMCtxId", "OidcSid", "sun.am.UniversalIdentifier", "Organization", "Principal"],
+];
 function mergeSession(before: SessionDelta | undefined, next: SessionDelta): SessionDelta {
   return {
     ...before,
@@ -451,7 +466,13 @@ export class JourneyEmulator {
         "initial ambient state assumes shared realm/authLevel 0 and transient maxAuthenticationSessionDuration 300000; duration value and bucket are unmeasured",
       );
       const cookieName = this.options.cookieName;
-      if (Object.keys(request.cookies ?? {}).length && !cookieName)
+      // Cookies reach nodes and scripts whatever their names. Without `cookieName` the emulator cannot say
+      // which one is the session's, so it refuses only a request that carries a known session's value.
+      const sessionValues = Object.keys(this.options.sessions ?? {});
+      if (
+        !cookieName &&
+        Object.values(request.cookies ?? {}).some((value) => sessionValues.includes(value))
+      )
         this.missing("session cookie name not supplied");
       const cookie = cookieName ? request.cookies?.[cookieName] : undefined;
       if (cookie) {
@@ -739,6 +760,7 @@ export class JourneyEmulator {
           scriptName: script.name ?? config.script ?? "script",
           scriptId: config.script ?? "script",
           ...(state.existingSession ? { existingSession: state.existingSession } : {}),
+          ...(state.session?.properties ? { priorSessionProperties: state.session.properties } : {}),
           javaMaps: {
             shared: Boolean(state.javaMap),
             transient: Boolean(frame.javaMap),
@@ -786,6 +808,7 @@ export class JourneyEmulator {
       effects: {
         sharedState: { final: Document };
         transientState: { final: Document };
+        sessionProperties: Record<string, string>;
         callbacks: CallbackEffect[];
         outcome: string | null;
         javaMapObjectAttributes: { shared: boolean; transient: boolean };
@@ -810,6 +833,11 @@ export class JourneyEmulator {
     // alongside them survives is unmeasured.
     if (result.errorMessage !== null && result.effects.callbacks.length)
       this.missing("action.withErrorMessage with queued callbacks");
+    const sessionAbort = this.scriptSessionProperties(result.effects.sessionProperties, state);
+    if (sessionAbort) {
+      if (inner) this.missing("inner tree script exception");
+      return { outcome: null, callbacks: [], abort: sessionAbort };
+    }
     state.shared = result.effects.sharedState.final;
     frame.transient = result.effects.transientState.final;
     state.javaMap = result.effects.javaMapObjectAttributes.shared;
@@ -822,6 +850,45 @@ export class JourneyEmulator {
         ? {}
         : { audit: result.auditEntryDetail.value }),
     };
+  }
+  /**
+   * What a script's `putSessionProperty` / `removeSessionProperty` leave on the session the
+   * journey makes (docs/api/25-journey-runtime.md, Session properties from scripts, 2026-11-25).
+   * Returns the abort when the script put a property AM owns.
+   */
+  private scriptSessionProperties(
+    final: Record<string, string>,
+    state: State,
+  ): Omit<AuthenticateResult, "provenance"> | undefined {
+    const incoming = state.existingSession ?? {};
+    const prior = state.session?.properties ?? {};
+    const next: Record<string, string> = {};
+    for (const [key, value] of Object.entries(final)) {
+      if (incoming[key] === value && prior[key] === undefined) continue;
+      if (prior[key] === value) {
+        next[key] = value;
+        continue;
+      }
+      if (SESSION_OWNED_MEASURED.includes(key)) {
+        this.measured(
+          "putSessionProperty of a property AM owns fails the journey with 401 Login failure",
+        );
+        return this.error(401, "Login failure");
+      }
+      if (SESSION_OWNED.includes(key))
+        this.missing(`putSessionProperty of a property AM owns: ${key}`);
+      next[key] = value;
+    }
+    for (const key of Object.keys(incoming))
+      if (!Object.hasOwn(final, key) && prior[key] === undefined)
+        this.missing("removeSessionProperty of a property on the incoming session");
+    if (Object.keys(next).length || Object.keys(prior).length) {
+      this.measured(
+        "a script's putSessionProperty reaches the session the journey makes (values as strings, later writes win, removeSessionProperty drops an earlier node's property, kept across a callback round trip)",
+      );
+      state.session = { ...state.session, properties: next };
+    }
+    return undefined;
   }
   private async execute(
     type: string,
@@ -839,7 +906,8 @@ export class JourneyEmulator {
     if (type.startsWith("designer-")) {
       const def = this.config.customNodeTypes[type];
       if (!def) this.missing(`custom node type: ${type}`);
-      const built = customNodeSource(def, config, (name) => this.missing(name));
+      const resolved = resolveEsv(config, this.options.esv ?? {}, (name) => this.missing(name));
+      const built = customNodeSource(def, resolved, (name) => this.missing(name));
       this.evidence.measured(
         "a custom node runs its type's script with the instance's properties bound; a throw, or an outcome the type does not list, takes Script Error when the type has an error outcome, else fails the journey with 401 Login failure; a missing required property fails it with 401",
         "docs/api/25-journey-runtime.md (custom node types, 2026-11-25)",
@@ -945,6 +1013,9 @@ export class JourneyEmulator {
         this.missing(`PageNode child type: ${child.nodeType}`);
       const childConfig = this.config.node(child.nodeType, child._id);
       if (!childConfig) this.missing(`PageNode child configuration: ${child._id}`);
+      // Measured with validateInput false only: the policy callback of `true` is not modelled anywhere.
+      if (child.nodeType === "ValidatedUsernameNode" && childConfig.validateInput !== false)
+        this.missing("ValidatedUsernameNode validateInput: true as a PageNode child");
       const count = previous?.counts[index] ?? 0;
       const own = previous ? submitted.slice(offset, offset + count) : [];
       offset += count;
@@ -1005,10 +1076,16 @@ export class JourneyEmulator {
         return { outcome, callbacks: [] };
       }
       state.page = { counts, effects: structuredClone(collected) };
-      state.shared.pageNodeCallbacks = toWire(collected, (name) => this.missing(name)) as JsonValue;
-      this.evidence.assumed(
-        "pageNodeCallbacks stores the merged callback wire array; only shared presence and lifetime are measured",
-      );
+      // Measured: a page whose only child is a Message or Get Authenticator App node leaves no
+      // pageNodeCallbacks at all (doc 25, "Nodes as Page children").
+      const display = config.nodes.length === 1 && isDocument(config.nodes[0]) &&
+        ["MessageNode", "GetAuthenticatorAppNode"].includes(String(config.nodes[0].nodeType));
+      if (!display) {
+        state.shared.pageNodeCallbacks = toWire(collected, (name) => this.missing(name)) as JsonValue;
+        this.evidence.assumed(
+          "pageNodeCallbacks stores the merged callback wire array; only shared presence and lifetime are measured (the tenant's value reads as a map of callback index to child index)",
+        );
+      }
       if (
         config.nodes.some((child) => isDocument(child) && child.nodeType === "ScriptedDecisionNode")
       )
@@ -1150,6 +1227,24 @@ export class JourneyEmulator {
           message: `journey HTTP mock failed: ${String(error)}`,
         },
       );
+    }
+    if (response && "failure" in response) {
+      const { failure } = response;
+      const host = new URL(url).hostname;
+      const tail =
+        failure.kind === "refused"
+          ? "java.net.ConnectException: Connection refused (connect failed)"
+          : failure.kind === "unknown-host"
+            ? `java.net.UnknownHostException: ${host}: Name or service not known`
+            : failure.kind === "connect-timeout" &&
+                typeof failure.address === "string" &&
+                Number.isInteger(failure.port)
+              ? `java.net.ConnectException: Timeout connecting to [/${failure.address}:${failure.port}]`
+              : undefined;
+      if (tail === undefined) this.missing(`httpClient mock failure: ${url}`);
+      const result = { failure: tail };
+      this.checkHostValue(result);
+      return result;
     }
     if (
       !response ||

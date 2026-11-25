@@ -14,6 +14,7 @@ const SUPPORTED = [
   "TextOutputCallback",
   "HiddenValueCallback",
   "StringAttributeInputCallback",
+  "BooleanAttributeInputCallback",
   "TermsAndConditionsCallback",
   "ReCaptchaCallback",
   "ConfirmationCallback",
@@ -37,6 +38,8 @@ export function toWire(
           value:
             callback.type === "StringAttributeInputCallback" || callback.type === "NameCallback"
               ? (callback.value ?? "")
+              : callback.type === "BooleanAttributeInputCallback"
+                ? (callback.value ?? false)
               : callback.type === "HiddenValueCallback"
                 ? (callback.id ?? "")
                 : callback.type === "TextInputCallback"
@@ -52,6 +55,7 @@ export function toWire(
       ];
     if (
       callback.type === "StringAttributeInputCallback" ||
+      callback.type === "BooleanAttributeInputCallback" ||
       callback.type === "ValidatedCreatePasswordCallback"
     )
       out.input?.push({ name: `IDToken${index + 1}validateOnly`, value: false });
@@ -74,7 +78,8 @@ export function fromWire(
         !isDocument(callback.input[0]) ||
         (typeof callback.input[0].value !== "string" &&
           !(
-            callback.type === "TermsAndConditionsCallback" &&
+            (callback.type === "TermsAndConditionsCallback" ||
+              callback.type === "BooleanAttributeInputCallback") &&
             typeof callback.input[0].value === "boolean"
           ) &&
           !(
@@ -96,6 +101,7 @@ export function fromWire(
       effect.value = callback.input[0].value;
     if (
       callback.type === "StringAttributeInputCallback" ||
+      callback.type === "BooleanAttributeInputCallback" ||
       callback.type === "ValidatedCreatePasswordCallback"
     ) {
       if (

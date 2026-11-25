@@ -1277,6 +1277,7 @@ describe("G6: slash-path attribute names", () => {
                           type: "boolean",
                           title: "Trust this device",
                         },
+                        attempts: { type: "number", title: "Attempts" },
                       },
                     },
                   },
@@ -1315,11 +1316,11 @@ describe("G6: slash-path attribute names", () => {
     expectEmulationFailure("AttributeCollectorNode schema: givenName/otp");
     expect((await post(collector(["givenName/otp"]))).status).toBe(501);
   });
-  it("a slash path that ends on a non-string is missing", async () => {
+  it("a slash path that ends on a type with no callback modelled is missing", async () => {
     expectEmulationFailure(
-      "AttributeCollectorNode string schema title: preferences/remember",
+      "AttributeCollectorNode string or boolean schema title: preferences/attempts",
     );
-    expect((await post(collector(["preferences/remember"]))).status).toBe(501);
+    expect((await post(collector(["preferences/attempts"]))).status).toBe(501);
   });
 });
 

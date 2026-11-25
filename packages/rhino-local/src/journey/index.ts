@@ -8,7 +8,9 @@ export type {
   ScriptDocument,
   AuthenticateRequest,
   AuthenticateResult,
+  HttpFailure,
   HttpMock,
+  HttpMockResponse,
   HttpWire,
 } from "./types.ts";
 export { JourneyEmulator } from "./engine.ts";

@@ -61,6 +61,8 @@ function setNested(target: Document, path: string[], value: JsonValue): void {
   setNested(child, rest, value);
   setOwn(target, head, child);
 }
+const BOOLEAN_SOURCE =
+  "docs/api/25-journey-runtime.md (Attribute Collector boolean attributes, 2026-11-25)";
 const VALIDATE_SOURCE =
   "docs/api/25-journey-runtime.md (Attribute Collector validateInputs, 2026-11-25)";
 // Only "not-an-email" failing and an ordinary address passing were measured; the rule is a guess.
@@ -417,32 +419,66 @@ export class JourneyNodes {
             level = property.properties;
           }
         }
+        const isBoolean = property?.type === "boolean";
         if (
           !property ||
-          property.type !== "string" ||
+          (property.type !== "string" && !isBoolean) ||
           typeof property.title !== "string"
         )
           this.missing(
-            `AttributeCollectorNode string schema title: ${attribute}`,
+            `AttributeCollectorNode string or boolean schema title: ${attribute}`,
           );
-        if (path.length > 1)
+        if (path.length > 1 && !isBoolean)
           this.evidence.assumed(
             "AttributeCollectorNode treats a slash-path string attribute like a flat one; the path walk and nested storage were measured with a boolean property",
           );
         const cb = submitted[index];
-        if (
-          cb &&
-          (cb.type !== "StringAttributeInputCallback" ||
-            cb.name !== attribute ||
-            typeof cb.value !== "string")
-        )
+        const wireType = isBoolean
+          ? "BooleanAttributeInputCallback"
+          : "StringAttributeInputCallback";
+        if (cb && (cb.type !== wireType || cb.name !== attribute))
+          this.missing("AttributeCollectorNode callback submission");
+        if (cb && isBoolean && typeof cb.value !== "boolean") {
+          // Measured: a string answer to a boolean attribute is a 400 from the endpoint, not a
+          // retry and not a coercion (docs/api/25-journey-runtime.md, Attribute Collector booleans).
+          this.evidence.measured(
+            "AttributeCollectorNode answered a boolean attribute with a string: 400 Bad Request",
+            BOOLEAN_SOURCE,
+          );
+          return {
+            outcome: null,
+            callbacks: [],
+            abort: {
+              status: 400,
+              body: { code: 400, reason: "Bad Request", message: "Bad Request" },
+            },
+          };
+        }
+        if (cb && !isBoolean && typeof cb.value !== "string")
           this.missing("AttributeCollectorNode callback submission");
         if (cb?.validateOnly === true && !validate)
           this.missing("AttributeCollectorNode validateOnly");
-        const answer = typeof cb?.value === "string" ? cb.value : "";
+        const answer: JsonValue = isBoolean
+          ? typeof cb?.value === "boolean"
+            ? cb.value
+            : false
+          : typeof cb?.value === "string"
+            ? cb.value
+            : "";
         let policies: Document = {};
         const failedPolicies: string[] = [];
-        if (validate) {
+        if (validate && isBoolean) {
+          // Measured: a boolean attribute sends `policies: {}` under validateInputs true and no
+          // answer to it fails. A supplied policy naming requirements is not modelled.
+          if (this.attributePolicies?.[attribute]?.requirements.length)
+            this.missing(
+              `AttributeCollectorNode policy requirement on a boolean attribute: ${attribute}`,
+            );
+          this.evidence.measured(
+            "AttributeCollectorNode validateInputs true over a boolean attribute sends empty policies",
+            BOOLEAN_SOURCE,
+          );
+        } else if (validate) {
           const policy = this.attributePolicies?.[attribute];
           if (!policy)
             this.missing(
@@ -467,7 +503,7 @@ export class JourneyNodes {
                 failedPolicies.push('{ "policyRequirement": "REQUIRED" }');
             } else if (
               policy.requirements.includes("VALID_EMAIL_ADDRESS_FORMAT") &&
-              !looksLikeEmail(answer)
+              !looksLikeEmail(String(answer))
             )
               failedPolicies.push(
                 '{ "policyRequirement": "VALID_EMAIL_ADDRESS_FORMAT" }',
@@ -487,7 +523,7 @@ export class JourneyNodes {
             "docs/api/25-journey-runtime.md (Attribute Collector, a non-required attribute left blank, 2026-11-04)",
           );
         callbacks.push({
-          type: "StringAttributeInputCallback",
+          type: wireType,
           name: attribute,
           prompt: property.title,
           required: config.required === true,

@@ -126,8 +126,26 @@ boolean it does have.
 | Stored value | **Nested**: shared `objectAttributes` held `{"preferences":{"remember":true}}`, with no flat `preferences/remember` key | — |
 | Key order | `["preferences/remember","givenName"]` stored `{"givenName":…,"preferences":{…}}`, and the flat `["sn","givenName"]` stored `{"givenName":…,"sn":…}`: top-level keys are **alphabetical**, not in collection order | Both orders collected the same pair the other way round |
 
-A boolean property is a `BooleanAttributeInputCallback` with a boolean `value` and `IDToken1` input; that callback
-is not built by the emulator. A **string** slash path was not measured (no such property on the sandbox).
+A boolean property is a `BooleanAttributeInputCallback`; see the next section. A **string** slash path was not
+measured (no such property on the sandbox).
+
+### Attribute Collector boolean attributes (verified 2026-11-25)
+
+`AttributeCollectorNode` over the nested boolean `preferences/remember` (title `Trust this device`) on the sandbox with
+throwaway `kdemo-g3-` objects (all deleted; get-after 404). Probe: `scripts/experiment-journey-attribute-boolean.sh`.
+
+| Case | Measured |
+| --- | --- |
+| First callback | `BooleanAttributeInputCallback`; output `name` (the path as written), `prompt` (the schema title), `required`, `policies` `{}`, `failedPolicies` `[]`, `validateOnly` false, `value` **false**; inputs `IDToken<n>` (a boolean) and `IDToken<n>validateOnly` |
+| Answered `true` / `false` | Stored as a JSON **boolean** (`{ "preferences": { "remember": true } }`), nested by the path |
+| `required: true`, answered `false` | Accepted: `false` is a value, the page does not stay |
+| `validateInputs: true` | Same callback, `policies` still `{}`; `true` accepted |
+| Answered with the string `"true"` | `400 {"code":400,"reason":"Bad Request","message":"Bad Request"}`; not coerced and not a retry |
+| Beside a string attribute | The string stays a `StringAttributeInputCallback` (`IDToken2`), in collection order; stored keys alphabetical as before |
+
+Not measured: a boolean that is not nested (this realm's only boolean attribute is `preferences/remember`; the path
+walk is the same), a policy attached to a boolean, `validateOnly` true on a boolean, and a re-sent page echoing a
+boolean answer. The emulator refuses a supplied `attributePolicies` entry with requirements on a boolean as missing.
 
 ## Inner Tree
 
@@ -565,8 +583,8 @@ same answers).
 | `useSecureCookie: false` | `Secure` was **still set** (the platform forces it) | `true`: set |
 | `sameSite` | `LAX`, `STRICT`, `NONE` came back as `lax`, `strict`, `none` | — |
 
-Not measured: the value's claims (it looks like a signed JWT), the effect of
-`idleTimeout`, and signing through a secret label.
+The value's shape is under "Persistent cookie value" below. Not measured: the
+effect of `idleTimeout`, and signing through a secret label.
 
 ### One Time Password Generator (`listOutcomes`: `["outcome"]`)
 
@@ -605,14 +623,24 @@ Not measured: whether a re-sent `NameCallback` echoes the submitted value.
 
 ### CAPTCHA (`product-CaptchaNode`, `listOutcomes`: `["true","false"]`)
 
-Only the callback was measured: a `ReCaptchaCallback` with outputs
-`recaptchaSiteKey`, `captchaApiUri`, `captchaDivClass`, `reCaptchaV3`,
-`disableSubmission` (from `siteKey`, `apiUri`, `divClass`, `reCaptchaV3`,
-`disableSubmission`) and an empty-string `IDToken1`. A fake token, and an empty
-one, ended the journey with 401 `Login failure` (not `false`), with the
-provider's published always-pass test keys as well as with fake ones, so
-neither outcome was reached; verification calls a provider that the harness
-cannot reproduce, and the emulator takes the verdict from the caller.
+A `ReCaptchaCallback` with outputs `recaptchaSiteKey`, `captchaApiUri`, `captchaDivClass`, `reCaptchaV3`,
+`disableSubmission` (from `siteKey`, `apiUri`, `divClass`, `reCaptchaV3`, `disableSubmission`) and an empty-string
+`IDToken1`. The node's other stored fields (`secretKey`, `scoreThreshold` a string such as `"0.5"`, `captchaUri`) do not
+reach the callback.
+
+Re-measured 2026-11-25 (sandbox, throwaway `kdemo-g3-` trees and nodes, deleted; get-after 404; probe
+`scripts/experiment-journey-captcha-v3.sh`) with invented site and secret keys, `reCaptchaV3` true and false, standalone and
+as the last child of a Page after a username collector:
+
+| Case | Measured |
+| ---- | -------- |
+| `reCaptchaV3: true` | The same callback with `reCaptchaV3` **true**; every other output as with false; the same `true`/`false` outcomes |
+| An **empty** token, v2 or v3, alone or in a Page | `401 Login failure` |
+| A **non-empty fake** token, v2 or v3, alone or in a Page | `200`, the node left by **`false`** (the page's `false` outcome in a Page; the collector's username was written) |
+
+This corrects the earlier note here that a fake token also ended 401: with invented keys the non-empty token reached
+`false`. Not measured: a token the provider accepts (so `true` is never reached by a probe), and what `scoreThreshold` does.
+The emulator takes the verdict for a non-empty token from `JourneyOptions.declaredOutcomes`, and fails an empty one 401.
 
 ### Message, choice and state nodes (2026-11-25)
 
@@ -673,6 +701,41 @@ A valid cookie takes `true` and writes shared `username` = the IDM user's
 one, the wrong key or the wrong cookie name take `false`; "notajwt" is `401`.
 `enforceClientIp: true` with the same IP and `idleTimeout` 0 or 1 on a fresh
 cookie still took `true`; expiry and idle behaviour are otherwise unmeasured.
+
+### Persistent cookie value (2026-11-25)
+
+Measured with `scripts/experiment-journey-persistent-cookie.sh` (`kdemo-g3-`
+objects, deleted; a made-up key, never an ESV). `SetPersistentCookieNode`'s
+value is **a compact JWS whose payload is the base64url of a five-part compact
+JWE**: outer header `{"typ":"JWT","cty":"JWT","alg":"HS256"}`, inner header
+`{"typ":"JWT","enc":"A128CBC-HS256","alg":"RSA1_5"}`, about 1.5 KB in all. The
+inner part is encrypted under the tenant's own key, so a caller cannot read or
+forge it. `hmacSigningKey` as a plain base64 string and as `{"$string": "<same
+literal>"}` both mint, and the two cookies have the same shape.
+
+Replayed against a `PersistentCookieDecisionNode` holding the same key:
+
+| Request cookie | Result |
+| --- | --- |
+| The minted value | `true`; shared `username` = the user's `_id` |
+| Another cookie name | `false` |
+| The node holds another key | `false` |
+| Outer re-signed with the same key (control) | `true`, same user |
+| Outer re-signed with the **inner part of another user's cookie** | `true`, **the other user's `_id`**: the identity is in the encrypted part, the signing key only vouches for the outer |
+| One ciphertext byte of the inner part flipped, outer re-signed | `false` |
+| Hand-signed: payload is plain JSON claims (right key, with or without `cty`) | **`401 Login failure`** |
+| Hand-signed: payload is five dotted garbage parts | `false` |
+| Two dotted parts | `false` |
+| Empty value, or no dot | `401 Login failure` |
+
+Not measured: the inner claim names, the expiry rule (the cookie's `Expires`
+is the only known bound), `idleTimeout`, and a value with other dot counts.
+The emulator models the outer JWS exactly and an inner five-part JWE of the
+same cipher under a key of its own, so a cookie it issued is read back by any
+emulator and a hand-signed one is refused as above; it does not model the RSA
+key wrap, and the claim names inside (`sub`, `iat`, `exp`) are its own.
+Without `cookieName` in the options a request cookie reaches the nodes; it is
+refused only when its value is a configured session's.
 
 ### Custom (Node Designer) node types (2026-11-25)
 
@@ -767,6 +830,109 @@ transient value winning. Measured on the sandbox with throwaway trees:
 **Not measured:** a key held as an object in both maps (the emulator reports it
 missing rather than guessing a deep merge).
 
+## Nodes as Page children (2026-11-25)
+
+Measured on the sandbox with throwaway journeys, each node run standalone and as a
+`PageNode` child alone, after a `UsernameCollectorNode` and before one.
+
+| Node | Callbacks as a child | Answer | State written |
+| ---- | -------------------- | ------ | ------------- |
+| `MessageNode` | `TextOutputCallback` (messageType `"0"`) + `ConfirmationCallback` (options yes/no, default 1), same as standalone | index 0 gives `true`; 1 and 5 give `false` | none |
+| `ValidatedUsernameNode` (`validateInput: false`) | one `NameCallback`, prompt `User Name` | any text; empty writes nothing and the node still leaves by `outcome` | shared `username` and `objectAttributes.userName` |
+| `GetAuthenticatorAppNode` | `TextOutputCallback` (messageType `"4"`) + `ConfirmationCallback` with one option, the continue label | any index (0, 1, 7) leaves by `outcome` | none |
+
+- Outcomes: `MessageNode` `true`/`false`, `GetAuthenticatorAppNode` `outcome`.
+- `GetAuthenticatorAppNode` message: a script
+  `document.getElementById("callback_0").innerHTML="<center>MSG</center>"`;
+  `callback_0` is constant whatever the page position. `{{appleLink}}` expands
+  to `<a target='_blank' href='LINK'>Apple App Store</a>`, `{{googleLink}}` to
+  `<a target='_blank' href='LINK'>Google Play Store</a>`. With config `{}` the
+  message is `Get the app from the {{appleLink}} or on {{googleLink}}` and the
+  links are the PingID store pages; the continue label defaults to `Continue`.
+- Page rules: a `MessageNode` before another child is refused on PUT (400
+  `Only the last node in a page can have more than one outcome`);
+  `ValidatedUsernameNode` and `GetAuthenticatorAppNode` (one outcome) may be
+  non-last.
+- Two `NameCallback` children: `username` is the later child's answer;
+  `objectAttributes.userName` is written only by `ValidatedUsernameNode`.
+- A page whose only children are display nodes (`MessageNode`,
+  `GetAuthenticatorAppNode`) leaves no `pageNodeCallbacks` in shared state.
+- Where `pageNodeCallbacks` exists the tenant's value is a map of callback index
+  to child index (`{ "0": 0, "1": 1 }`); the emulator still stores a wire array
+  there. That shape is assumed, now known to differ; a script reading it is
+  unmodelled.
+- Not modelled, loud `missing`: `ValidatedUsernameNode` with `validateInput:
+  true` as a child; `GetAuthenticatorAppNode` messages with other wildcards
+  (`{{appleLabel}}`, `{{googleLabel}}`) or a quote, backslash or line break.
+
+## DataStoreDecisionNode and accountStatus (2026-11-25)
+
+Measured on the sandbox: one throwaway `alpha_user` per `accountStatus`, all with the same password; a seed script put
+the user name in shared `username` and the password in transient `password`; `DataStoreDecisionNode` led to dump
+nodes. Probe: `scripts/experiment-journey-datastore-status.sh`. All objects `kdemo-g3-`, deleted, get-after 404.
+
+| `accountStatus` written | Stored | Right password | Wrong password |
+| ----------------------- | ------ | -------------- | -------------- |
+| `active` | `active` | `true` | not run |
+| `Active` | `Active` | `true` | not run |
+| `inactive` | `inactive` | `true` | `false` |
+| `Inactive` | `Inactive` | `true` | not run |
+| `""` | **`active`** | `true` | not run |
+| `null` | **`active`** | `true` | not run |
+| absent | **`active`** | `true` | `false` |
+
+- The node does not read `accountStatus`: any status, in any case, takes the password verdict. The emulator used to
+  refuse anything but `active` as missing; that guess is gone.
+- Separately, the tenant's managed object turned `""`, `null` and an absent status into `active` on create. The IDM
+  emulator does not model that default (a `null` status is rejected there), so a fixture that needs a status other than
+  the ones above says so itself.
+- Not measured: whether a later node (session creation) refuses an inactive account after a `true`.
+
+## Session properties from scripts (2026-11-25)
+
+`action.putSessionProperty` / `removeSessionProperty` in a next-gen scripted decision node, measured on the sandbox with
+throwaway `kdemo-g3-` trees and users (all deleted; get-after 404). A script identified a user and called the methods,
+the journey succeeded, and a second journey given the first's session cookie dumped `existingSession`. Probe:
+`scripts/experiment-journey-session-property.sh`.
+
+| Case | Measured |
+| ---- | -------- |
+| `goTo("true").putSessionProperty("A","1").putSessionProperty("B","2")` | Both on the session |
+| Put then remove the same key in one script | Absent |
+| Script 1 puts A and B, script 2 puts A again and removes B | A is the second value, B is absent: a later node sees and can remove an earlier node's property, and the last write wins |
+| A number value (`5`) | The string `"5"` |
+| Put, then a later node waits on a callback, then success | Kept |
+| Put `UserId`, `AuthLevel`, `Service` or `Locale` | The journey fails `401 Login failure` with no session |
+| Put `UserId`, then a node that sends a callback | `401` straight away: the callback was never sent, so the failure is at the put, not at session creation |
+
+Not measured: the other AM-owned names for a script (the emulator refuses them as `missing`; the 24-name list is
+`SetSessionPropertiesNode`'s validation above), `removeSessionProperty` of a property on the incoming session (`missing`),
+`withMaxIdleTime` / `withMaxSessionTime` on the action (still refused), and a property put in an inner tree.
+
+## httpClient connection failures (2026-11-25)
+
+`httpClient.send(...)` to a host that cannot be reached, in a next-gen scripted decision, with `send` and `.get()` in
+separate `try` blocks. Sandbox, throwaway `kdemo-g3-` trees and scripts (deleted; get-after 404). Probe:
+`scripts/experiment-journey-http-failure.sh`. Targets: loopback port 1, a `.invalid` name, a documentation address.
+
+| Target | Thrown by | Message after `java.util.concurrent.ExecutionException: org.forgerock.openam.scripting.wrappers.HttpClientScriptException: java.lang.RuntimeException: ` |
+| ------ | --------- | ------- |
+| refused (`127.0.0.1:1`) | `.get()` | `java.net.ConnectException: Connection refused (connect failed)` |
+| unresolvable name | `.get()` | `java.net.UnknownHostException: <host>: Name or service not known` |
+| non-routable (`192.0.2.1:81`) | `.get()` | `java.net.ConnectException: Timeout connecting to [/192.0.2.1:81]` |
+
+- `send()` itself returns an object; nothing throws until `.get()`. The thrown value has `name` `JavaException`,
+  `String(e)` is `JavaException: <message>`, `e instanceof Error` is true, and its own keys are
+  `message,fileName,lineNumber,stack,javaException,rhinoException` (`name` is not one). `e.javaException.getClass()` throws.
+- The stack's first line is `\tat <script name>:<line>`.
+- A non-routable address ended in the timeout above rather than hanging the script.
+
+The emulator's `JourneyOptions.http` mock may return `{ failure: { kind: "refused" } }`,
+`{ failure: { kind: "unknown-host" } }` (the host is the URL's) or
+`{ failure: { kind: "connect-timeout", address, port } }` (the tenant names the resolved address, so the mock says it);
+any other kind is `missing`. Not modelled: the `javaException` and `rhinoException` own keys, the stack text, and failures
+of other kinds (TLS, a reset after connect, a read timeout), none measured.
+
 ## Not yet measured
 
 None of these was exercised; do not build on them as measured:
@@ -790,3 +956,28 @@ None of these was exercised; do not build on them as measured:
   tree, or with a configuration other than the one listed there.
 - Any of this in realm `bravo` or under a `noSession` / `transactionalOnly`
   tree.
+
+### ESV placeholders in custom node properties (2026-11-25)
+
+Measured with `scripts/experiment-journey-esv-placeholders.sh` (`kdemo-g3-`
+type and nodes, deleted; it reads one ESV the sandbox already holds of each
+type and creates none). A node-designer type with a BOOLEAN, a STRING and a
+NUMBER property, its instances `PUT` with a placeholder, and the script
+reporting `typeof properties.<name>`:
+
+| Instance value | Result |
+| --- | --- |
+| BOOLEAN `{"$bool": "&{esv.<bool ESV>}"}` | stored; the script sees a **boolean** equal to the ESV |
+| BOOLEAN `{"$bool": "true"}`, `"TRUE"`, `"false"` | boolean `true`, `true`, `false` |
+| BOOLEAN `{"$bool": "maybe"}` | stored; boolean **`false`** (any text but `true`, any case) |
+| NUMBER `{"$int": "&{esv.<int ESV>}"}` and `{"$int": "7"}` | stored; a **number** |
+| NUMBER `{"$int": "abc"}`, `{"$int": "1.5"}` | `PUT` refused `500` with an empty body |
+| STRING `{"$string": "&{…}"}`, bare `"&{…}"`, embedded `"a-&{…}-b"` | stored; the script sees the substituted **string** (a bool ESV reads `"true"`) |
+| BOOLEAN or NUMBER with a **bare** `"&{…}"` | `PUT` refused `400 Invalid attribute` |
+| Any placeholder naming an ESV that is not defined | `PUT` refused `400` (`Unable to evaluate the placeholder…`) |
+
+So the wrapper names the property's type (`$bool`, `$int`, `$string`) and a
+bare placeholder is only legal in a STRING property. The emulator reads all
+three wrappers in a custom node's properties and in the built-in nodes it
+emulates, from `JourneyOptions.esv`; a bare placeholder in a BOOLEAN or NUMBER
+property, and a property holding another type than it declares, are `missing`.

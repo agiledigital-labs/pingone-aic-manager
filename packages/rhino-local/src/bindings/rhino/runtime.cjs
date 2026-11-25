@@ -5249,6 +5249,11 @@ function __rhinoLocalSeed(given) {
   __rhinoLocal.initialTransient = __rhinoLocalClone(__rhinoLocal.transient);
   __rhinoLocal.initialSecure = __rhinoLocalClone(__rhinoLocal.secure);
   __rhinoLocal.sessionProperties = __rhinoLocalClone(given.existingSession || {});
+  if (given.priorSessionProperties) {
+    Object.keys(given.priorSessionProperties).forEach(function (key) {
+      __rhinoLocal.sessionProperties[key] = given.priorSessionProperties[key];
+    });
+  }
   __rhinoLocal.initialSessionProperties = __rhinoLocalClone(__rhinoLocal.sessionProperties);
   __rhinoLocal.managed = __rhinoLocalClone(given.managed || {});
   __rhinoLocal.identityCustomAttrs = __rhinoLocalClone(given.identityCustomAttrs || {});

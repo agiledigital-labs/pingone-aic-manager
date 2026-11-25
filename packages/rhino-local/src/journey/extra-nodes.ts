@@ -4,7 +4,8 @@
  * CAPTCHA stub. Each is read from the node JSON as the tenant stores it and measured on a tenant
  * (docs/api/25-journey-runtime.md, "Built-in node types", 2026-11-25).
  */
-import { createHmac, randomInt } from "node:crypto";
+import { randomInt } from "node:crypto";
+import { mintCookie, readCookie } from "./cookie.ts";
 import type { CallbackEffect } from "../case/types.ts";
 import { EmulationFailure } from "../emulation.ts";
 import { isDocument, own, setOwn } from "../idm/document.ts";
@@ -31,6 +32,7 @@ export const EXTRA_OUTCOMES: Readonly<Record<string, readonly string[]>> = Objec
   AuthLevelDecisionNode: ["true", "false"],
   MessageNode: ["true", "false"],
   ValidatedUsernameNode: ["outcome"],
+  GetAuthenticatorAppNode: ["outcome"],
   OneTimePasswordCollectorDecisionNode: ["true", "false"],
   PersistentCookieDecisionNode: ["true", "false"],
   // Stubs (below): vocabularies as listOutcomes reports them with the type's template configuration.
@@ -86,6 +88,11 @@ export function extraOutcomes(type: string, node: NodeDocument): readonly string
 }
 
 const SOURCE = "docs/api/25-journey-runtime.md (built-in node types, 2026-11-25)";
+const PAGE_CHILD_SOURCE = "docs/api/25-journey-runtime.md (Nodes as Page children, 2026-11-25)";
+const APP_MESSAGE = "Get the app from the {{appleLink}} or on {{googleLink}}";
+const APPLE_LINK = "https://apps.apple.com/app/pingid/id891247102";
+const GOOGLE_LINK = "https://play.google.com/store/apps/details?id=prod.com.pingidentity.pingid";
+const COOKIE_SOURCE = "docs/api/25-journey-runtime.md (Persistent cookie value, 2026-11-25)";
 const SYSTEM_PROPERTIES = [
   "clientType",
   "FullLoginURL",
@@ -226,8 +233,10 @@ export class ExtraNodes {
     );
     const user = matches[0];
     if (!user) return { outcome: "false", callbacks: [] };
-    if (user.accountStatus !== undefined && user.accountStatus !== "active")
-      this.ctx.missing("DataStoreDecisionNode over an account that is not active");
+    evidence.measured(
+      "DataStoreDecisionNode does not read accountStatus: any status, in any case, takes the password verdict",
+      "docs/api/25-journey-runtime.md (DataStoreDecisionNode and accountStatus, 2026-11-25)",
+    );
     if (typeof user.password !== "string")
       this.ctx.missing("DataStoreDecisionNode over a user with no password");
     evidence.measured(
@@ -294,16 +303,17 @@ export class ExtraNodes {
       };
     }
     const now = this.ctx.now();
-    const part = (value: JsonValue): string =>
-      Buffer.from(JSON.stringify(value)).toString("base64url");
-    const signing = `${part({ alg: "HS256", typ: "JWT" })}.${part({
-      sub: typeof shared.username === "string" ? shared.username : null,
-      iat: Math.floor(now / 1000),
-      exp: Math.floor(now / 1000) + Math.round(maxLife * 3600),
-    })}`;
-    const value = `${signing}.${createHmac("sha256", Buffer.from(key, "base64")).update(signing).digest("base64url")}`;
-    evidence.assumed(
-      "SetPersistentCookieNode value is an HS256 JWT over username, iat and exp; its real claims are unmeasured",
+    const value = mintCookie(
+      {
+        sub: typeof shared.username === "string" ? shared.username : null,
+        iat: Math.floor(now / 1000),
+        exp: Math.floor(now / 1000) + Math.round(maxLife * 3600),
+      },
+      key,
+    );
+    evidence.measured(
+      "SetPersistentCookieNode's value is an HS256 JWS (typ JWT, cty JWT) over a five-part encrypted JWE; the emulator's inner part is its own A128CBC-HS256 seal over sub, iat and exp, which are the emulator's claim names (the tenant's are unreadable)",
+      COOKIE_SOURCE,
     );
     evidence.assumed(
       "SetPersistentCookieNode idleTimeout has no measured effect and is not modelled",
@@ -414,7 +424,8 @@ export class ExtraNodes {
    */
   private captcha(config: NodeDocument, id: string, submitted: CallbackEffect[]): NodeResult {
     const { evidence } = this.ctx;
-    if (config.reCaptchaV3 === true) this.ctx.missing("product-CaptchaNode reCaptchaV3: true");
+    if (config.reCaptchaV3 !== undefined && typeof config.reCaptchaV3 !== "boolean")
+      this.ctx.missing("product-CaptchaNode reCaptchaV3 configuration");
     for (const key of ["siteKey", "apiUri", "divClass"] as const)
       if (typeof config[key] !== "string")
         this.ctx.missing(`product-CaptchaNode ${key} configuration`);
@@ -433,13 +444,29 @@ export class ExtraNodes {
             recaptchaSiteKey: config.siteKey as string,
             captchaApiUri: config.apiUri as string,
             captchaDivClass: config.divClass as string,
-            reCaptchaV3: false,
+            reCaptchaV3: config.reCaptchaV3 === true,
             disableSubmission: config.disableSubmission,
           },
         ],
       };
     if (submitted.length !== 1 || submitted[0]?.type !== "ReCaptchaCallback")
       this.ctx.missing("product-CaptchaNode callback submission");
+    // Measured with reCaptchaV3 true and false: an empty token fails the journey 401 Login failure,
+    // a non-empty one the provider rejects takes false (doc 25, CAPTCHA, 2026-11-25).
+    if (submitted[0]?.value === "") {
+      evidence.measured(
+        "product-CaptchaNode with an empty token fails the journey with 401 Login failure, with reCaptchaV3 true or false",
+        "docs/api/25-journey-runtime.md (CAPTCHA, 2026-11-25)",
+      );
+      return {
+        outcome: null,
+        callbacks: [],
+        abort: {
+          status: 401,
+          body: { code: 401, reason: "Unauthorized", message: "Login failure" },
+        },
+      };
+    }
     const outcome = this.ctx.declared?.(id);
     if (outcome === undefined)
       this.ctx.missing(
@@ -550,6 +577,65 @@ export class ExtraNodes {
     if (typeof index !== "number" || !Number.isInteger(index))
       this.ctx.missing(`MessageNode answer: ${JSON.stringify(answer.value)}`);
     return { outcome: index === 0 ? "true" : "false", callbacks: [] };
+  }
+
+  /**
+   * Measured standing alone and as a Page child (doc 25, "Nodes as Page children", 2026-11-25): a
+   * TextOutputCallback of type "4" (a script) holding the message, then a ConfirmationCallback with the one
+   * continue option; any answer takes the one outcome and no state is written.
+   */
+  private getAuthenticatorApp(config: NodeDocument, submitted: CallbackEffect[]): NodeResult {
+    const first = (key: string, fallback: string): string => {
+      const map = config[key];
+      if (map === undefined) return fallback;
+      if (!isDocument(map)) this.ctx.missing(`GetAuthenticatorAppNode ${key} configuration`);
+      const value = Object.values(map)[0];
+      if (value === undefined) return fallback;
+      if (typeof value !== "string") this.ctx.missing(`GetAuthenticatorAppNode ${key} value type`);
+      return value;
+    };
+    const link = (key: "appleLink" | "googleLink", fallback: string): string => {
+      const value = config[key] === undefined ? fallback : config[key];
+      if (typeof value !== "string" || /['"\\\s]/.test(value))
+        this.ctx.missing(`GetAuthenticatorAppNode ${key} that is not a plain URL`);
+      return value;
+    };
+    const template = first("message", APP_MESSAGE);
+    if (/\{\{(?!appleLink\}\}|googleLink\}\})/.test(template) || /["\\\r\n]/.test(template))
+      this.ctx.missing("GetAuthenticatorAppNode message with a wildcard other than the two links, or a quote, backslash or line break");
+    const html = template
+      .replaceAll("{{appleLink}}", `<a target='_blank' href='${link("appleLink", APPLE_LINK)}'>Apple App Store</a>`)
+      .replaceAll("{{googleLink}}", `<a target='_blank' href='${link("googleLink", GOOGLE_LINK)}'>Google Play Store</a>`);
+    this.ctx.evidence.measured(
+      'GetAuthenticatorAppNode sends a TextOutputCallback (messageType "4") of the script document.getElementById("callback_0").innerHTML="<center>…</center>" with {{appleLink}} and {{googleLink}} expanded to anchors labelled Apple App Store and Google Play Store, and a ConfirmationCallback with the one continueLabel option; any answer takes outcome and no state is written',
+      PAGE_CHILD_SOURCE,
+    );
+    this.ctx.evidence.assumed(
+      "GetAuthenticatorAppNode uses the first entry of each language map; the {{appleLabel}} and {{googleLabel}} wildcards are unmeasured",
+    );
+    if (!submitted.length)
+      return {
+        outcome: null,
+        callbacks: [
+          {
+            type: "TextOutputCallback",
+            message: `document.getElementById("callback_0").innerHTML="<center>${html}</center>"`,
+            messageType: "4",
+          },
+          {
+            type: "ConfirmationCallback",
+            prompt: "",
+            messageType: 0,
+            options: [first("continueLabel", "Continue")],
+            optionType: -1,
+            defaultOption: 0,
+          },
+        ],
+      };
+    const answer = submitted.length === 2 ? submitted[1] : undefined;
+    if (answer?.type !== "ConfirmationCallback" || typeof answer.value !== "number")
+      this.ctx.missing("GetAuthenticatorAppNode callback submission");
+    return { outcome: "outcome", callbacks: [] };
   }
 
   private choice(config: NodeDocument, submitted: CallbackEffect[]): NodeResult {
@@ -682,21 +768,18 @@ export class ExtraNodes {
     );
     const value = cookies?.[name];
     if (value === undefined) return { outcome: "false", callbacks: [] };
-    const parts = value.split(".");
-    if (parts.length !== 3)
+    const reading = readCookie(value, key);
+    evidence.measured(
+      "PersistentCookieDecisionNode: a value with no dot (or empty), or whose signed payload has none, aborts with 401; two parts, another signing key, or an inner part that does not open take false; the inner part, not the signing key, names the user",
+      COOKIE_SOURCE,
+    );
+    if (reading.kind === "unmeasured")
+      this.ctx.missing(`PersistentCookieDecisionNode over ${reading.what}`);
+    if (reading.kind === "abort")
       return { outcome: null, callbacks: [], abort: structuredClone(LOGIN_FAILURE) };
-    const expected = createHmac("sha256", Buffer.from(key, "base64"))
-      .update(`${parts[0]}.${parts[1]}`)
-      .digest("base64url");
-    if (expected !== parts[2]) return { outcome: "false", callbacks: [] };
-    let claims: unknown;
-    try {
-      claims = JSON.parse(Buffer.from(parts[1] ?? "", "base64url").toString("utf8"));
-    } catch {
-      return { outcome: "false", callbacks: [] };
-    }
-    if (!isDocument(claims) || typeof claims.sub !== "string" || typeof claims.exp !== "number")
-      return { outcome: "false", callbacks: [] };
+    if (reading.kind === "false") return { outcome: "false", callbacks: [] };
+    const claims = reading.claims;
+    if (claims.sub === null) return { outcome: "false", callbacks: [] };
     evidence.assumed(
       "PersistentCookieDecisionNode's rule for an expired cookie, and idleTimeout, are unmeasured; a cookie past its exp is taken as false",
     );
@@ -748,6 +831,8 @@ export class ExtraNodes {
         return this.authLevel(config, shared, true);
       case "MessageNode":
         return this.message(config, submitted);
+      case "GetAuthenticatorAppNode":
+        return this.getAuthenticatorApp(config, submitted);
       case "ChoiceCollectorNode":
         return this.choice(config, submitted);
       case "ValidatedUsernameNode":
@@ -824,6 +909,12 @@ export function customNodeSource(
       if (spec.multivalued === true) properties[name] = [];
       continue;
     }
+    // A bare placeholder in a BOOLEAN or NUMBER property is refused at write time (measured), so a
+    // value of another type than the property's was never stored: refuse rather than coerce.
+    const wanted = { BOOLEAN: "boolean", NUMBER: "number", STRING: "string" }[String(spec.type)];
+    const given = spec.multivalued === true ? undefined : typeof value;
+    if (wanted !== undefined && given !== undefined && given !== wanted)
+      missing(`custom node property ${name} typed ${String(spec.type)} holding a ${given}`);
     properties[name] = value as JsonValue;
   }
   const allowed = JSON.stringify(def.outcomes);
