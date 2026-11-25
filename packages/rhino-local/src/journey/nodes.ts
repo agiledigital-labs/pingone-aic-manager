@@ -35,6 +35,7 @@ export type NodeResult = {
   /** A Page's resolved `pageHeader` / `pageDescription`, sent beside its callbacks. */
   header?: string;
   description?: string;
+  stage?: string;
   abort?: Omit<AuthenticateResult, "provenance">;
   /**
    * The script's `auditEntryDetail` (string or map), for the node's completion record. A Page's

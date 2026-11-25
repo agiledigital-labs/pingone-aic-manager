@@ -185,6 +185,26 @@ transient `zzOT`) → inner 1 (writes `zz1S`/`zz1T`) → inner 2 (writes `zz2S`/
 | `journey.name()` / `innerJourney()` | The innermost executing tree's name at each level; `true` in both inner trees, `false` outside | — |
 
 
+### A Page inside an inner tree (verified 2026-11-25)
+
+Measured on the sandbox with `scripts/experiment-journey-inner-page.sh` (throwaway `kdemo-g4-` trees, scripts and nodes, all
+deleted, deletion confirmed by a `GET`). Outer tree: script, then `InnerTreeEvaluatorNode`, then dump nodes for `true` and
+`false`; the inner tree holds the page.
+
+| Question | Observed | Control |
+| --- | --- | --- |
+| Callbacks and properties the client sees | The inner page's callbacks, in page order, with its own `header`, `description` and `stage` (`IN-H`, `IN-D`, `IN-S`) beside `callbacks` | The same page as an outer page sends the same shape |
+| An outer page's properties | **Do not leak**: an outer page with `OUT-H`/`OUT-D`/`OUT-S` was answered, and the inner page (configured with none) came back with no `header`, `description` or `stage` | The outer page's own response carried all three |
+| Resuming | The submission resumes **inside the inner tree**: the inner script after the page ran (it saw the answers) and the inner tree's success routed the outer evaluator to `true` | — |
+| Shared state across the boundary | Outer shared written before the inner tree is read inside it (`os`); inner shared written after the page is read by the outer dump (`is`); the page's `username` is shared and read at every level | — |
+| Transient state across the boundary | Outer transient is **`null` inside** the inner tree (as in the Inner Tree table above); the page's transient `password` was readable (length 13) by the inner script after the page, and **`null` in the outer dump** after the evaluator | The inner script's own `putTransient` is likewise `null` outside |
+| A page visited twice (inner script after the page goes back to the page unless `username == "right"`) | `wrong1`, `wrong2`: the page is sent again each time with `header` and `description`, the outer tree not touched; `right` leaves and the outer dump (`true`) reads `username = "right"` | The `NameCallback` of the revisit carries an empty `input` value (no prefill from the shared `username`) |
+| Empty answers in an inner page | The whole page is sent again with its `header`/`description`; a later answer continues | — |
+| The inner tree ends by its failure node after the page | The outer evaluator takes `false` (the `false` dump ran) | — |
+| Two deep (outer, middle evaluator, innermost page) | The page's callbacks are the first response; its answer resumes in the innermost tree; its shared writes are visible to the middle tree's script and the outer dump | — |
+| `stage` | A page's non-empty `stage` is a top-level string beside `callbacks`, repeated when the page is re-sent; `stage: ""` and no `stage` send none (outer pages, same run) | Three pages differing only in `stage` |
+| Callback `_id` and `pageNodeCallbacks` | Every callback the journey sends carries a top-level numeric `_id`, counting up across the whole journey (`0`, `1`, then `2`, `3` on a re-send; `0` then `1` on a revisit). Shared `pageNodeCallbacks` is a **map of callback `_id` to child index** (`{ "0": 0, "1": 1 }`) that **accumulates** one entry per callback of every visit to a page, a re-sent or revisited one included (`{ "0": 0, "1": 1, "2": 0, "3": 1 }` after a re-send). **Not modelled**: the emulator sends no `_id` and stores the wire array there | — |
+
 ## Identify Existing User
 
 Measured 2026-11-02 with `scripts/experiment-journey-identity-nodes.sh`
@@ -946,8 +966,9 @@ None of these was exercised; do not build on them as measured:
   `action.suspend()` or `withHeader` inside a page; a `pageHeader` with
   several locales under an `Accept-Language` request.
 - `withLockoutMessage` on an account that is actually locked out.
-- Inner Tree with `displayErrorOutcome: true` when the inner tree throws; a
-  Page inside an inner tree.
+- Inner Tree with `displayErrorOutcome: true` when the inner tree throws; an
+  inner-tree Page whose child is not a collector, a scripted decision, Terms and
+  Conditions or Captcha; an inner Page after a rejection by a non-collector child.
 - Replaying the `authId` of a step that led to **success** (whether a second
   session is minted).
 - Message Node, Choice Collector, Polling Wait, Email Suspend and other node

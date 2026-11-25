@@ -647,6 +647,7 @@ export class JourneyEmulator {
             callbacks,
             ...(result.header !== undefined ? { header: result.header } : {}),
             ...(result.description !== undefined ? { description: result.description } : {}),
+            ...(result.stage !== undefined ? { stage: result.stage } : {}),
           },
         };
       }
@@ -980,6 +981,14 @@ export class JourneyEmulator {
     );
     return value === "" ? {} : { [wire]: value };
   }
+  /** A Page's `stage` string as the top-level `stage`; empty or absent sends none (doc 25, 2026-11-25). */
+  private pageStage(config: NodeDocument): { stage?: string } {
+    const stage = config.stage;
+    if (stage === undefined || stage === "") return {};
+    if (typeof stage !== "string") this.missing("PageNode stage shape");
+    this.measured("a PageNode sends its non-empty stage as a top-level stage beside callbacks; a re-sent page repeats it");
+    return { stage };
+  }
   private async page(
     config: NodeDocument,
     state: State,
@@ -988,10 +997,12 @@ export class JourneyEmulator {
     request: AuthenticateRequest,
     log?: RequestLog,
   ): Promise<NodeResult> {
-    if (state.frames.length > 1) this.missing("PageNode inside an inner tree");
+    // A Page in an inner tree is the same machinery: this tree's own properties, no outer page's
+    // (doc 25, "A Page inside an inner tree", 2026-11-25).
     const texts = {
       ...this.pageText(config, "pageHeader", "header", request),
       ...this.pageText(config, "pageDescription", "description", request),
+      ...this.pageStage(config),
     };
     if (!Array.isArray(config.nodes) || !config.nodes.length)
       this.missing("PageNode child configuration");
