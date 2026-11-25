@@ -14,7 +14,9 @@
 #   --history [REV-RANGE]
 #                every blob introduced by the range    (audit/CI)
 #                defaults to every reachable commit; over the whole history,
-#                SENSITIVE_HISTORY_EXPECTED=N passes on EXACTLY N findings
+#                SENSITIVE_HISTORY_EXPECTED=N passes on EXACTLY N findings.
+#                A BASE..TIP whose BASE is missing or not an ancestor of TIP
+#                (a force-push, a new branch) scans all of TIP's history
 #   --selftest   prove the rules still fire            (CI runs this first)
 #   --redact     filter stdin -> stdout, sanitised    (capture-time)
 #                REDACT_VALUES=1 additionally strips ESV valueBase64 payloads
@@ -71,7 +73,7 @@ case "${1:-}" in
   --redact) MODE=redact ;;
   --fix) MODE=fix ;;
   -h | --help)
-    sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,23p' "$0" | sed 's/^# \{0,1\}//'
     exit 0
     ;;
   *)
@@ -94,6 +96,38 @@ for var in GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_COMMON_
 done
 unset var val
 cd "$(git rev-parse --show-toplevel)" || exit 2
+
+# A `BASE..TIP` range whose base this repository cannot use. After a
+# force-push the push event's `before` names a commit the rewrite dropped, a
+# new branch's is all zeros, and a PR base can go the same way; git then
+# refuses the range and the scan stops with exit 2 on every such push. A base
+# that is not an ancestor of the tip says the same thing: the range no longer
+# means "what this push added". Either way the honest scan is every commit
+# reachable from the tip — wider, never narrower, so still fail-closed — and
+# it is said on stderr so the log shows which one ran. The tip itself must
+# resolve; that is not a fallback case. Uncounted, like every range: the
+# SENSITIVE_HISTORY_EXPECTED count is defined over `--all` alone.
+if [ "$MODE" = history ] && [[ "$HISTORY_RANGE" == *..* ]] && [[ "$HISTORY_RANGE" != *...* ]]; then
+  range_base=${HISTORY_RANGE%%..*}
+  range_tip=${HISTORY_RANGE#*..}
+  if ! git rev-parse -q --verify "${range_tip:-HEAD}^{commit}" >/dev/null; then
+    echo "error: --history range tip '${range_tip:-HEAD}' is not a commit in this repository" >&2
+    exit 2
+  fi
+  if ! git rev-parse -q --verify "${range_base:-HEAD}^{commit}" >/dev/null; then
+    fallback="is not a commit in this repository (rewritten history, or a new branch)"
+  elif ! git merge-base --is-ancestor "${range_base:-HEAD}" "${range_tip:-HEAD}"; then
+    fallback="is not an ancestor of '${range_tip:-HEAD}' (rewritten history)"
+  else
+    fallback=""
+  fi
+  if [ -n "$fallback" ]; then
+    echo "check-sensitive-metadata: range base '${range_base:-HEAD}' $fallback;" \
+      "falling back to every commit reachable from '${range_tip:-HEAD}'" >&2
+    HISTORY_RANGE=$(git rev-parse --verify "${range_tip:-HEAD}^{commit}") || exit 2
+  fi
+  unset range_base range_tip fallback
+fi
 
 # This script necessarily contains the very patterns it hunts for, so a
 # --tracked run would flag itself. Same trap as a monitor whose command line
@@ -1009,6 +1043,56 @@ case "$MODE" in
       mkdir locked && printf '%s\n' "$leak" >locked/f.md && git add locked >/dev/null
       git commit -qm locked >/dev/null && chmod a-w locked
       run "a --fix that cannot write exits non-zero" 2 bash "$script" --fix
+      exit "$fails"
+    ) || fails=$((fails + 1))
+    # A range whose base is gone (a force-push's `before`, a new branch's
+    # zeros) or is not an ancestor falls back to the tip's whole history and
+    # says so; a valid range still scans only itself. The leak sits in a
+    # commit before the range, so only the wider scan can find it.
+    (
+      script="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
+      repo=$(mktemp -d) || exit 1
+      trap 'rm -rf "$repo"' EXIT
+      cd "$repo" || exit 1
+      git init -q . && git config user.email t@example.com && git config user.name t
+      printf '%s\n' .envrc '.aic/' '/workspace/' '*.har' '/.ai/local.md' >.gitignore
+      printf 'zebracorp\n' >"$repo/.git/deny"
+      deny=(SENSITIVE_DENYLIST="$repo/.git/deny")
+      git add .gitignore && git commit -qm root >/dev/null
+      root=$(git rev-parse HEAD)
+      printf 'see zebracorp\n' >old.md && git add old.md && git commit -qm leak >/dev/null
+      git rm -q old.md && git commit -qm unleak >/dev/null
+      unleak=$(git rev-parse HEAD)
+      printf 'clean\n' >new.md && git add new.md && git commit -qm clean >/dev/null
+      tip=$(git rev-parse HEAD)
+      side=$(git commit-tree "$(git rev-parse "$root^{tree}")" -m side)
+      gone=$(printf 'gone' | git hash-object --stdin | sed 's/./f/1')
+      zero=0000000000000000000000000000000000000000
+      fails=0
+      range() {
+        local name="$1" want="$2" fell="$3" out got
+        out=$(env -u SENSITIVE_DENYLIST_CONTENT -u REQUIRE_SENSITIVE_DENYLIST \
+          "${deny[@]}" bash "$script" --history "$4" 2>&1)
+        got=$?
+        if [ "$got" != "$want" ]; then
+          echo "FAIL  $name — exit $got, wanted $want"
+          fails=$((fails + 1))
+        elif [ "$fell" = 1 ] && ! grep -q 'falling back to every commit reachable' <<<"$out"; then
+          echo "FAIL  $name — no fallback notice in the log"
+          fails=$((fails + 1))
+        elif [ "$fell" = 0 ] && grep -q 'falling back' <<<"$out"; then
+          echo "FAIL  $name — fell back on a valid range"
+          fails=$((fails + 1))
+        else
+          echo "ok    $name"
+        fi
+      }
+      range "control: a valid range that holds the leak finds it" 1 0 "$root..$tip"
+      range "a valid range scans only itself (leak before it)" 0 0 "$unleak..$tip"
+      range "a missing range base falls back and finds the leak" 1 1 "$gone..$tip"
+      range "an all-zeros range base falls back and finds the leak" 1 1 "$zero..$tip"
+      range "a non-ancestor range base falls back and finds the leak" 1 1 "$side..$tip"
+      range "a missing range tip stops the scan" 2 0 "$unleak..$gone"
       exit "$fails"
     ) || fails=$((fails + 1))
     # --fix must never touch a file the checker calls clean. Every negative
