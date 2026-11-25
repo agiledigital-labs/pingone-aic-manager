@@ -9,9 +9,9 @@
 //! `{"tree": …, "nodes": {id: config}}`, compared with `api::content_equal`,
 //! which ignores `_rev` everywhere — the same comparison `push` decides on.
 
-use super::api::content_equal;
+use super::api::{NodeRef, content_equal, walk_refs};
 use serde::Serialize;
-use serde_json::Value;
+use serde_json::{Map, Value};
 use std::collections::BTreeSet;
 
 /// The state of one journey, named as `aic script status` names a script's.
@@ -98,9 +98,11 @@ pub enum Part {
     Tree,
     Node {
         id: String,
-        /// From whichever copy's tree lists it.
+        /// From whichever copy lists it: its tree, or a page's config.
         node_type: Option<String>,
         display_name: Option<String>,
+        /// The page listing it, for a page's child.
+        page: Option<String>,
     },
 }
 
@@ -112,12 +114,18 @@ impl Part {
                 id,
                 node_type,
                 display_name,
+                page,
             } => {
                 let kind = node_type.as_deref().unwrap_or("node");
-                match display_name {
-                    Some(name) => format!("{kind} {id} ({name})"),
-                    None => format!("{kind} {id}"),
-                }
+                let name = display_name
+                    .as_ref()
+                    .map(|name| format!(" ({name})"))
+                    .unwrap_or_default();
+                let page = page
+                    .as_ref()
+                    .map(|page| format!(" in page {page}"))
+                    .unwrap_or_default();
+                format!("{kind} {id}{name}{page}")
             }
         }
     }
@@ -130,29 +138,17 @@ impl Part {
     }
 }
 
-fn node_meta(copies: &[&Value], id: &str, key: &str) -> Option<String> {
-    copies.iter().find_map(|copy| {
-        let listed = |entry: &Value| entry.get(key).and_then(Value::as_str).map(str::to_string);
-        copy.pointer("/tree/nodes")
-            .and_then(|nodes| nodes.get(id))
-            .and_then(listed)
-            // A page's child is not in the tree; its page's config names it.
-            .or_else(|| {
-                held_nodes(copy)
-                    .flat_map(|config| config.get("nodes").and_then(Value::as_array))
-                    .flatten()
-                    .find(|child| child.get("_id").and_then(Value::as_str) == Some(id))
-                    .and_then(listed)
-            })
-    })
-}
-
-/// The configs a copy holds.
-fn held_nodes(copy: &Value) -> impl Iterator<Item = &Value> {
-    copy.get("nodes")
+/// Every node a copy references — the tree's, and each held page's children —
+/// as `api::walk_refs` reads it. Lenient: a copy whose references are
+/// ambiguous is compared on what can be addressed; the tenant's copy never is
+/// one, because `api::pull` refuses it.
+fn refs(copy: &Value) -> Vec<NodeRef> {
+    let empty = Map::new();
+    let nodes = copy
+        .get("nodes")
         .and_then(Value::as_object)
-        .into_iter()
-        .flat_map(|nodes| nodes.values())
+        .unwrap_or(&empty);
+    walk_refs(copy.get("tree").unwrap_or(&Value::Null), nodes).0
 }
 
 /// The parts that differ between two copies: the tree, then each node whose
@@ -174,6 +170,7 @@ pub fn changed_parts(left: &Value, right: &Value) -> Vec<Part> {
             .unwrap_or_default()
     };
     let (a, b) = (nodes(left), nodes(right));
+    let listed: Vec<NodeRef> = refs(left).into_iter().chain(refs(right)).collect();
     let ids: BTreeSet<&String> = a.keys().chain(b.keys()).collect();
     for id in ids {
         let same = match (a.get(id), b.get(id)) {
@@ -181,10 +178,12 @@ pub fn changed_parts(left: &Value, right: &Value) -> Vec<Part> {
             _ => false,
         };
         if !same {
+            let node = listed.iter().find(|node| node.id == *id);
             out.push(Part::Node {
                 id: id.clone(),
-                node_type: node_meta(&[left, right], id, "nodeType"),
-                display_name: node_meta(&[left, right], id, "displayName"),
+                node_type: node.map(|node| node.node_type.clone()),
+                display_name: node.and_then(|node| node.display_name.clone()),
+                page: node.and_then(|node| node.page.clone()),
             });
         }
     }
@@ -205,39 +204,37 @@ pub fn node_ids(copy: &Value) -> BTreeSet<String> {
 /// tree's nodes and the children each held page config names.
 pub fn missing_nodes(copy: &Value) -> Vec<String> {
     let held = copy.get("nodes").and_then(Value::as_object);
-    let mut listed = node_ids(copy);
-    for (id, config) in held.into_iter().flatten() {
-        let node_type = copy
-            .pointer("/tree/nodes")
-            .and_then(|nodes| nodes.get(id))
-            .and_then(|meta| meta.get("nodeType"))
-            .and_then(Value::as_str)
-            // A page's child is not in the tree; its config says what it is.
-            .or_else(|| config.pointer("/_type/_id").and_then(Value::as_str))
-            .unwrap_or_default();
-        if let Ok(children) = super::api::page_children(node_type, config) {
-            listed.extend(children.into_iter().map(|(child, _)| child));
-        }
-    }
-    listed
+    let mut missing: Vec<String> = refs(copy)
         .into_iter()
+        .map(|node| node.id)
         .filter(|id| !held.is_some_and(|nodes| nodes.contains_key(id)))
-        .collect()
+        .collect();
+    missing.sort();
+    missing
 }
 
 /// The other journeys that list a changed node. A node config is a realm
 /// object keyed by id, so pushing either journey rewrites it for both.
-/// `owners` maps node id to every journey listing it.
+/// `owners` maps node id to every journey whose tree lists it. A page's child
+/// is in no tree, so it is shared through its page: a child some other page
+/// lists directly is not seen.
 pub fn shared_with(
     owners: &std::collections::BTreeMap<String, Vec<String>>,
     journey: &str,
     part: &Part,
 ) -> Vec<String> {
     match part {
-        Part::Node { id, .. } => owners
-            .get(id)
-            .map(|names| names.iter().filter(|n| *n != journey).cloned().collect())
-            .unwrap_or_default(),
+        // A page's child is in no tree, so it is shared through its page.
+        Part::Node { id, page, .. } => {
+            let names: BTreeSet<&String> = [Some(id), page.as_ref()]
+                .into_iter()
+                .flatten()
+                .filter_map(|id| owners.get(id))
+                .flatten()
+                .filter(|n| *n != journey)
+                .collect();
+            names.into_iter().cloned().collect()
+        }
         Part::Tree => Vec::new(),
     }
 }
@@ -498,8 +495,32 @@ mod tests {
                 id: "k".into(),
                 node_type: Some("UsernameCollectorNode".into()),
                 display_name: Some("user".into()),
+                page: Some("p".into()),
             }]
         );
+        assert_eq!(parts[0].label(), "UsernameCollectorNode k (user) in page p");
+    }
+
+    /// Regression (review P1-3): any held config with a `nodes` array could
+    /// name a changed child. The discriminating input is a custom node whose
+    /// config sorts before the page and lists the child's id with unrelated
+    /// metadata.
+    #[test]
+    fn only_a_page_names_its_children() {
+        let decoy = |copy: &mut Value| {
+            copy["tree"]["nodes"]["a"] = json!({"nodeType": "CustomListNode"});
+            copy["nodes"]["a"] = json!({"nodes": [
+                {"_id": "k", "nodeType": "Unrelated", "displayName": "decoy"}]});
+        };
+        let (mut left, mut right) = (paged(true), paged(true));
+        decoy(&mut left);
+        decoy(&mut right);
+        right["nodes"]["k"]["x"] = json!(1);
+        let parts = changed_parts(&left, &right);
+        assert_eq!(parts.len(), 1);
+        assert_eq!(parts[0].label(), "UsernameCollectorNode k (user) in page p");
+        // Nor does such a config make its entries count as missing.
+        assert!(missing_nodes(&left).is_empty());
     }
 
     #[test]
@@ -511,12 +532,18 @@ mod tests {
             ),
             ("c".to_string(), vec!["Login".to_string()]),
         ]);
-        let node = |id: &str| Part::Node {
+        let in_page = |id: &str, page: Option<&str>| Part::Node {
             id: id.into(),
             node_type: None,
             display_name: None,
+            page: page.map(str::to_string),
         };
+        let node = |id: &str| in_page(id, None);
         assert_eq!(shared_with(&owners, "Login", &node("p")), vec!["Register"]);
+        // Regression (review P2-4): a page's child is in no tree, so it was
+        // never found shared. It is shared through its page.
+        let child = in_page("k", Some("p"));
+        assert_eq!(shared_with(&owners, "Login", &child), vec!["Register"]);
         assert!(shared_with(&owners, "Login", &node("c")).is_empty());
         assert!(shared_with(&owners, "Login", &node("unknown")).is_empty());
         assert!(shared_with(&owners, "Login", &Part::Tree).is_empty());

@@ -616,6 +616,46 @@ fn script_search_refs(tree: &Value) -> Vec<(String, String)> {
         .unwrap_or_default()
 }
 
+/// Whether any node of `tree` references `script_id`, reading each node
+/// through `read`. A page's scripted children are in no tree, so a page is
+/// read too and its script-typed children join the search. A node that cannot
+/// be read is warned about and passed over.
+async fn journey_uses_script_with<F, Fut>(tree: &Value, script_id: &str, mut read: F) -> bool
+where
+    F: FnMut(String, String) -> Fut,
+    Fut: std::future::Future<Output = Result<Value>>,
+{
+    let mut queue = script_search_refs(tree);
+    let mut seen: std::collections::HashSet<String> =
+        queue.iter().map(|(id, _)| id.clone()).collect();
+    while let Some((node_id, node_type)) = queue.pop() {
+        match read(node_type.clone(), node_id.clone()).await {
+            Ok(config) => {
+                if node_config_references_script(&node_type, &config, script_id) {
+                    return true;
+                }
+                match api::page_children(&node_id, &node_type, &config) {
+                    Ok(children) => queue.extend(
+                        children
+                            .into_iter()
+                            .filter(|child| {
+                                child.node_type.contains("Script") && seen.insert(child.id.clone())
+                            })
+                            .map(|child| (child.id, child.node_type)),
+                    ),
+                    Err(error) => eprintln!(
+                        "warning: could not list children of {node_type}/{node_id}: {error}"
+                    ),
+                }
+            }
+            Err(error) => {
+                eprintln!("warning: could not read journey node {node_type}/{node_id}: {error}");
+            }
+        }
+    }
+    false
+}
+
 fn node_config_references_script(node_type: &str, config: &Value, script_id: &str) -> bool {
     node_type.contains("Script")
         && ["script", "scriptId"].iter().any(|field| {
@@ -1055,40 +1095,11 @@ pub async fn run(cmd: JourneyCommand) -> Result<()> {
                         continue;
                     }
                 };
-                let mut found = false;
-                // A page's scripted children are in no tree, so a page is read
-                // too and its script-typed children join the queue.
-                let mut queue = script_search_refs(&tree);
-                let mut seen: std::collections::HashSet<String> =
-                    queue.iter().map(|(id, _)| id.clone()).collect();
-                while let Some((node_id, node_type)) = queue.pop() {
-                    match api::read_node(&tenant, &realm, &node_type, &node_id).await {
-                        Ok(config) => {
-                            if node_config_references_script(&node_type, &config, &script_id) {
-                                found = true;
-                                break;
-                            }
-                            match api::page_children(&node_type, &config) {
-                                Ok(children) => {
-                                    for (id, child_type) in children {
-                                        if child_type.contains("Script") && seen.insert(id.clone())
-                                        {
-                                            queue.push((id, child_type));
-                                        }
-                                    }
-                                }
-                                Err(error) => eprintln!(
-                                    "warning: could not list children of {node_type}/{node_id}: {error}"
-                                ),
-                            }
-                        }
-                        Err(error) => {
-                            eprintln!(
-                                "warning: could not read journey node {node_type}/{node_id}: {error}"
-                            );
-                        }
-                    }
-                }
+                let found = journey_uses_script_with(&tree, &script_id, |node_type, node_id| {
+                    let (tenant, realm) = (&tenant, &realm);
+                    async move { api::read_node(tenant, realm, &node_type, &node_id).await }
+                })
+                .await;
                 if found {
                     matches.push(name);
                 }
