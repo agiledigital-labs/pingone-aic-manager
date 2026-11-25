@@ -54,12 +54,21 @@ impl Project {
         .unwrap();
     }
 
-    fn snapshot(&self) -> Value {
-        let bytes = std::fs::read(self.journeys().join(".snapshots/Login.json")).unwrap();
-        serde_json::from_slice(&bytes).unwrap()
+    /// The snapshot's and the export's bytes, so an assertion that they are
+    /// untouched cannot be satisfied by a rewrite of the same JSON.
+    fn files(&self) -> (Vec<u8>, Vec<u8>) {
+        let read = |path: PathBuf| std::fs::read(path).unwrap();
+        (
+            read(self.journeys().join(".snapshots/Login.json")),
+            read(self.journeys().join("Login.json")),
+        )
     }
 
-    fn push(&self, tenant: Tenant) -> (Output, Tenant) {
+    fn push(&self, tenant: Tenant, force: &[&str]) -> (Output, Tenant) {
+        self.journey(tenant, &[&["push", "Login", "--yes"], force].concat())
+    }
+
+    fn journey(&self, tenant: Tenant, args: &[&str]) -> (Output, Tenant) {
         let mut command = Command::new(env!("CARGO_BIN_EXE_aic"));
         command
             .current_dir(&self.0)
@@ -69,7 +78,8 @@ impl Project {
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .args(["--no-prompt", "journey", "push", "Login", "--yes"]);
+            .args(["--no-prompt", "journey"])
+            .args(args);
         run(self, command, tenant)
     }
 }
@@ -202,11 +212,13 @@ fn run(project: &Project, mut command: Command, mut tenant: Tenant) -> (Output, 
 
 /// A change made on the tenant to a page's child alone must block an unforced
 /// push, exactly as a change to a tree-listed node does. Before children were
-/// carried, the child was in neither the snapshot nor the remote read, so
-/// this push went through and overwrote it. The control is the same push
-/// with the tenant unchanged, which writes.
+/// carried the child was in neither the snapshot nor the remote read, so the
+/// drift went unnoticed (the old writer did not write `user` either). What
+/// this pins is that the preflight reads every child the push writes: a
+/// version writing children without comparing them would overwrite `user`.
+/// The control is the same push with the tenant unchanged, which writes.
 #[test]
-fn a_tenant_change_to_a_page_child_alone_blocks_an_unforced_push() {
+fn journey_push_is_blocked_by_a_tenant_change_to_a_page_child_alone() {
     for drifted in [true, false] {
         let project = Project::new();
         project.write_snapshot(&journey());
@@ -218,7 +230,7 @@ fn a_tenant_change_to_a_page_child_alone_blocks_an_unforced_push() {
             remote["nodes"]["user"]["validateInput"] = json!(true);
         }
 
-        let (output, tenant) = project.push(Tenant::new(remote));
+        let (output, tenant) = project.push(Tenant::new(remote), &[]);
         let stderr = String::from_utf8_lossy(&output.stderr);
         if drifted {
             assert_eq!(output.status.code(), Some(1), "{stderr}");
@@ -238,21 +250,24 @@ fn a_tenant_change_to_a_page_child_alone_blocks_an_unforced_push() {
     }
 }
 
-/// Regression (review P1-1): a push that failed on its second child returned
-/// the bare 503, though the first child was already rewritten on the tenant.
-/// The CLI must name what landed, write nothing after the failure, and leave
-/// the snapshot alone.
+/// Regression (review round 1 P1-1, round 2 P1-2): a push that failed on its
+/// second child returned the bare 503, though the first child was already
+/// rewritten; then it counted the 503'd write as not landed, which a 503
+/// does not establish. The CLI must name what was acknowledged, say the
+/// failing write may have landed, write nothing after it, and leave the
+/// snapshot's bytes alone.
 #[test]
-fn a_push_failing_on_a_second_child_names_the_first_and_keeps_the_snapshot() {
+fn journey_push_failing_on_a_second_child_reports_three_groups_and_keeps_the_snapshot() {
     let project = Project::new();
     project.write_snapshot(&journey());
     let mut local = journey();
     local["nodes"]["user"]["validateInput"] = json!(true);
     project.write_export(&local);
+    let before = project.files();
     let mut tenant = Tenant::new(journey());
     tenant.fail_put = Some("script");
 
-    let (output, tenant) = project.push(tenant);
+    let (output, tenant) = project.push(tenant, &[]);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert_eq!(output.status.code(), Some(1), "{stderr}");
     assert_eq!(
@@ -262,14 +277,108 @@ fn a_push_failing_on_a_second_child_names_the_first_and_keeps_the_snapshot() {
             "PUT /nodes/ScriptedDecisionNode/script"
         ]
     );
-    assert!(
-        stderr.contains("1 of 5 writes landed, then ScriptedDecisionNode/script failed"),
-        "{stderr}"
-    );
-    assert!(
-        stderr.contains("already written to the tenant: UsernameCollectorNode/user"),
-        "{stderr}"
-    );
+    for expected in [
+        "ScriptedDecisionNode/script may have landed",
+        "acknowledged by the tenant (1): UsernameCollectorNode/user",
+        "not attempted (3): PageNode/page, SetSuccessUrlNode/zafter, tree",
+    ] {
+        assert!(stderr.contains(expected), "{expected}: {stderr}");
+    }
     assert_eq!(tenant.state["nodes"]["user"]["validateInput"], true);
-    assert_eq!(project.snapshot(), journey());
+    assert_eq!(project.files(), before);
+}
+
+/// Regression (review round 2 P1-1): a push that newly attached an existing
+/// realm node overwrote it without reading it, since the node was in neither
+/// the snapshot nor the tenant's copy of this journey. The discriminating
+/// input is `borrowed`, added to Login's page locally with an older body.
+/// Bare `--force` must not override this; `--force=reuse` does; equal content
+/// is the control that needs no flag.
+#[test]
+fn journey_push_refuses_to_overwrite_an_existing_node_it_newly_attaches() {
+    let with_borrowed = |valid: bool| {
+        let mut export = journey();
+        export["nodes"]["page"]["nodes"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"_id": "borrowed", "nodeType": "UsernameCollectorNode"}));
+        export["nodes"]["borrowed"] = json!({"_id": "borrowed", "validateInput": valid});
+        export
+    };
+    let tenant = |valid: bool| {
+        let mut state = journey();
+        state["nodes"]["borrowed"] = json!({"_id": "borrowed", "validateInput": valid});
+        Tenant::new(state)
+    };
+    for (force, tenant_value, refused) in [
+        (&[][..], true, true),
+        (&["--force"][..], true, true),
+        (&["--force=reuse"][..], true, false),
+        (&[][..], false, false),
+    ] {
+        let project = Project::new();
+        project.write_snapshot(&journey());
+        project.write_export(&with_borrowed(false));
+        let (output, tenant) = project.push(tenant(tenant_value), force);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let case = format!("{force:?} tenant={tenant_value}: {stderr}");
+        assert!(
+            tenant
+                .calls
+                .iter()
+                .any(|(method, path)| method == "GET" && path.ends_with("/borrowed")),
+            "{case}"
+        );
+        if refused {
+            assert_eq!(output.status.code(), Some(1), "{case}");
+            assert!(stderr.contains("UsernameCollectorNode/borrowed"), "{case}");
+            assert!(stderr.contains("--force=reuse"), "{case}");
+            assert!(tenant.writes().is_empty(), "{case} {:?}", tenant.writes());
+            assert_eq!(tenant.state["nodes"]["borrowed"]["validateInput"], true);
+        } else {
+            assert!(output.status.success(), "{case}");
+            assert_eq!(tenant.state["nodes"]["borrowed"]["validateInput"], false);
+        }
+    }
+}
+
+/// A local edit to a page's child alone is protected on pull like any other:
+/// with the tenant's copy of that child also different, a pull with no
+/// terminal and no `--force` refuses and leaves both files' bytes as they
+/// were. The discriminating input is the edit to `user`, which only a pull
+/// that compares children can see; the control is the same pull with the
+/// local export unedited, which installs the tenant's copy.
+#[test]
+fn journey_pull_refuses_to_overwrite_a_local_edit_to_a_page_child_alone() {
+    for edited in [true, false] {
+        let project = Project::new();
+        project.write_snapshot(&journey());
+        let mut local = journey();
+        if edited {
+            local["nodes"]["user"]["validateInput"] = json!(true);
+        }
+        project.write_export(&local);
+        let before = project.files();
+        let mut remote = journey();
+        remote["nodes"]["user"]["validateInput"] = json!("remote");
+
+        let (output, tenant) = project.journey(Tenant::new(remote), &["pull", "Login"]);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            tenant
+                .calls
+                .iter()
+                .any(|(_, path)| path.ends_with("/UsernameCollectorNode/user")),
+            "the child was read"
+        );
+        if edited {
+            assert_eq!(output.status.code(), Some(1), "{stderr}");
+            assert!(stderr.contains("requires confirmation"), "{stderr}");
+            assert_eq!(project.files(), before);
+        } else {
+            assert!(output.status.success(), "{stderr}");
+            let export: Value = serde_json::from_slice(&project.files().1).unwrap();
+            assert_eq!(export["nodes"]["user"]["validateInput"], "remote");
+        }
+    }
 }

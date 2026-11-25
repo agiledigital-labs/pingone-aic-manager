@@ -1610,6 +1610,29 @@ mod tests {
         ));
     }
 
+    /// `--force=reuse` alone overrides the reuse refusal; bare `--force`
+    /// overrides the snapshot checks and nothing else.
+    #[test]
+    fn push_decision_refuses_reuse_unless_its_own_guard_is_given() {
+        let local = json!({"tree": {"name": "Login"}, "nodes": {"n": {"v": 2}}});
+        let remote = json!({"tree": {"name": "Login"}, "nodes": {}});
+        let reused = ["UsernameCollectorNode/n".to_string()];
+        let decide =
+            |force, reuse| push_decision(&local, &remote, Some(&remote), force, reuse, &reused);
+        assert_eq!(
+            decide(true, false),
+            PushDecision::Blocked(PushBlockReason::Reuse(reused.to_vec()))
+        );
+        assert_eq!(decide(false, true), PushDecision::Push);
+        assert_eq!(
+            push_decision(&local, &remote, Some(&remote), false, false, &[]),
+            PushDecision::Push
+        );
+        let message = push_block_message("Login", &PushBlockReason::Reuse(reused.to_vec()));
+        assert!(message.contains("UsernameCollectorNode/n"), "{message}");
+        assert!(message.contains("--force=reuse"), "{message}");
+    }
+
     #[test]
     fn script_search_refs_returns_script_nodes_and_pages_only() {
         let mut refs = script_search_refs(&json!({

@@ -1340,6 +1340,134 @@ mod tests {
         );
     }
 
+    /// Regression (review round 2 P2-1): an id the tree and a page both list
+    /// was deduplicated to its tree listing, so a missing config for it was
+    /// skipped as an ordinary node and the page written anyway.
+    #[test]
+    fn a_child_the_tree_also_lists_still_refuses_without_its_config() {
+        let mut export = export_of(&[
+            ("page", page_config()),
+            ("zafter", json!({})),
+            ("user", json!({})),
+        ]);
+        export.tree["nodes"]["script"] = json!({"nodeType": "ScriptedDecisionNode"});
+        let error = push_plan(&export)
+            .expect_err("`script` is a page child with no config")
+            .to_string();
+        assert!(
+            error.contains("ScriptedDecisionNode/script (in page page)"),
+            "{error}"
+        );
+    }
+
+    /// Regression (review round 2 P1-3): one tree entry without a `nodeType`
+    /// made the lenient walk return no refs at all.
+    #[test]
+    fn the_lenient_walk_keeps_every_valid_ref_beside_a_malformed_one() {
+        let tree = json!({"nodes": {
+            "bad": {"displayName": "no type"},
+            "good": {"nodeType": "SetSuccessUrlNode"}
+        }});
+        let (refs, problems) = walk_refs(&tree, &Map::new());
+        assert_eq!(ids(&refs), ["good"]);
+        assert_eq!(problems.len(), 1);
+        assert!(problems[0].contains("\"bad\""), "{problems:?}");
+        assert!(
+            journey_refs(&tree, &Map::new()).is_err(),
+            "strict still refuses"
+        );
+    }
+
+    /// The tenant as [`push_preflight_with`] sees it: Login's tree and page,
+    /// plus `borrowed`, a realm node Login does not reference.
+    async fn preflight(
+        local: &JourneyExport,
+        borrowed: fn() -> Result<Value>,
+    ) -> (Result<PushPreflight>, Vec<String>) {
+        let reads = std::cell::RefCell::new(Vec::new());
+        let result = push_preflight_with(
+            local,
+            || async { Ok(page_tree()) },
+            |_, id| {
+                reads.borrow_mut().push(id.clone());
+                async move {
+                    match id.as_str() {
+                        "page" => Ok(page_config()),
+                        "borrowed" => borrowed(),
+                        other => Ok(json!({"_id": other})),
+                    }
+                }
+            },
+        )
+        .await;
+        (result, reads.into_inner())
+    }
+
+    /// Regression (review round 2 P1-1): a node the export newly references
+    /// was written without being read. The discriminating input is the
+    /// existing realm node `borrowed`, added to Login's page locally, whose
+    /// tenant content differs; a fresh id (404) and equal content are the
+    /// controls that must pass, and an unreadable one fails the preflight.
+    #[tokio::test]
+    async fn the_push_preflight_reads_every_node_it_would_newly_attach() {
+        let mut local = export_of(&[
+            ("zafter", json!({"_id": "zafter"})),
+            ("user", json!({"_id": "user"})),
+            ("script", json!({"_id": "script"})),
+            (
+                "borrowed",
+                json!({"_id": "borrowed", "validateInput": false}),
+            ),
+        ]);
+        let mut page = page_config();
+        page["nodes"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"_id": "borrowed", "nodeType": "UsernameCollectorNode"}));
+        local.nodes.insert("page".into(), page);
+
+        let (result, reads) = preflight(&local, || {
+            Ok(json!({"_id": "borrowed", "_rev": "7", "validateInput": true}))
+        })
+        .await;
+        let reused = result.unwrap().reused;
+        assert_eq!(ids(&reused), ["borrowed"]);
+        assert_eq!(reused[0].page.as_deref(), Some("page"));
+        // Only the newly attached node is read beyond the journey itself.
+        assert_eq!(reads.iter().filter(|id| *id == "borrowed").count(), 1);
+
+        let (result, _) = preflight(&local, || {
+            Ok(json!({"_id": "borrowed", "_rev": "9", "validateInput": false}))
+        })
+        .await;
+        assert!(
+            result.unwrap().reused.is_empty(),
+            "equal content, ignoring _rev"
+        );
+        let (result, _) = preflight(&local, || {
+            Err(Error::Api {
+                status: 404,
+                body: "Not Found".into(),
+            })
+        })
+        .await;
+        assert!(result.unwrap().reused.is_empty(), "a fresh id");
+        let (result, _) = preflight(&local, || {
+            Err(Error::Api {
+                status: 503,
+                body: "unavailable".into(),
+            })
+        })
+        .await;
+        let error = result.expect_err("an unread target").to_string();
+        assert!(error.contains("UsernameCollectorNode/borrowed"), "{error}");
+
+        // An ordinary update reads the journey and nothing else.
+        let (result, reads) = preflight(&whole_export(), || unreachable!()).await;
+        assert!(result.unwrap().reused.is_empty());
+        assert_eq!(reads.len(), 4, "{reads:?}");
+    }
+
     /// Regression (review P2-1): an export pulled before children were
     /// carried holds the page alone, and push used to write that page anyway.
     #[test]

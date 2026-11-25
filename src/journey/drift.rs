@@ -549,6 +549,60 @@ mod tests {
         assert!(missing_nodes(&left).is_empty());
     }
 
+    /// Regression (review round 2 P1-3): one malformed tree entry hid the
+    /// note for a valid missing body, and the problem itself was dropped.
+    #[test]
+    fn a_malformed_entry_is_a_problem_beside_the_valid_missing_one() {
+        let copy = json!({"tree": {"nodes": {
+            "bad": {"displayName": "no type"},
+            "missing": {"nodeType": "SetSuccessUrlNode"}
+        }}, "nodes": {}});
+        assert_eq!(missing_nodes(&copy), vec!["missing"]);
+        let problems = reference_problems(&copy);
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert!(problems[0].contains("\"bad\""), "{problems:?}");
+        assert!(reference_problems(&paged(true)).is_empty());
+    }
+
+    /// Regression (review round 2 P1-4): a child that moved between pages was
+    /// placed in its snapshot page, and its sharing read from that. The
+    /// discriminating input is `k`, under page `old` in the snapshot and under
+    /// `p` on the tenant.
+    #[test]
+    fn a_moved_child_is_placed_by_the_current_copy() {
+        let snapshot = json!({"tree": {"nodes": {"old": {"nodeType": "PageNode"}}},
+            "nodes": {"old": {"nodes": [{"_id": "k", "nodeType": "UsernameCollectorNode"}]},
+                      "k": {"x": 0}}});
+        let mut remote = paged(true);
+        remote["nodes"]["k"]["x"] = json!(1);
+        let page = |current| {
+            changed_parts(&snapshot, &remote, current)
+                .into_iter()
+                .find_map(|part| match part {
+                    Part::Node { id, page, .. } if id == "k" => Some(page),
+                    _ => None,
+                })
+                .expect("k changed")
+        };
+        assert_eq!(page(Some(&remote)).as_deref(), Some("p"));
+        // The control: with no current copy, the first of the pair decides.
+        assert_eq!(page(None).as_deref(), Some("old"));
+    }
+
+    /// Regression (review round 2 P3-1): the display name came only from the
+    /// first copy listing the node, so a name removed on one side was lost.
+    #[test]
+    fn a_display_name_falls_through_to_the_other_copy() {
+        let named = export("a", "s");
+        let mut unnamed = export("b", "s");
+        unnamed["tree"]["nodes"]["p"]
+            .as_object_mut()
+            .unwrap()
+            .remove("displayName");
+        let parts = changed_parts(&unnamed, &named, None);
+        assert_eq!(parts.last().unwrap().label(), "PageNode p (Page)");
+    }
+
     #[test]
     fn a_node_listed_by_another_journey_is_reported_as_shared() {
         let owners = std::collections::BTreeMap::from([
