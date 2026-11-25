@@ -70,6 +70,7 @@ const REASONS: Record<number, string> = {
   405: "Method Not Allowed",
   429: "Too Many Requests",
   500: "Internal Server Error",
+  501: "Not Implemented",
   502: "Bad Gateway",
   503: "Service Unavailable",
 };
@@ -95,7 +96,46 @@ function encodeCookie(query: CookieQuery, snapshot: Snapshot): string {
   ).toString("base64url");
 }
 
-type CookieQuery = { sources: string; begin: string; end: string; tx: string | null };
+type CookieQuery = {
+  sources: string;
+  begin: string;
+  end: string;
+  tx: string | null;
+  eq: string | null;
+};
+/** The query parameters the tenant was seen to honour (docs/api/08-logs.md, "Query params"). */
+const KNOWN_PARAMS = [
+  "source",
+  "beginTime",
+  "endTime",
+  "transactionId",
+  "_queryFilter",
+  "_pageSize",
+  "_pagedResultsCookie",
+];
+/** The one `_queryFilter` the tenant was seen to honour. */
+const TX_FILTER = /^payload\/transactionId eq ("(?:[^"\\]|\\.)*")$/;
+/**
+ * The id a `_queryFilter` selects. doc 08 records `payload/transactionId eq "…"` working and most
+ * other payload fields failing 500; which do not is unrecorded, so every other filter is refused
+ * as the emulator's own 501, never answered unfiltered. Exact match is CREST `eq`; that the tenant
+ * does not prefix-match here, as it does for the `transactionId` parameter, is unmeasured.
+ */
+function filteredTransaction(filter: string): string {
+  const match = TX_FILTER.exec(filter);
+  let id: unknown;
+  try {
+    id = match?.[1] === undefined ? undefined : JSON.parse(match[1]);
+  } catch {
+    id = undefined;
+  }
+  if (typeof id !== "string")
+    throw new HttpError(
+      501,
+      `Not modelled by the emulator: _queryFilter ${filter} (only payload/transactionId eq "<id>" is)`,
+    );
+  return id;
+}
 
 function decodeCookie(cookie: string, expected: CookieQuery): Snapshot {
   const bad = new HttpError(400, "Invalid _pagedResultsCookie");
@@ -114,7 +154,8 @@ function decodeCookie(cookie: string, expected: CookieQuery): Snapshot {
     q.sources !== expected.sources ||
     q.begin !== expected.begin ||
     q.end !== expected.end ||
-    q.tx !== expected.tx
+    q.tx !== expected.tx ||
+    (q.eq ?? null) !== expected.eq
   ) {
     throw new HttpError(400, "_pagedResultsCookie does not belong to this query");
   }
@@ -189,6 +230,12 @@ export async function startLogsServer(options: LogsServerOptions): Promise<LogsS
       throw new HttpError(401, "Unauthorized");
     }
     const param = (name: string): string | undefined => url.searchParams.get(name) ?? undefined;
+    const unknownParams = [...new Set(url.searchParams.keys())].filter(
+      (name) => !KNOWN_PARAMS.includes(name),
+    );
+    if (unknownParams.length > 0) {
+      throw new HttpError(501, `Not modelled by the emulator: query parameter ${unknownParams.join(", ")}`);
+    }
 
     const sourceParam = param("source");
     if (sourceParam === undefined || sourceParam === "") {
@@ -251,11 +298,17 @@ export async function startLogsServer(options: LogsServerOptions): Promise<LogsS
     }
 
     const transactionId = param("transactionId");
+    const filterText = param("_queryFilter");
+    const equals = filterText === undefined ? undefined : filteredTransaction(filterText);
+    if (equals !== undefined && transactionId !== undefined) {
+      throw new HttpError(501, "Not modelled by the emulator: transactionId together with _queryFilter");
+    }
     const cookieQuery: CookieQuery = {
       sources: [...sources].sort().join(","),
       begin: beginNs.toString(),
       end: endNs.toString(),
       tx: transactionId ?? null,
+      eq: equals ?? null,
     };
     const snapshot = cookie === null ? undefined : decodeCookie(cookie, cookieQuery);
     const page = store.page({
@@ -263,6 +316,7 @@ export async function startLogsServer(options: LogsServerOptions): Promise<LogsS
       beginNs,
       endNs,
       transactionIdPrefix: transactionId,
+      transactionIdEquals: equals,
       pageSize,
       snapshot,
     });
