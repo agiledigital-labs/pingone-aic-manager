@@ -773,6 +773,7 @@ export class JourneyEmulator {
           },
           libraries: this.libraries,
           esv: { ...this.options.esv },
+          ...(synthetic ? { customNode: true } : {}),
           ...(request.headers ? { headers: { ...request.headers } } : {}),
           ...(request.cookies ? { cookies: { ...request.cookies } } : {}),
           parameters: Object.fromEntries(

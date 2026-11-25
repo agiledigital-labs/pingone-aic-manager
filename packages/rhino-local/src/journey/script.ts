@@ -1,7 +1,7 @@
 /** Journey-specific overlay over the existing AM binding runtime. Host work uses the runner bridge. */
 import { readFileSync } from "node:fs";
 import { casePreamble, type CasePreamble } from "../bindings/preamble.ts";
-import { generatedJsPath } from "../paths.ts";
+import { bindingsJsonPath, generatedJsPath } from "../paths.ts";
 import type { Given, CallbackEffect } from "../case/types.ts";
 import type { Document } from "../idm/types.ts";
 
@@ -27,6 +27,12 @@ export type ScriptState = {
   libraries?: Record<string, string>;
   /** The environment's ESVs, as `systemEnv.getProperty` reads them. */
   esv?: Record<string, string | null>;
+  /**
+   * A custom (node designer) node's script: it sees only the bindings doc 25 measured there
+   * (`properties`, `nodeState.get` / `putShared` and the assigned `outcome`); reaching any other
+   * one is missing behaviour naming it.
+   */
+  customNode?: boolean;
 };
 
 /*
@@ -58,6 +64,42 @@ const MEASURED_UTILS = [
     (name) => `crypto.subtle.${name}`,
   ),
 ];
+/**
+ * The names a custom node's script must not reach: every next-gen decision binding but
+ * `nodeState`, read from the binding list itself, plus the globals the harness adds beside them.
+ */
+function customBlocked(): string[] {
+  const list = JSON.parse(readFileSync(bindingsJsonPath, "utf8")) as {
+    bindings: { name: string }[];
+  };
+  const names = new Set(list.bindings.map((binding) => binding.name));
+  for (const name of ["existingSession", "require", "sharedState", "transientState"])
+    names.add(name);
+  names.delete("nodeState");
+  return [...names].sort();
+}
+/** What a custom node's `nodeState` offers; doc 25 measured these two methods only. */
+const CUSTOM_NODE_STATE = ["get", "putShared"];
+const customGuard = (blocked: string[]) => `
+(function (host, blocked, allowed) {
+  // The wrapper customNodeSource builds runs the type's script inside \`with\` over this object, so
+  // each name here resolves to it first: a binding the tenant was not seen to give a custom node is a
+  // getter that refuses, uncatchably, naming the binding.
+  var guard = {};
+  blocked.forEach(function (name) {
+    Object.defineProperty(guard, name, { get: host('refusal', 'custom node binding: ' + name) });
+  });
+  var state = nodeState, view = {};
+  Object.keys(state).forEach(function (key) {
+    if (typeof state[key] === 'function' && allowed.indexOf(key) === -1)
+      view[key] = host('refusal', 'custom node binding: nodeState.' + key);
+  });
+  view.get = function (key) { return state.get(key); };
+  view.putShared = function (key, value) { state.putShared(key, value); return view; };
+  Object.defineProperty(guard, 'nodeState', { value: view });
+  __rhinoLocalCustomGuard = guard;
+})(__rhinoLocalJourneyHost, ${JSON.stringify(blocked)}, ${JSON.stringify(CUSTOM_NODE_STATE)});
+`;
 const overlay = (roots: string[], maps: { shared: boolean; transient: boolean }) => `
 (function (host, roots, measuredUtils, maps) {
   host('install', __rhinoLocal, action);
@@ -178,6 +220,7 @@ export function journeyPreamble(state: ScriptState): CasePreamble {
     ...base,
     preamble:
       base.preamble +
-      overlay(stubRoots(), state.javaMaps ?? { shared: false, transient: false }),
+      overlay(stubRoots(), state.javaMaps ?? { shared: false, transient: false }) +
+      (state.customNode ? customGuard(customBlocked()) : ""),
   };
 }

@@ -944,7 +944,11 @@ export function customNodeSource(
     `var properties = ${JSON.stringify(properties)};`,
     "var outcome;",
     "try {",
+    // The journey preamble defines the guard for a custom node: every binding but the measured
+    // ones refuses by name (src/journey/script.ts, customGuard).
+    "with (__rhinoLocalCustomGuard) {",
     def.script,
+    "}",
     "} catch (e) {",
     failure,
     "}",

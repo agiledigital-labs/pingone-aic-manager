@@ -198,3 +198,59 @@ describe("P2-2 callback _id and pageNodeCallbacks", () => {
     refused(await req(emu(PAGE, "PageNode", "nodeState.putShared('pageNodeCallbacks','x')")), name);
   });
 });
+
+describe("P2-3 custom nodes reach only the measured bindings", () => {
+  const SN = "designer-0123456789abcdef0123456789abcdef";
+  function custom(body: string, errorOutcome = true) {
+    return new JourneyEmulator(
+      new JourneyConfig({
+        realm: "alpha",
+        trees: {
+          t: {
+            entryNodeId: "c",
+            nodes: {
+              c: { nodeType: SN, connections: { ok: "dump", "Script Error": "dump" } },
+              dump: { nodeType: "ScriptedDecisionNode", connections: { true: SUCCESS } },
+            },
+          },
+        },
+        nodes: {
+          [SN]: { c: { greeting: "hi" } },
+          ScriptedDecisionNode: { dump: { script: "dump", outcomes: ["true"] } },
+        },
+        customNodeTypes: {
+          [SN]: {
+            outcomes: ["ok"],
+            errorOutcome,
+            properties: { greeting: { type: "STRING" } },
+            script: body,
+          },
+        },
+        scripts: { dump: script(DUMP) },
+      } as never),
+      runner,
+      idm(),
+      {},
+    );
+  }
+  it("still gives properties, nodeState.get / putShared and outcome", async () => {
+    const done = await req(
+      custom(
+        "nodeState.putShared('username', properties.greeting + '/' + nodeState.get('realm')); outcome = 'ok';",
+      ),
+    );
+    expect(dumped(done.body).username).toBe("hi//alpha");
+  });
+  // Discriminating: with an error outcome, a plain throw would quietly take Script Error.
+  it.each([
+    ["openidm", "openidm.read('managed/alpha_user/x'); outcome = 'ok';"],
+    ["httpClient", "var t = typeof httpClient; outcome = 'ok';"],
+    ["callbacksBuilder", "callbacksBuilder.textOutputCallback(0, 'x'); outcome = 'ok';"],
+    ["action", "action.goTo('ok');"],
+    ["nodeState.putTransient", "nodeState.putTransient('x', 'y'); outcome = 'ok';"],
+  ])("refuses %s by name", async (binding, body) => {
+    const name = `custom node binding: ${binding}`;
+    expectEmulationFailure(name);
+    refused(await req(custom(body)), name);
+  });
+});
