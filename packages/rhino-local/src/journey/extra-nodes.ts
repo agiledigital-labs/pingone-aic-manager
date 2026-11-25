@@ -5,6 +5,7 @@
  * (docs/api/25-journey-runtime.md, "Built-in node types", 2026-11-25).
  */
 import { randomInt } from "node:crypto";
+import { mergeSharedAttributes } from "./attributes.ts";
 import { mintCookie, readCookie } from "./cookie.ts";
 import type { CallbackEffect } from "../case/types.ts";
 import { EmulationFailure } from "../emulation.ts";
@@ -705,7 +706,18 @@ export class ExtraNodes {
       this.ctx.missing("ValidatedUsernameNode callback submission");
     if (answer.value !== "") {
       setOwn(shared, "username", answer.value);
-      setOwn(shared, "objectAttributes", { userName: answer.value });
+      // Over existing keys, merge versus replace is unmeasured; merging is what every sibling does.
+      if (
+        mergeSharedAttributes(
+          shared,
+          { userName: answer.value },
+          "ValidatedUsernameNode",
+          this.ctx.missing,
+        )
+      )
+        this.ctx.evidence.assumed(
+          "ValidatedUsernameNode merges userName into existing shared objectAttributes",
+        );
     }
     return { outcome: "outcome", callbacks: [] };
   }

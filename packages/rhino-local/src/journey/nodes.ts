@@ -6,6 +6,7 @@ import type { IdmEmulator } from "../idm/emulator.ts";
 import type { Evidence } from "../idm/provenance.ts";
 import type { Document, PropertyConfig, RestResult } from "../idm/types.ts";
 import type { HostCall, JsonValue } from "../protocol.ts";
+import { mergeSharedAttributes } from "./attributes.ts";
 import { EXTRA_TYPES, ExtraNodes, type ExtraContext } from "./extra-nodes.ts";
 import type {
   AttributePolicy,
@@ -218,13 +219,6 @@ export class JourneyNodes {
       PASSWORD_SOURCE,
     );
     return { outcome: "outcome", callbacks: [] };
-  }
-  /** Shared objectAttributes a node merges into; a non-object one is unmeasured. */
-  private sharedAttributes(shared: Document, type: string): Document {
-    if (!Object.hasOwn(shared, "objectAttributes")) return {};
-    if (!isDocument(shared.objectAttributes))
-      this.missing(`${type} over non-object shared objectAttributes`);
-    return shared.objectAttributes;
   }
   private async call(
     method: HostCall["method"],
@@ -549,7 +543,6 @@ export class JourneyNodes {
         SOURCE,
       );
       if (!submitted.length || invalid) return { outcome: null, callbacks };
-      const previous = this.sharedAttributes(shared, type);
       // Measured: the collected keys come out in alphabetical order whatever the collection order.
       const ordered: Document = {};
       for (const key of Object.keys(attrs).sort())
@@ -558,10 +551,10 @@ export class JourneyNodes {
         "AttributeCollectorNode stores a slash path as nested objectAttributes and orders the collected top-level keys alphabetically",
         "docs/api/25-journey-runtime.md (Attribute Collector slash paths, 2026-11-25)",
       );
-      setOwn(shared, "objectAttributes", { ...previous, ...ordered });
-      this.evidence.assumed(
-        "AttributeCollectorNode merges collected attributes into existing shared objectAttributes",
-      );
+      if (mergeSharedAttributes(shared, ordered, type, this.missing))
+        this.evidence.assumed(
+          "AttributeCollectorNode merges collected attributes into existing shared objectAttributes",
+        );
       return done("outcome");
     }
     const attrs = this.attributes(shared, transient);
@@ -698,10 +691,11 @@ export class JourneyNodes {
       const identifier = own(match, key) as string;
       setOwn(shared, "_id", match._id);
       setOwn(shared, "username", identifier);
-      setOwn(shared, "objectAttributes", {
-        ...this.sharedAttributes(shared, type),
-        [key]: identifier,
-      });
+      if (mergeSharedAttributes(shared, { [key]: identifier }, type, this.missing))
+        this.evidence.measured(
+          "IdentifyExistingUserNode adds the identifier to existing shared objectAttributes and rewrites no other key",
+          "docs/api/25-journey-runtime.md (split objectAttributes, 2026-11-25)",
+        );
       return done("true");
     }
     this.evidence.measured(

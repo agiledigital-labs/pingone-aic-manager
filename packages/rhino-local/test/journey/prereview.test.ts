@@ -1,0 +1,168 @@
+/**
+ * Pre-review fixes (2026-11-25): each test drives the real JourneyEmulator through one input the
+ * pre-review found handled silently or wrongly. Generic trees only.
+ */
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { RhinoRunner } from "../../src/runner.ts";
+import { IdmConfig, IdmEmulator } from "../../src/idm/index.ts";
+import { JourneyConfig, JourneyEmulator, type JourneyOptions } from "../../src/journey/index.ts";
+import { expectEmulationFailure } from "../../src/harness/emulation-guard.ts";
+import type { JsonValue } from "../../src/protocol.ts";
+import { SUCCESS_NODE_ID as SUCCESS } from "../../src/aic/constants.ts";
+
+let runner: RhinoRunner;
+beforeAll(async () => {
+  runner = await RhinoRunner.spawn();
+}, 60_000);
+afterAll(async () => {
+  await runner?.close();
+});
+type Doc = Record<string, unknown>;
+const script = (source: string) => ({
+  evaluatorVersion: "2.0",
+  script: Buffer.from(source).toString("base64"),
+});
+const idm = () =>
+  new IdmEmulator(
+    new IdmConfig({
+      sync: { mappings: [] },
+      managed: {
+        objects: [
+          {
+            name: "alpha_user",
+            schema: {
+              properties: {
+                userName: { type: "string", title: "Username" },
+                givenName: { type: "string", title: "First Name" },
+              },
+            },
+          },
+        ],
+      },
+    }),
+    runner,
+  );
+/** The dump node reports shared state as JSON text through one HiddenValueCallback. */
+const DUMP =
+  "var o={};['objectAttributes','pageNodeCallbacks','username'].forEach(function(k){" +
+  "var v=nodeState.get(k);o[k]=v===null?null:JSON.parse(JSON.stringify(v));});" +
+  "callbacksBuilder.hiddenValueCallback('s',JSON.stringify(o));";
+/** seed (script) -> node under test (or a PageNode `node`) -> dump. */
+function emu(
+  nodes: Record<string, Record<string, Doc>>,
+  under: string,
+  seed = "",
+  outcomes: string[] = ["outcome"],
+  options: JourneyOptions = {},
+) {
+  return new JourneyEmulator(
+    new JourneyConfig({
+      realm: "alpha",
+      trees: {
+        t: {
+          entryNodeId: "seed",
+          identityResource: "managed/alpha_user",
+          nodes: {
+            seed: { nodeType: "ScriptedDecisionNode", connections: { next: "node" } },
+            node: {
+              nodeType: under,
+              connections: Object.fromEntries(outcomes.map((o) => [o, "dump"])),
+            },
+            dump: { nodeType: "ScriptedDecisionNode", connections: { true: SUCCESS } },
+          },
+        },
+      },
+      nodes: {
+        ...nodes,
+        ScriptedDecisionNode: {
+          seed: { script: "seed", outcomes: ["next"] },
+          dump: { script: "dump", outcomes: ["true"] },
+        },
+      },
+      scripts: { seed: script(`${seed};action.goTo('next');`), dump: script(DUMP) },
+    } as never),
+    runner,
+    idm(),
+    options,
+  );
+}
+const req = (e: JourneyEmulator, body: JsonValue = {}) =>
+  e.request({
+    method: "POST",
+    path: "authenticate",
+    query: { authIndexType: "service", authIndexValue: "t" },
+    body,
+  });
+type Wire = {
+  callbacks: {
+    _id?: number;
+    type: string;
+    input: { name: string; value: JsonValue }[];
+    output: { name: string; value: JsonValue }[];
+  }[];
+};
+const fill = (body: JsonValue, values: Record<number, JsonValue>): JsonValue => {
+  const copy = structuredClone(body) as Wire;
+  for (const [index, value] of Object.entries(values)) {
+    const input = copy.callbacks[Number(index)]?.input[0];
+    if (!input) throw new Error(`no input at ${index}`);
+    input.value = value;
+  }
+  return copy as unknown as JsonValue;
+};
+const dumped = (body: JsonValue): Doc =>
+  JSON.parse(
+    String((body as Wire).callbacks[0]?.output.find((f) => f.name === "value")?.value),
+  ) as Doc;
+/** Declares the one missing behaviour a test expects, then checks the 501 names it. */
+const refused = (r: { status: number; body: JsonValue }, name: string): void => {
+  expect(r.status).toBe(501);
+  expect(String((r.body as Doc).message)).toContain(name);
+};
+
+describe("P2-1 ValidatedUsernameNode merges into shared objectAttributes", () => {
+  const VU = { validateInput: false, usernameAttribute: "userName" };
+  it("keeps keys an earlier node wrote", async () => {
+    const e = emu(
+      { ValidatedUsernameNode: { node: VU } },
+      "ValidatedUsernameNode",
+      "nodeState.putShared('objectAttributes',{givenName:'G'})",
+    );
+    const first = await req(e);
+    const done = await req(e, fill(first.body, { 0: "neo" }));
+    expect(dumped(done.body).objectAttributes).toEqual({ givenName: "G", userName: "neo" });
+  });
+  it("keeps a sibling Attribute Collector's answer on the same page", async () => {
+    const e = emu(
+      {
+        PageNode: {
+          node: {
+            nodes: [
+              { _id: "ac", nodeType: "AttributeCollectorNode" },
+              { _id: "vu", nodeType: "ValidatedUsernameNode" },
+            ],
+          },
+        },
+        AttributeCollectorNode: {
+          ac: { attributesToCollect: ["givenName"], validateInputs: false, required: false },
+        },
+        ValidatedUsernameNode: { vu: VU },
+      },
+      "PageNode",
+    );
+    const first = await req(e);
+    const done = await req(e, fill(first.body, { 0: "G", 1: "neo" }));
+    expect(dumped(done.body).objectAttributes).toEqual({ givenName: "G", userName: "neo" });
+  });
+  it("refuses a non-object shared objectAttributes rather than replacing it", async () => {
+    const e = emu(
+      { ValidatedUsernameNode: { node: VU } },
+      "ValidatedUsernameNode",
+      "nodeState.putShared('objectAttributes','text')",
+    );
+    const name = "ValidatedUsernameNode over non-object shared objectAttributes";
+    expectEmulationFailure(name);
+    const first = await req(e);
+    refused(await req(e, fill(first.body, { 0: "neo" })), name);
+  });
+});
