@@ -1374,6 +1374,11 @@ fn journey_push_reads_a_page_refusal_only_from_its_message() {
             json!({"code": 400, "message": "Invalid upstream response", "detail": "Node does not exist: user"}),
             false,
         ),
+        // The whole measured diagnostic, but outside `message`.
+        (
+            json!({"code": 400, "message": "Invalid upstream response", "detail": "Invalid config: Node does not exist: user"}),
+            false,
+        ),
         (
             json!({"code": 400, "reason": "Bad Request", "message": "Invalid config: Node does not exist: user"}),
             true,
