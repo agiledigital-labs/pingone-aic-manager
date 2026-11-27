@@ -124,6 +124,8 @@ struct Tenant {
     others: Map<String, Value>,
     /// A node id whose GET answers with this agent reply instead.
     fail_get: Option<(&'static str, Value)>,
+    /// A body that replaces the realm's journey listing.
+    listing: Option<Value>,
     calls: Vec<(String, String)>,
 }
 
@@ -134,6 +136,7 @@ impl Tenant {
             fail_put: None,
             others: Map::new(),
             fail_get: None,
+            listing: None,
             calls: Vec::new(),
         }
     }
@@ -148,6 +151,9 @@ impl Tenant {
             None => json!({"type": "api_error", "status": 404, "body": "fixture: no such object"}),
         };
         match (method, rest.split('/').collect::<Vec<_>>().as_slice()) {
+            ("GET", ["", "trees?_queryFilter=true&_pageSize=1000"]) if self.listing.is_some() => {
+                found(self.listing.as_ref())
+            }
             ("GET", ["", "trees?_queryFilter=true&_pageSize=1000"]) => {
                 let names = std::iter::once("Login").chain(self.others.keys().map(String::as_str));
                 let result: Vec<Value> = names.map(|name| json!({"_id": name})).collect();
@@ -746,4 +752,35 @@ fn journey_status_and_diff_list_a_type_only_retype() {
         .unwrap_or_else(|| panic!("{stdout}"));
     let user = user_part(parts);
     assert_eq!(user["node_type"], "PasswordCollectorNode", "{user}");
+}
+
+/// Regression (review round 5 P1-2): a journey listing whose `result` is not
+/// an array was reported by quoting the whole body. The discriminating input
+/// is a synthetic secret inside an object `result`; the diagnostic must name
+/// the listing and the shape, not the value.
+#[test]
+fn a_malformed_journey_listing_is_described_by_shape() {
+    const SECRET: &str = "SYNTHETIC-LISTING-SECRET-4be0";
+    let project = Project::new();
+    project.write_snapshot(&journey());
+    project.write_export(&journey());
+    // A tenant change to a page child, so status asks which other journeys
+    // share it — the one read that needs the listing.
+    let mut remote = journey();
+    remote["nodes"]["user"]["validateInput"] = json!(true);
+    let mut tenant = Tenant::new(remote);
+    tenant.listing = Some(json!({"result": {"secretKey": SECRET}}));
+
+    let (output, _) = project.journey(tenant, &["status", "Login", "--json"]);
+    let both = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!both.contains(SECRET), "{both}");
+    assert!(both.contains("unexpected journey list shape"), "{both}");
+    assert!(
+        both.contains("secretKey"),
+        "the shape names the field: {both}"
+    );
 }
