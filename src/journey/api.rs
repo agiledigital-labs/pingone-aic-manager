@@ -119,6 +119,13 @@ fn parse_node_types(result: &[Value]) -> Vec<NodeType> {
 }
 
 pub async fn list_trees(tenant: &str, realm: &str) -> Result<Vec<String>> {
+    Ok(list_trees_checked(tenant, realm).await?.0)
+}
+
+/// [`list_trees`], plus a description of each row it could not name (no
+/// string `_id`) — for a caller whose answer is only complete if every
+/// journey was seen.
+pub async fn list_trees_checked(tenant: &str, realm: &str) -> Result<(Vec<String>, Vec<String>)> {
     let path = format!(
         "{}/trees?_queryFilter=true&_pageSize=1000",
         trees_path(realm)
@@ -137,13 +144,25 @@ pub async fn list_trees(tenant: &str, realm: &str) -> Result<Vec<String>> {
             ),
         })?;
 
-    let mut names: Vec<String> = result
-        .iter()
-        .filter_map(|tree| tree.get("_id").and_then(Value::as_str))
-        .map(str::to_owned)
-        .collect();
+    Ok(tree_names(result))
+}
+
+/// The journey names in a listing's rows, sorted, and a shape-only note
+/// for each row with no string `_id`.
+fn tree_names(rows: &[Value]) -> (Vec<String>, Vec<String>) {
+    let mut names = Vec::new();
+    let mut skipped = Vec::new();
+    for (index, row) in rows.iter().enumerate() {
+        match row.get("_id").and_then(Value::as_str) {
+            Some(name) => names.push(name.to_owned()),
+            None => skipped.push(format!(
+                "journey list row {index}: `_id` is {}",
+                shape(row.get("_id"))
+            )),
+        }
+    }
     names.sort();
-    Ok(names)
+    (names, skipped)
 }
 
 pub async fn read_tree(tenant: &str, realm: &str, name: &str) -> Result<Value> {
@@ -319,7 +338,7 @@ pub async fn list_custom_node_types(tenant: &str) -> Result<Vec<Value>> {
 /// object, its field **names**. Never the value itself — a node config can
 /// hold a secret, and these messages reach stderr, status notes and errors,
 /// none of which pass through `diff`'s masking.
-fn shape(value: Option<&Value>) -> String {
+pub(crate) fn shape(value: Option<&Value>) -> String {
     match value {
         None => "absent".into(),
         Some(Value::Null) => "null".into(),
@@ -1422,6 +1441,21 @@ mod tests {
         )
         .await
         .expect_err("a write fails")
+    }
+
+    /// Regression (review round 7 P2-2): a listing row with no string `_id`
+    /// was dropped silently, so `using-script` could answer for a journey it
+    /// never saw. The discriminating input is such a row between two named
+    /// ones; it must be reported by shape, the others kept.
+    #[test]
+    fn an_unnamed_listing_row_is_reported_not_dropped() {
+        let (names, skipped) = tree_names(&[
+            json!({"_id": "b"}),
+            json!({"_id": 7, "description": "SECRET-ROW"}),
+            json!({"_id": "a"}),
+        ]);
+        assert_eq!(names, ["a", "b"]);
+        assert_eq!(skipped, ["journey list row 1: `_id` is a number"]);
     }
 
     /// Regression (review round 7 P1-1): the write's `aic logs tx` lookup

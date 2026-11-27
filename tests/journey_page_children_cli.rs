@@ -983,3 +983,96 @@ fn an_incomplete_script_search_says_so_and_fails() {
         json!({"journeys": ["Login"], "incomplete": true, "unread": ["Register: its tree"]})
     );
 }
+
+/// Regression (review round 7 P1-2, P2-1, P2-2): every way a successful
+/// reply can still leave a journey's answer unknown — and the one where a
+/// match settles it anyway. Login's only script reference is the page child
+/// `script`. Each case reshapes one reply; an unknown answer must exit
+/// non-zero with the incomplete object naming what was unread, and a settled
+/// one must stay the plain array with exit 0.
+#[test]
+fn every_unusable_successful_reply_makes_the_script_search_incomplete() {
+    const SCRIPT: &str = "00000000-0000-0000-0000-000000000000";
+    type Reshape = fn(&mut Tenant);
+    let cases: [(&str, Reshape, Value); 7] = [
+        (
+            "a page with no `nodes`",
+            |t| t.state["nodes"]["page"] = json!({"_id": "page"}),
+            json!(["Login: the children of PageNode/page"]),
+        ),
+        (
+            "the scripted child with no `nodeType`",
+            |t| {
+                t.state["nodes"]["page"]["nodes"][1]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("nodeType");
+            },
+            json!(["Login: a child of PageNode/page"]),
+        ),
+        (
+            "a candidate config that is JSON null",
+            |t| t.state["nodes"]["script"] = Value::Null,
+            json!(["Login: ScriptedDecisionNode/script"]),
+        ),
+        (
+            "a candidate config that is not an object",
+            |t| t.state["nodes"]["script"] = json!(["not", "a", "config"]),
+            json!(["Login: ScriptedDecisionNode/script"]),
+        ),
+        (
+            "a tree whose `nodes` is an array",
+            |t| t.state["tree"]["nodes"] = json!([]),
+            json!(["Login: its tree (`nodes` is an array of 0)"]),
+        ),
+        (
+            "a tree entry with no `nodeType`",
+            |t| {
+                t.state["tree"]["nodes"]["page"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("nodeType");
+            },
+            json!(["Login: tree entry page (`nodeType` is absent)"]),
+        ),
+        (
+            "a listing row with no `_id`",
+            |t| {
+                t.listing = Some(
+                    json!({"type": "json", "value": {"result": [{"_id": "Login"}, {"name": "x"}]}}),
+                )
+            },
+            json!(["journey list row 1: `_id` is absent"]),
+        ),
+    ];
+    let project = Project::new();
+    for (case, reshape, unread) in cases {
+        let mut tenant = Tenant::new(journey());
+        reshape(&mut tenant);
+        let (output, _) = project.journey(tenant, &["using-script", SCRIPT, "--json"]);
+        assert!(!output.status.success(), "{case}: {}", streams(&output));
+        let stdout: Value = serde_json::from_slice(&output.stdout)
+            .unwrap_or_else(|error| panic!("{case}: {error}: {}", streams(&output)));
+        let journeys = if case.contains("listing") {
+            json!(["Login"])
+        } else {
+            json!([])
+        };
+        assert_eq!(
+            stdout,
+            json!({"journeys": journeys, "incomplete": true, "unread": unread}),
+            "{case}"
+        );
+    }
+
+    // Settled: an unaddressable entry beside the matching sibling.
+    let mut tenant = Tenant::new(journey());
+    tenant.state["nodes"]["page"]["nodes"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("nodeType");
+    let (output, _) = project.journey(tenant, &["using-script", SCRIPT, "--json"]);
+    assert!(output.status.success(), "{}", streams(&output));
+    let stdout: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(stdout, json!(["Login"]));
+}

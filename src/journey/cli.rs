@@ -624,22 +624,36 @@ fn api_not_found(error: &Error) -> bool {
     matches!(error, Error::Api { status: 404, .. })
 }
 
-/// The tree's nodes worth reading when looking for a script: script-typed
-/// ones, and pages, whose children the tree does not list.
-fn script_search_refs(tree: &Value) -> Vec<(String, String)> {
-    tree.get("nodes")
-        .and_then(Value::as_object)
-        .map(|nodes| {
-            nodes
-                .iter()
-                .filter_map(|(id, meta)| {
-                    let node_type = meta.get("nodeType").and_then(Value::as_str)?;
-                    (may_reference_script(node_type) || node_type == "PageNode")
-                        .then(|| (id.clone(), node_type.to_string()))
-                })
-                .collect()
-        })
-        .unwrap_or_default()
+/// The tree's nodes worth reading when looking for a script — script-typed
+/// ones, and pages, whose children the tree does not list — and a
+/// shape-only note for whatever cannot be addressed: a `nodes` that is not
+/// an object, or an entry with no string `nodeType`. Either may hide a
+/// reference, so the search of that journey is not complete.
+fn script_search_refs(tree: &Value) -> (Vec<(String, String)>, Vec<String>) {
+    let Some(nodes) = tree.get("nodes").and_then(Value::as_object) else {
+        return (
+            Vec::new(),
+            vec![format!(
+                "its tree (`nodes` is {})",
+                api::shape(tree.get("nodes"))
+            )],
+        );
+    };
+    let mut refs = Vec::new();
+    let mut problems = Vec::new();
+    for (id, meta) in nodes {
+        match meta.get("nodeType").and_then(Value::as_str) {
+            Some(node_type) if may_reference_script(node_type) || node_type == "PageNode" => {
+                refs.push((id.clone(), node_type.to_string()));
+            }
+            Some(_) => {}
+            None => problems.push(format!(
+                "tree entry {id} (`nodeType` is {})",
+                api::shape(meta.get("nodeType"))
+            )),
+        }
+    }
+    (refs, problems)
 }
 
 /// What a script search of one journey established.
@@ -667,12 +681,24 @@ where
     F: FnMut(String, String) -> Fut,
     Fut: std::future::Future<Output = Result<Value>>,
 {
-    let mut queue = script_search_refs(tree);
+    let (mut queue, mut unread) = script_search_refs(tree);
+    for problem in &unread {
+        eprintln!("warning: skipped {problem}");
+    }
     let mut seen: std::collections::HashSet<String> =
         queue.iter().map(|(id, _)| id.clone()).collect();
-    let mut unread = Vec::new();
     while let Some((node_id, node_type)) = queue.pop() {
         match read(node_type.clone(), node_id.clone()).await {
+            // A config this search cannot look inside — `null` (an empty
+            // success body decodes to it) or any non-object — says nothing
+            // about the script, so it is unread rather than a "no".
+            Ok(config) if !config.is_object() => {
+                eprintln!(
+                    "warning: journey node {node_type}/{node_id} came back as {}, not a config",
+                    api::shape(Some(&config))
+                );
+                unread.push(format!("{node_type}/{node_id}"));
+            }
             Ok(config) => {
                 if node_config_references_script(&config, script_id) {
                     return ScriptSearch {
@@ -1206,7 +1232,12 @@ pub async fn run(cmd: JourneyCommand) -> Result<()> {
             let realm = realm_arg("journey", realm)?;
             let mut matches = Vec::new();
             let mut unread = Vec::new();
-            for name in api::list_trees(&tenant, &realm).await? {
+            let (names, skipped) = api::list_trees_checked(&tenant, &realm).await?;
+            for row in &skipped {
+                eprintln!("warning: skipped {row}");
+            }
+            unread.extend(skipped);
+            for name in names {
                 let tree = match api::read_tree(&tenant, &realm, &name).await {
                     Ok(tree) => tree,
                     Err(error) => {
@@ -1764,7 +1795,7 @@ mod tests {
 
     #[test]
     fn script_search_refs_returns_script_nodes_and_pages_only() {
-        let mut refs = script_search_refs(&json!({
+        let (mut refs, problems) = script_search_refs(&json!({
             "nodes": {
                 "script": {"nodeType": "ScriptedDecisionNode"},
                 "page": {"nodeType": "PageNode"},
@@ -1780,6 +1811,7 @@ mod tests {
                 ("script".to_string(), "ScriptedDecisionNode".to_string())
             ]
         );
+        assert!(problems.is_empty(), "{problems:?}");
     }
 
     /// Drives the real search with a stub reader. The discriminating input
