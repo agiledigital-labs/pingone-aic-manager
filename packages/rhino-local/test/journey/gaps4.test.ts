@@ -366,6 +366,16 @@ describe("one-time password and choice nodes as Page children", () => {
     }
   });
 
+  // Review round 1 P2-1: a re-send keeps the lone-child rule (assumed; the probe stops at the first answer).
+  it("a lone one-time password child re-sent after an empty answer still leaves no pageNodeCallbacks", async () => {
+    const emu = otp(["o"]);
+    const first = await run(emu, "page");
+    const resent = await run(emu, "page", answer(first.body, { 0: "" }));
+    expect(types(resent.body)).toEqual(["PasswordCallback"]);
+    const done = dump((await run(emu, "page", answer(resent.body, { 0: "123456" }))).body);
+    expect(done).toMatchObject({ branch: "T", pageNodeCallbacks: null });
+  });
+
   it("after a username collector the one-time password input is IDToken2, and the page records both callbacks", async () => {
     const emu = otp(["u", "o"]);
     const first = await run(emu, "page");

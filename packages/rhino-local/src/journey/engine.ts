@@ -223,6 +223,22 @@ function resolveEsv(
 }
 /** Of the session properties AM owns, the ones a script's putSessionProperty was measured to fail on. */
 const SESSION_OWNED_MEASURED = ["UserId", "AuthLevel", "Service", "Locale"];
+/**
+ * Measured: a page whose only child is one of these nodes leaves no pageNodeCallbacks at all
+ * (doc 25, "Nodes as Page children"; the one-time password and choice nodes 2026-11-25).
+ */
+function lonePageChild(nodes: readonly unknown[]): boolean {
+  const only = nodes.length === 1 ? nodes[0] : undefined;
+  return (
+    isDocument(only) &&
+    [
+      "MessageNode",
+      "GetAuthenticatorAppNode",
+      "OneTimePasswordCollectorDecisionNode",
+      "ChoiceCollectorNode",
+    ].includes(String(only.nodeType))
+  );
+}
 /** Whether the request names a language, which makes a choice between locales unmeasured. */
 function acceptsLanguage(request: AuthenticateRequest): boolean {
   return Object.keys(request.headers ?? {}).some((h) => h.toLowerCase() === "accept-language");
@@ -1103,15 +1119,7 @@ export class JourneyEmulator {
         return { outcome, callbacks: [] };
       }
       state.page = { counts, effects: structuredClone(collected) };
-      // Measured: a page whose only child is one of these nodes leaves no pageNodeCallbacks at all
-      // (doc 25, "Nodes as Page children"; the one-time password and choice nodes 2026-11-25).
-      const display = config.nodes.length === 1 && isDocument(config.nodes[0]) &&
-        [
-          "MessageNode",
-          "GetAuthenticatorAppNode",
-          "OneTimePasswordCollectorDecisionNode",
-          "ChoiceCollectorNode",
-        ].includes(String(config.nodes[0].nodeType));
+      const display = lonePageChild(config.nodes);
       const children = counts.flatMap((count, index) => Array<number>(count).fill(index));
       if (
         config.nodes.some((child) => isDocument(child) && child.nodeType === "ScriptedDecisionNode")
@@ -1165,8 +1173,14 @@ export class JourneyEmulator {
       this.measured(
         "required empty attribute re-sends the whole page with echoed values and empty failedPolicies",
       );
-      // A lone display child leaves no pageNodeCallbacks on a re-send either; that is not
-      // separately measured, and only the collectors re-send.
+      // A re-sent lone child (a one-time password collector after an empty answer) keeps the
+      // first send's rule: the probe stopped at the first answer, so this is assumed.
+      if (lonePageChild(config.nodes)) {
+        this.evidence.assumed(
+          "a Page whose only child is re-sent leaves no pageNodeCallbacks, as on its first send; the re-send is unmeasured",
+        );
+        return { outcome: null, callbacks: retry, ...texts };
+      }
       return { outcome: null, callbacks: retry, ...texts, pageChildren: children };
     }
     return { outcome, callbacks: [] };
