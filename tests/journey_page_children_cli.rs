@@ -1263,7 +1263,9 @@ fn push_from_elsewhere(choose: impl FnOnce(&Project, &mut Command)) -> (String, 
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
     assert_eq!(output.status.code(), Some(1), "{stderr}");
     let (_, sent) = tenant.sent_ids.last().unwrap_or_else(|| panic!("{stderr}"));
-    (sent.clone(), stderr, project.0.clone())
+    // The CLI canonicalises the root it prints; the fixture's spelling may go
+    // through a symlinked TMPDIR, so compare the canonical path.
+    (sent.clone(), stderr, project.0.canonicalize().unwrap())
 }
 
 /// Regression (review round 9 P1-2): a push run with `--project` from

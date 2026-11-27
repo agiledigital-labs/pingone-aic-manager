@@ -945,8 +945,9 @@ impl std::fmt::Display for PushError {
                 "\n  this write was assigned transaction id {}; if the request reached the \
                  tenant, `{}`{from} searches the tenant's logs for that id. Events take a \
                  while to reach the logs, so an empty answer does not mean the write did not \
-                 land; `--wait` polls for the request's completion event for up to {} \
-                 seconds (`--timeout <SECS>` changes that) and then prints what has arrived",
+                 land; `--wait` keeps polling for the request's completion event but starts \
+                 no new poll after {} seconds (`--timeout <SECS>` sets that budget), then \
+                 prints what has arrived",
                 self.lookup.transaction,
                 self.lookup.command(),
                 crate::logs::cli::TX_WAIT_DEFAULT_SECS
@@ -1546,7 +1547,10 @@ mod tests {
             "{message}"
         );
         assert!(message.contains("`--wait`"), "{message}");
-        assert!(message.contains("for up to 60 seconds"), "{message}");
+        assert!(
+            message.contains("no new poll after 60 seconds"),
+            "{message}"
+        );
     }
 
     /// Regression (review round 10 P1-3): a project root that is not valid

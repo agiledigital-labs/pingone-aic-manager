@@ -1417,14 +1417,16 @@ the request went out, says only that if the request reached the tenant
 `aic logs tx <id> --tenant=<tenant>` searches that tenant's logs for the id —
 naming the tenant the push wrote to, not whatever `aic logs` would default to,
 and adding `--project=<dir>` with the absolute project root when the push chose
-its project with `--project` or `AIC_PROJECT` (neither is in effect for the
-next command typed). Values are shell-quoted and attached to their option, so
+its project with `--project` or `AIC_PROJECT` (the flag, or a command-scoped
+`AIC_PROJECT=<dir> aic …` assignment, is not in effect for the next command
+typed; an exported variable is, but the lookup carries the root regardless). Values are shell-quoted and attached to their option, so
 the line pastes as printed and a tenant alias starting with `-` is not read as
 a flag. A project root that is not valid UTF-8 cannot be printed, so the
 lookup leaves `--project` out and says to run it from the project directory.
 Events take a while to reach the logs, so an empty answer does not mean the
-write did not land; `--wait` polls for the request's completion event for up
-to 60 seconds (`--timeout <SECS>` changes that), then prints what has arrived.
+write did not land; `--wait` keeps polling for the request's completion event
+but starts no new poll after 60 seconds (`--timeout <SECS>` sets that budget;
+a poll begun just before it can finish after it), then prints what has arrived.
 A failed read carries no
 lookup, because the agent picks a read's ids (a fresh one per retry) and the
 CLI cannot know them.
