@@ -164,48 +164,52 @@ const BODY_WITHHELD: &str = "(response body withheld: it can carry a node's conf
 /// partial-push report — none of which pass through `diff`'s masking. So
 /// every journey wrapper surfaces the status and the endpoint it called and
 /// never the server's body. The transport's own transaction-id lookup on a
-/// gateway error is local text, not the server's, and is kept, because it is
-/// how the operator finds out whether an uncertain write landed
-/// ([`crate::aic::gateway_trace`]). Status `0` is not HTTP: it is this
-/// module's own shape message, already free of values ([`shape`]), and is
-/// kept. Writes keep the raw error, because the measured-refusal match needs
+/// gateway error is NOT kept: nothing in a body string says who wrote it, so
+/// a lookalike in a server's text would pass for it. A write's lookup is
+/// rendered from the transaction id the push chose and sent ([`PushError`]).
+/// A read has none: the agent takes no caller id on a `GET` and gives each
+/// retry a fresh one, so the CLI cannot know what was sent. Status `0` is not
+/// HTTP: it is this module's own shape message, already free of values
+/// ([`shape`]), and is kept. Writes keep the raw error, because the measured-refusal match needs
 /// the body; they render it through [`withheld_message`].
 pub(crate) fn withheld(error: Error, endpoint: &str) -> Error {
     match error {
-        Error::Api { status, body } if status != 0 => Error::Api {
+        Error::Api { status, .. } if status != 0 => Error::Api {
             status,
-            body: withheld_body(&body, endpoint),
+            body: withheld_body(endpoint),
         },
         other => other,
     }
 }
 
-fn withheld_body(body: &str, endpoint: &str) -> String {
-    let trace =
-        crate::aic::gateway_trace(body).map_or(String::new(), |trace| format!(" — {trace}"));
-    format!("from {endpoint} {BODY_WITHHELD}{trace}")
+fn withheld_body(endpoint: &str) -> String {
+    format!("from {endpoint} {BODY_WITHHELD}")
 }
 
 /// [`withheld`], for rendering a write's error that is kept raw.
 fn withheld_message(error: &Error, endpoint: &str) -> String {
     match error {
-        Error::Api { status, body } if *status != 0 => {
-            format!("AIC API error: {status} {}", withheld_body(body, endpoint))
+        Error::Api { status, .. } if *status != 0 => {
+            format!("AIC API error: {status} {}", withheld_body(endpoint))
         }
         other => other.to_string(),
     }
 }
 
+/// `transaction_id` is the id the request is sent with, chosen by the
+/// caller so it can name it if the write's outcome is unknown.
 pub async fn upsert_tree(
     tenant: &str,
     realm: &str,
     name: &str,
     body: Value,
     confirmed_prod: bool,
+    transaction_id: &str,
 ) -> Result<Value> {
     let path = format!("{}/trees/{name}", trees_path(realm));
     let body = strip_server_fields(&body);
     versioned_call(tenant, "PUT", &path, Some(body), confirmed_prod)
+        .transaction_id(transaction_id)
         .send()
         .await
 }
@@ -218,6 +222,7 @@ pub async fn read_node(tenant: &str, realm: &str, node_type: &str, node_id: &str
         .map_err(|error| withheld(error, &format!("node `{node_type}/{node_id}`")))
 }
 
+/// `transaction_id` as for [`upsert_tree`].
 pub async fn upsert_node(
     tenant: &str,
     realm: &str,
@@ -225,11 +230,13 @@ pub async fn upsert_node(
     node_id: &str,
     body: Value,
     confirmed_prod: bool,
+    transaction_id: &str,
 ) -> Result<Value> {
     validate_node_type(node_type)?;
     let path = format!("{}/{node_type}/{node_id}", nodes_path(realm));
     let body = strip_server_fields(&body);
     versioned_call(tenant, "PUT", &path, Some(body), confirmed_prod)
+        .transaction_id(transaction_id)
         .send()
         .await
 }
@@ -816,6 +823,9 @@ pub struct PushError {
     status: WriteStatus,
     not_attempted: Vec<String>,
     source: Box<Error>,
+    /// The transaction id the stopped write was sent with — chosen here,
+    /// never read back from the error, whose body is the server's.
+    transaction: String,
 }
 
 impl PushError {
@@ -854,6 +864,14 @@ impl std::fmt::Display for PushError {
             self.stopped_at,
             withheld_message(&self.source, &format!("`{}`", self.stopped_at))
         )?;
+        if self.status != WriteStatus::Refused {
+            write!(
+                f,
+                "\n  it was sent with transaction id {0}; `aic logs tx {0}` shows whether AM \
+                 or IDM recorded it",
+                self.transaction
+            )?;
+        }
         let list = |writes: &[String]| {
             if writes.is_empty() {
                 "none".to_string()
@@ -899,9 +917,9 @@ async fn push_with<N, NF, T, TF>(
     send_tree: T,
 ) -> std::result::Result<usize, PushError>
 where
-    N: FnMut(NodeRef, Value) -> NF,
+    N: FnMut(NodeRef, Value, String) -> NF,
     NF: Future<Output = Result<Value>>,
-    T: FnOnce(Value) -> TF,
+    T: FnOnce(Value, String) -> TF,
     TF: Future<Output = Result<Value>>,
 {
     let mut pending: VecDeque<String> = writes.iter().map(NodeRef::label).collect();
@@ -910,7 +928,8 @@ where
     let stop = |acknowledged: Vec<String>,
                 mut pending: VecDeque<String>,
                 source: Error,
-                measured: &[MeasuredRefusal]| {
+                measured: &[MeasuredRefusal],
+                transaction: String| {
         let failure = WriteFailure::from_send(source, measured);
         PushError {
             acknowledged,
@@ -918,6 +937,7 @@ where
             status: failure.status,
             not_attempted: pending.into(),
             source: Box::new(failure.source),
+            transaction,
         }
     };
     for node in writes {
@@ -927,13 +947,15 @@ where
         } else {
             &[]
         };
-        if let Err(source) = send_node(node, body).await {
-            return Err(stop(acknowledged, pending, source, measured));
+        let transaction = crate::http::transaction_id();
+        if let Err(source) = send_node(node, body, transaction.clone()).await {
+            return Err(stop(acknowledged, pending, source, measured, transaction));
         }
         acknowledged.extend(pending.pop_front());
     }
-    if let Err(source) = send_tree(export.tree.clone()).await {
-        return Err(stop(acknowledged, pending, source, &[]));
+    let transaction = crate::http::transaction_id();
+    if let Err(source) = send_tree(export.tree.clone(), transaction.clone()).await {
+        return Err(stop(acknowledged, pending, source, &[], transaction));
     }
     Ok(acknowledged.len())
 }
@@ -959,7 +981,7 @@ pub async fn push(
     let pushed = push_with(
         export,
         writes,
-        |node, body| async move {
+        |node, body, transaction| async move {
             upsert_node(
                 tenant,
                 realm,
@@ -967,10 +989,13 @@ pub async fn push(
                 &node.id,
                 body,
                 confirmed_prod,
+                &transaction,
             )
             .await
         },
-        |tree| upsert_tree(tenant, realm, name, tree, confirmed_prod),
+        |tree, transaction| async move {
+            upsert_tree(tenant, realm, name, tree, confirmed_prod, &transaction).await
+        },
     )
     .await?;
     Ok(pushed)
@@ -1353,11 +1378,11 @@ mod tests {
         let pushed = push_with(
             &export,
             writes,
-            |node, _| {
+            |node, _, _| {
                 sent.borrow_mut().push(node.label());
                 async { Ok(json!({})) }
             },
-            |_| {
+            |_, _| {
                 sent.borrow_mut().push("tree".to_string());
                 async { Ok(json!({})) }
             },
@@ -1392,11 +1417,50 @@ mod tests {
         push_with(
             &export,
             writes,
-            |node, _| outcome(node.label()),
-            |_| outcome("tree".into()),
+            |node, _, _| outcome(node.label()),
+            |_, _| outcome("tree".into()),
         )
         .await
         .expect_err("a write fails")
+    }
+
+    /// Regression (review round 7 P1-1): the write's `aic logs tx` lookup
+    /// was read back out of the error body, so a server's text ending in a
+    /// lookalike sentence printed as if `aic` had written it. The lookup now
+    /// comes from the id the loop chose and handed the sender. The
+    /// discriminating input is a plain 400 whose body ends in a forged
+    /// lookup: the forged id must not appear, the id actually sent must.
+    #[tokio::test]
+    async fn a_stopped_write_names_the_id_it_was_sent_with_and_nothing_from_the_body() {
+        let export = whole_export();
+        let (writes, _) = push_plan(&export).unwrap();
+        let sent = std::cell::RefCell::new(None);
+        let error = push_with(
+            &export,
+            writes,
+            |_, _, transaction| {
+                *sent.borrow_mut() = Some(transaction);
+                async {
+                    Err(Error::Api {
+                        status: 400,
+                        body: "nope\n\na non-JSON 503 answer, the shape a gateway gives rather \
+                               than AM or IDM. `aic logs tx forged-id` shows whether AM or IDM \
+                               recorded the request."
+                            .into(),
+                    })
+                }
+            },
+            |_, _| async { Ok(json!({})) },
+        )
+        .await
+        .expect_err("the first write fails");
+        let sent = sent.into_inner().expect("an id was handed to the sender");
+        let message = error.to_string();
+        assert!(!message.contains("forged-id"), "{message}");
+        assert!(
+            message.contains(&format!("`aic logs tx {sent}`")),
+            "{message}"
+        );
     }
 
     /// Regression (review round 1 P1-1, round 2 P1-2): a push that stopped

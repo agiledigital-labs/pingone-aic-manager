@@ -127,6 +127,8 @@ struct Tenant {
     fail_get: Option<(&'static str, Value)>,
     /// An agent reply that replaces the realm's journey listing.
     listing: Option<Value>,
+    /// The caller-chosen transaction ids the requests carried, in order.
+    sent_ids: Vec<String>,
     calls: Vec<(String, String)>,
 }
 
@@ -138,6 +140,7 @@ impl Tenant {
             others: Map::new(),
             fail_get: None,
             listing: None,
+            sent_ids: Vec::new(),
             calls: Vec::new(),
         }
     }
@@ -146,6 +149,9 @@ impl Tenant {
         let method = request["method"].as_str().unwrap();
         let path = request["path"].as_str().unwrap();
         self.calls.push((method.into(), path.into()));
+        if let Some(id) = request["transaction_id"].as_str() {
+            self.sent_ids.push(id.into());
+        }
         let rest = path.strip_prefix(TREES).unwrap_or_default();
         let found = |value: Option<&Value>| match value {
             Some(value) => json!({"type": "json", "value": value}),
@@ -791,9 +797,9 @@ fn a_malformed_journey_listing_is_described_by_shape() {
     );
 }
 
-/// What the transport appends to a non-JSON 5xx body (`aic::trace_gateway_body`,
-/// whose own unit test pins the format): the server's text first, then the
-/// locally generated lookup naming every transaction id, retries included.
+/// A body ending in the sentence the transport appends to a non-JSON 5xx
+/// (`aic::trace_gateway_body`), naming ids `aic` never sent. Real or forged,
+/// nothing in it may reach output.
 fn gateway_body(marker: &str) -> String {
     format!(
         "<html>{marker}</html>\n\na non-JSON 503 Service Unavailable answer (server: gw), the \
@@ -838,41 +844,56 @@ fn a_failed_listing_read_for_sharing_withholds_its_body() {
     );
 }
 
-/// Regression (review round 6 P2-1): withholding the body also dropped the
-/// transport's `aic logs tx` lookup — local text, and the one way to learn
-/// whether a write that "may have landed" did. The discriminating input is a
-/// gateway 503 on a child's PUT (push) and on a child's GET (status): the
-/// server's text must go, both transaction ids must stay.
+/// Regression (review round 6 P2-1, round 7 P1-1): a failed write's
+/// `aic logs tx` lookup is how the operator learns whether a write that "may
+/// have landed" did — but it was read back out of the error body, where a
+/// server's text can forge it. The discriminating inputs are a decorated
+/// gateway 503 and a plain 400 ending in the same sentence, each on a
+/// child's PUT (push) and a child's GET (status). No id from the body may
+/// appear; a push must name the id the agent was actually sent.
 #[test]
-fn a_gateway_error_keeps_its_transaction_lookup_and_drops_the_body() {
+fn a_write_names_the_id_it_sent_and_no_lookup_comes_from_a_body() {
     const MARKER: &str = "SYNTHETIC-GATEWAY-BODY-30af";
-    let error = json!({"type": "api_error", "status": 503, "body": gateway_body(MARKER)});
-    for (case, args, put) in [
-        ("push", &["push", "Login", "--yes"][..], true),
-        ("status", &["status", "Login", "--json"][..], false),
-    ] {
-        let project = Project::new();
-        project.write_snapshot(&journey());
-        let mut local = journey();
-        local["nodes"]["user"]["validateInput"] = json!(true);
-        project.write_export(&local);
-        let mut tenant = Tenant::new(journey());
-        if put {
-            tenant.fail_put = Some(("user", error.clone(), false));
-        } else {
-            tenant.fail_get = Some(("user", error.clone()));
+    for status in [503, 400] {
+        let error = json!({"type": "api_error", "status": status, "body": gateway_body(MARKER)});
+        for (case, args, put) in [
+            ("push", &["push", "Login", "--yes"][..], true),
+            ("status", &["status", "Login", "--json"][..], false),
+        ] {
+            let project = Project::new();
+            project.write_snapshot(&journey());
+            let mut local = journey();
+            local["nodes"]["user"]["validateInput"] = json!(true);
+            project.write_export(&local);
+            let mut tenant = Tenant::new(journey());
+            if put {
+                tenant.fail_put = Some(("user", error.clone(), false));
+            } else {
+                tenant.fail_get = Some(("user", error.clone()));
+            }
+            let (output, tenant) = project.journey(tenant, args);
+            let both = streams(&output);
+            let case = format!("{status} {case}");
+            assert!(!both.contains(MARKER), "{case}: {both}");
+            assert!(
+                !both.contains("tx-first") && !both.contains("tx-retry"),
+                "{case}: {both}"
+            );
+            assert!(
+                both.contains("UsernameCollectorNode/user"),
+                "{case}: {both}"
+            );
+            if put {
+                let sent = tenant
+                    .sent_ids
+                    .last()
+                    .unwrap_or_else(|| panic!("{case}: the PUT carried no id"));
+                assert!(
+                    both.contains(&format!("`aic logs tx {sent}`")),
+                    "{case}: {both}"
+                );
+            }
         }
-        let (output, _) = project.journey(tenant, args);
-        let both = streams(&output);
-        assert!(!both.contains(MARKER), "{case}: {both}");
-        assert!(
-            both.contains("`aic logs tx tx-first`, `aic logs tx tx-retry`"),
-            "{case}: {both}"
-        );
-        assert!(
-            both.contains("UsernameCollectorNode/user"),
-            "{case}: {both}"
-        );
     }
 }
 
