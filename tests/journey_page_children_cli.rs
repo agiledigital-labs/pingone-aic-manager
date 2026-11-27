@@ -134,6 +134,9 @@ struct Tenant {
     /// mismatch, so the next request is never dispatched.
     ping_fails_after_puts: Option<usize>,
     calls: Vec<(String, String)>,
+    /// Node configs by REST path below the trees prefix, answered ahead of
+    /// the by-id state: two node types can share one id.
+    by_path: Map<String, Value>,
 }
 
 impl Tenant {
@@ -147,6 +150,7 @@ impl Tenant {
             sent_ids: Vec::new(),
             ping_fails_after_puts: None,
             calls: Vec::new(),
+            by_path: Map::new(),
         }
     }
 
@@ -179,6 +183,9 @@ impl Tenant {
                 let names = std::iter::once("Login").chain(self.others.keys().map(String::as_str));
                 let result: Vec<Value> = names.map(|name| json!({"_id": name})).collect();
                 found(Some(&json!({ "result": result })))
+            }
+            ("GET", ["", "nodes", ..]) if self.by_path.contains_key(rest) => {
+                found(self.by_path.get(rest))
             }
             ("GET", ["", "trees", "Login"]) => found(Some(&self.state["tree"])),
             ("GET", ["", "trees", name]) => found(self.others.get(*name)),
@@ -1301,5 +1308,136 @@ fn journey_push_lookup_carries_a_project_chosen_by_the_environment() {
         lookup_words(&stderr),
         ["logs", "tx", &sent, "--tenant=stub", &project],
         "{stderr}"
+    );
+}
+
+/// Regression (Astra pre-release P1-1): a child GET that succeeds with an
+/// empty body decodes to `null`, and `pull` wrote `"script": null` into the
+/// export and the snapshot and exited 0. A config that is not a JSON object
+/// is unreadable: the pull fails and neither file is touched. The control is
+/// the same pull with the child readable, which succeeds.
+#[test]
+fn journey_pull_refuses_a_child_config_that_is_not_an_object() {
+    for config in [json!(null), json!("text"), json!([])] {
+        let project = Project::new();
+        project.write_snapshot(&journey());
+        project.write_export(&journey());
+        let before = project.files();
+        let mut tenant = Tenant::new(journey());
+        tenant.fail_get = Some(("script", json!({"type": "json", "value": config})));
+        let (output, _) = project.journey(tenant, &["pull", "Login"]);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(1), "{config}: {stderr}");
+        assert!(
+            stderr.contains("ScriptedDecisionNode/script"),
+            "{config}: {stderr}"
+        );
+        assert_eq!(project.files(), before, "{config}");
+    }
+    let project = Project::new();
+    project.write_snapshot(&journey());
+    project.write_export(&journey());
+    let (output, _) = project.journey(Tenant::new(journey()), &["pull", "Login"]);
+    assert!(output.status.success(), "{}", streams(&output));
+}
+
+/// Regression (Astra pre-release P1-1, local half): a local export whose
+/// node config is not an object was planned and PUT. It must be refused
+/// before any write.
+#[test]
+fn journey_push_refuses_a_local_node_config_that_is_not_an_object() {
+    let project = Project::new();
+    project.write_snapshot(&journey());
+    let mut local = journey();
+    local["nodes"]["script"] = json!(null);
+    project.write_export(&local);
+    let (output, tenant) = project.push(Tenant::new(journey()), &[]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(1), "{stderr}");
+    assert!(stderr.contains("script"), "{stderr}");
+    assert_eq!(tenant.writes(), Vec::<String>::new(), "{stderr}");
+}
+
+/// Regression (Astra pre-release P1-2): a page PUT's measured refusal was
+/// matched anywhere in the 400 body, so a 400 whose message was something
+/// else, with "Node does not exist" in another field, after the write had
+/// applied, was reported as refused and printed no lookup. Only the body's
+/// `message` field carries the measured diagnostic. The control is the
+/// measured refusal itself, which stays refused.
+#[test]
+fn journey_push_reads_a_page_refusal_only_from_its_message() {
+    for (body, refused) in [
+        (
+            json!({"code": 400, "message": "Invalid upstream response", "detail": "Node does not exist: user"}),
+            false,
+        ),
+        (
+            json!({"code": 400, "reason": "Bad Request", "message": "Invalid config: Node does not exist: user"}),
+            true,
+        ),
+    ] {
+        let project = Project::new();
+        project.write_snapshot(&journey());
+        let mut local = journey();
+        local["nodes"]["page"]["stage"] = json!("edited");
+        project.write_export(&local);
+        let mut tenant = Tenant::new(journey());
+        tenant.fail_put = Some((
+            "page",
+            json!({"type": "api_error", "status": 400, "body": body.to_string()}),
+            !refused,
+        ));
+        let (output, _) = project.push(tenant, &[]);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(1), "{stderr}");
+        assert_eq!(
+            stderr.contains("PageNode/page was refused and not applied"),
+            refused,
+            "{body}: {stderr}"
+        );
+        assert_eq!(
+            stderr.contains("`aic logs tx "),
+            !refused,
+            "{body}: {stderr}"
+        );
+    }
+}
+
+/// Regression (Astra pre-release P1-3): the script search de-duplicated
+/// reads by bare id, so a page child `ScriptedDecisionNode/shared` holding
+/// the script was never read once the tree listed a `DeviceMatchNode` at the
+/// same id, and `using-script` answered `[]` with exit 0. The two are
+/// distinct endpoints and both must be read.
+#[test]
+fn journey_using_script_reads_two_types_sharing_an_id() {
+    const SCRIPT: &str = "00000000-0000-0000-0000-000000000000";
+    let mut state = journey();
+    state["tree"]["nodes"]["shared"] =
+        json!({"nodeType": "DeviceMatchNode", "displayName": "d", "connections": {}});
+    state["nodes"]["page"]["nodes"][1]["_id"] = json!("shared");
+    let mut tenant = Tenant::new(state);
+    // One id, two endpoints: the fixture keys configs by id, so answer the
+    // DeviceMatchNode with an empty config and the scripted node with the
+    // script by path.
+    tenant.by_path.insert(
+        "/nodes/DeviceMatchNode/shared".into(),
+        json!({"_id": "shared"}),
+    );
+    tenant.by_path.insert(
+        "/nodes/ScriptedDecisionNode/shared".into(),
+        json!({"_id": "shared", "script": SCRIPT}),
+    );
+    let project = Project::new();
+    let (output, tenant) = project.journey(tenant, &["using-script", SCRIPT, "--json"]);
+    assert!(output.status.success(), "{}", streams(&output));
+    let stdout: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(stdout, json!(["Login"]), "{}", streams(&output));
+    assert!(
+        tenant
+            .calls
+            .iter()
+            .any(|(_, path)| path.ends_with("/ScriptedDecisionNode/shared")),
+        "{:?}",
+        tenant.calls
     );
 }
