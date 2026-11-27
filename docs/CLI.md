@@ -122,6 +122,7 @@ uniformly "Confirm a write to a production-themed tenant."
 | `managed field edit --allow-narrowing`                                  | `managed field edit --force`                                    |
 | `esv secret destroy\|delete --yes` (prod **and** the typed `yes`)       | `--yes` (prod) **plus** `--force` (skip the typed confirmation) |
 | `ctx rm --delete-keys`                                                  | `ctx rm --purge all --force` (plus `--yes` on production)       |
+| `journey push` overwrote an existing node it newly attached, unread     | `journey push --force=reuse` (bare `--force` does not imply it) |
 
 The same protected-pull split as `script pull` now also applies to `oauth pull`,
 `journey pull`, `policy pull`, `policy set pull`, and `policy rt pull`: those
@@ -1397,27 +1398,38 @@ the workspace. A page node's child nodes are part of the journey: they sit in
 the export's `nodes` map beside the page, `push` writes them before the page
 (AM refuses a page naming a child that does not exist), `status`/`diff` compare
 them, `using-script` looks inside pages, and `delete` removes them with the tree.
-An export pulled by an older `aic` holds the page without its children: `push`
-refuses it before writing anything and says to pull again. `pull` and `push`
+An export pulled by an older `aic` holds the page without its children: a
+`push` that has anything to write refuses it before writing and says to pull
+again. When the export otherwise matches the tenant there is nothing to write,
+so `push` says it already matches and records the tenant's copy as the
+snapshot; `status` then notes the child the export lacks. `pull` and `push`
 both refuse a journey whose nodes are ambiguous — one id listed under two node
 types, or a page inside a page (which AM refuses) — naming the nodes.
 
 `push` writes each node, then the tree, as separate requests. When one fails,
-the error names the writes that already landed — they stay on the tenant — and
-the snapshot is not updated, so `status` shows the tenant as it now is.
+the error sorts the writes into three groups: those the tenant acknowledged
+(they stay on the tenant), the one that failed — refused and not applied only
+when AM gave a measured refusal, otherwise it **may have landed**, since a lost
+reply says nothing about the write — and those not attempted. The snapshot is
+not updated. `status` reads only the nodes the tenant's tree reaches, so a node
+written by a create that stopped partway, or one this push newly attached, does
+not show there; check the listed writes before pushing again.
 
-**Known limitation:** an unforced `push` checks for drift in the nodes the
-tenant's copy of the journey references. A node the local export newly
-references — an existing realm node id the tenant's journey does not list yet,
-in the tree or in a page — is written without being read first, so a change
-made to it elsewhere is overwritten. A fresh id has no such problem.
+Before any write, `push` also reads every node the export references — in the
+tree or in a page — that the tenant's copy of the journey does not. Such a node
+is outside this journey's snapshot, so drift cannot protect it. A `404` (a fresh
+id) or content equal to the export (ignoring `_rev`) proceeds; an existing node
+whose content differs refuses the push, naming it, because another journey may
+use it. `--force=reuse` overwrites it. Bare `--force` overrides only the drift
+check on this journey's own nodes and does **not** imply `reuse`. A read failing
+any other way stops the push before any write.
 
 ```bash
 aic journey list [--realm alpha] [--json]              # journey names
 aic journey pull <name> [--realm alpha] [--force] [--force=backup] # protected local install
 aic journey status [<name>...] [--realm alpha] [--check] [--json] # local / snapshot / tenant, read-only
 aic journey diff <name> [--local-vs-snapshot | --snapshot-vs-remote] [--realm alpha] [--json]
-aic journey push <name> [--realm alpha] [--force] [--yes] # push; production requires --yes
+aic journey push <name> [--realm alpha] [--force] [--force=reuse] [--yes] # push; production requires --yes
 aic journey delete <name> --force [--realm alpha] [--yes] # delete; production requires --yes
 aic journey using-script <script-uuid> [--realm alpha] [--json] # journeys referencing a script
 aic journey nodes [--realm alpha] [--json]             # available node types
@@ -1454,7 +1466,8 @@ They compare the way `push` does, ignoring `_rev` everywhere.
   the command exits non-zero. A node that answers 404 is deleted on the
   tenant, and is compared as absent. A copy that lists a node it does not carry
   — in its tree, or in a page's `nodes` — is noted under its row (and in `notes` in `--json`) but still
-  compared. With no
+  compared, as is an entry whose reference cannot be read (no `nodeType`, a
+  page with no readable `nodes`); every other reference in that copy is kept. With no
   names it covers every journey that has an export or a snapshot in the realm.
   Under each row it lists the parts that moved — `tree`, or a node by type, id
   and display name, plus `in page <id>` for a page's child — on the `local` side (export vs snapshot) and the `remote`
@@ -1470,12 +1483,14 @@ They compare the way `push` does, ignoring `_rev` everywhere.
   `converged`, or `no snapshot` with local matching). `--json` prints
   `{ok, journeys: [{journey, realm, state, label, matches_tenant, problems,
   notes, local_changes, remote_changes}], sharing_unknown_for}`, each change carrying
-  `shared_with` and `page` (the listing page's id for a page's child, else
-  `null`); `state` is `null` for a journey not compared, and
+  `shared_with`, and node changes also `page` (the listing page's id for a
+  page's child, else `null`; a `tree` change has no `page`). A child's page
+  and sharing come from the tenant's current copy when it lists the child.
+  `state` is `null` for a journey not compared, and
   `sharing_unknown_for` lists the trees that could not be read while looking
   for shared nodes, so a node shared only with one of them is not marked.
 - `diff` notes on stderr a side that lists a node it does not carry, in its
-  tree or in a page's `nodes`.
+  tree or in a page's `nodes`, or holds a reference it cannot read.
   It prints each difference as a JSON pointer under the part it belongs to,
   local against remote by default; `--local-vs-snapshot` shows your edits
   only, `--snapshot-vs-remote` remote drift only. It exits non-zero when the

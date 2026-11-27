@@ -1278,7 +1278,15 @@ mod tests {
         const SCRIPT: &str = "ScriptedDecisionNode/script";
         const PAGE: &str = "PageNode/page";
         const AFTER: &str = "SetSuccessUrlNode/zafter";
-        let cases: [(&str, fn() -> Error, &[&str], WriteStatus, &[&str]); 5] = [
+        /// (failing write, its error, acknowledged, status, not attempted)
+        type Case = (
+            &'static str,
+            fn() -> Error,
+            &'static [&'static str],
+            WriteStatus,
+            &'static [&'static str],
+        );
+        let cases: [Case; 5] = [
             (
                 USER,
                 lost,
@@ -1342,22 +1350,35 @@ mod tests {
 
     /// Regression (review round 2 P2-1): an id the tree and a page both list
     /// was deduplicated to its tree listing, so a missing config for it was
-    /// skipped as an ordinary node and the page written anyway.
+    /// skipped as an ordinary node and the page written anyway. The
+    /// discriminating input is an id that sorts **before** the page
+    /// (`a-missing`), so the tree's listing is walked first; `script`, which
+    /// sorts after it, is the control that already passed.
     #[test]
     fn a_child_the_tree_also_lists_still_refuses_without_its_config() {
-        let mut export = export_of(&[
-            ("page", page_config()),
-            ("zafter", json!({})),
-            ("user", json!({})),
-        ]);
-        export.tree["nodes"]["script"] = json!({"nodeType": "ScriptedDecisionNode"});
-        let error = push_plan(&export)
-            .expect_err("`script` is a page child with no config")
-            .to_string();
-        assert!(
-            error.contains("ScriptedDecisionNode/script (in page page)"),
-            "{error}"
-        );
+        for id in ["a-missing", "script"] {
+            let mut page = page_config();
+            page["nodes"]
+                .as_array_mut()
+                .unwrap()
+                .push(json!({"_id": "a-missing", "nodeType": "ScriptedDecisionNode"}));
+            let mut nodes = vec![("page", page), ("zafter", json!({})), ("user", json!({}))];
+            if id != "script" {
+                nodes.push(("script", json!({})));
+            }
+            let mut export = export_of(&nodes);
+            if id == "script" {
+                export.nodes.insert("a-missing".into(), json!({}));
+            }
+            export.tree["nodes"][id] = json!({"nodeType": "ScriptedDecisionNode"});
+            let error = push_plan(&export)
+                .expect_err("a page child with no config")
+                .to_string();
+            assert!(
+                error.contains(&format!("ScriptedDecisionNode/{id} (in page page)")),
+                "{id}: {error}"
+            );
+        }
     }
 
     /// Regression (review round 2 P1-3): one tree entry without a `nodeType`
