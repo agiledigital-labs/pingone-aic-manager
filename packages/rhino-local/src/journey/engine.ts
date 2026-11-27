@@ -256,6 +256,15 @@ function mergeSession(before: SessionDelta | undefined, next: SessionDelta): Ses
       : {}),
   };
 }
+/** What doc 25 measured about a Page re-sent for each kind of rejecting child. */
+const PAGE_RETRY_EVIDENCE: Record<string, string> = {
+  AttributeCollectorNode:
+    "required empty attribute re-sends the whole page with echoed values and empty failedPolicies",
+  AcceptTermsAndConditionsNode: "a declined terms child re-sends the whole page with the collector's input echoed",
+  OneTimePasswordCollectorDecisionNode: "an empty one-time password answer sends the same page again, with no outcome",
+};
+const ECHO_MEASURED_WITH = new Set(["AttributeCollectorNode", "AcceptTermsAndConditionsNode"]);
+
 export class JourneyEmulator {
   readonly config: JourneyConfig;
   readonly idm: IdmEmulator;
@@ -1182,7 +1191,9 @@ export class JourneyEmulator {
       const retry: CallbackEffect[] = [],
         children: number[] = [];
       let start = 0,
-        firstShape = false;
+        firstShape = false,
+        echoed = false;
+      const rejecting = new Set<string>();
       for (const [index, count] of previous.counts.entries()) {
         const sent = previous.effects.slice(start, start + count);
         const answered = submitted.slice(start, start + count);
@@ -1190,12 +1201,15 @@ export class JourneyEmulator {
           if (counts[index] !== count)
             this.missing("PageNode callback count changes on resubmission");
           retry.push(...collected.splice(0, count));
+          const child = config.nodes[index];
+          rejecting.add(isDocument(child) ? String(child.nodeType) : "unknown");
         } else if (
           answered.every(
             (cb) => cb.type === "StringAttributeInputCallback" || cb.type === "NameCallback",
           )
         ) {
           retry.push(...answered.map((cb) => ({ ...cb })));
+          echoed = true;
         } else {
           if (sent.some((cb) => cb.type !== "PasswordCallback")) firstShape = true;
           retry.push(...structuredClone(sent));
@@ -1219,15 +1233,27 @@ export class JourneyEmulator {
       // map holds after it is assumed to keep the first send's rule.
       if (lonePageChild(config.nodes)) {
         if (config.nodes.some((c) => isDocument(c) && c.nodeType === "OneTimePasswordCollectorDecisionNode"))
-          this.measured("an empty one-time password answer sends the same page again, with no outcome");
+          this.measured(PAGE_RETRY_EVIDENCE.OneTimePasswordCollectorDecisionNode!);
         this.evidence.assumed(
           "a Page whose only child is re-sent leaves no pageNodeCallbacks, as on its first send; the map after a re-send is unmeasured",
         );
         return { outcome: null, callbacks: retry, ...texts };
       }
-      this.measured(
-        "required empty attribute re-sends the whole page with echoed values and empty failedPolicies",
-      );
+      // Each rejecting child's own measurement, never another node's wire shape.
+      for (const type of rejecting) {
+        const tag = PAGE_RETRY_EVIDENCE[type];
+        if (tag) this.measured(tag);
+        else
+          this.evidence.assumed(
+            `a Page re-sent for a rejected ${type} child; a page re-send is measured for the attribute collector, terms and one-time password children only`,
+          );
+      }
+      // Doc 25 measured a rejected page's echoed NameCallback beside a rejected attribute and a declined
+      // terms child; with any other rejecting child the echo is carried over, not measured.
+      if (echoed && [...rejecting].some((type) => !ECHO_MEASURED_WITH.has(type)))
+        this.evidence.assumed(
+          "a re-sent Page echoes an accepted sibling's submitted values; measured beside a rejected attribute or declined terms child only",
+        );
       return { outcome: null, callbacks: retry, ...texts, pageChildren: children };
     }
     return { outcome, callbacks: [] };

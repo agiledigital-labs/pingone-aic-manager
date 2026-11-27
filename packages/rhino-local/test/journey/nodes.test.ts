@@ -1270,6 +1270,11 @@ it("a re-sent Page echoes Name and attribute values; Password goes out as first 
     _id: 7,
   });
   expect(retry.callbacks[1]?.output.find((field) => field.name === "value")?.value).toBe("Given");
+  // Review round 3 P2-3: the rejecting child is the attribute collector, so its measurement applies.
+  const measured = (rejected.provenance ?? []).filter((e) => e.kind === "measured").map((e) => e.behavior);
+  expect(measured).toContain(
+    "required empty attribute re-sends the whole page with echoed values and empty failedPolicies",
+  );
   // The re-sent page is what the snapshot expects back.
   const done = await request(
     emu,

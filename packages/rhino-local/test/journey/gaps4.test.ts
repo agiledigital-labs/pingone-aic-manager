@@ -337,6 +337,8 @@ describe("a Page's stage (doc 25, 2026-11-25)", () => {
     expect(of(first, "measured")).toContain("sends its non-empty stage");
     expect(of(first, "measured")).not.toContain("repeats it");
     expect(of(resent, "assumed")).toContain("a re-sent page repeats its stage");
+    // Review round 3 P2-4: the re-send itself must not claim the repetition as measured either.
+    expect(of(resent, "measured")).not.toMatch(/repeat[^\n]*stage/);
   });
   it("says the callback _id numbering came from an uncommitted run", async () => {
     const first = await run(tree("S1"), "page");
@@ -404,6 +406,20 @@ describe("one-time password and choice nodes as Page children", () => {
     expect(kinds("measured")).not.toContain("failedPolicies");
     expect(kinds("measured")).toContain("an empty one-time password answer sends the same page again");
     expect(kinds("assumed")).toContain("leaves no pageNodeCallbacks");
+  });
+
+  // Review round 3 P2-3: beside a username child, the page is re-sent for the one-time password child
+  // (doc 25's pageU row), so it carries that node's evidence; the attribute collector's never applies.
+  it("a mixed page re-sent for its empty one-time password carries the rejecting child's evidence", async () => {
+    const emu = otp(["u", "o"]);
+    const first = await run(emu, "page");
+    const resent = await run(emu, "page", answer(first.body, { 0: "kdemo-user", 1: "" }));
+    expect(types(resent.body)).toEqual(["NameCallback", "PasswordCallback"]);
+    const kinds = (kind: string) =>
+      (resent.provenance ?? []).filter((e) => e.kind === kind).map((e) => e.behavior).join("\n");
+    expect(kinds("measured")).not.toContain("failedPolicies");
+    expect(kinds("measured")).toContain("an empty one-time password answer sends the same page again");
+    expect(kinds("assumed")).toContain("echoes an accepted sibling's submitted values");
   });
 
   it("after a username collector the one-time password input is IDToken2, and the page records both callbacks", async () => {

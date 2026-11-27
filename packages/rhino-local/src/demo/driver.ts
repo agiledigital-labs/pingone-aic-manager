@@ -124,8 +124,12 @@ class Heap<T> {
   }
 }
 
-/** Poisson arrivals from a rate that is constant within each virtual hour. */
-class Arrivals {
+/**
+ * Poisson arrivals from a rate that is constant within each virtual hour. A gap is at least one
+ * nanosecond, so no arrival lands on the instant a stream starts (the handoff instant). Exported
+ * for its test only.
+ */
+export class Arrivals {
   #cursor: bigint;
   readonly #end: bigint | undefined;
   readonly #rng: Rng;

@@ -1021,6 +1021,12 @@ describe("G9: Terms and Conditions as a page child", () => {
       "TermsAndConditionsCallback",
     ]);
     expect(cbs[0]?.input[0]?.value).toBe("u");
+    // Review round 3 P2-3: the re-send carries the declined terms child's own evidence.
+    const behaviors = (kind: string) =>
+      (again.provenance ?? []).filter((e) => e.kind === kind).map((e) => e.behavior).join("\n");
+    expect(behaviors("measured")).toContain("a declined terms child re-sends the whole page");
+    expect(behaviors("measured")).not.toContain("failedPolicies");
+    expect(behaviors("assumed")).not.toContain("echoes an accepted sibling");
   });
 });
 
