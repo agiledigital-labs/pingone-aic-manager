@@ -3235,9 +3235,13 @@ run without it (tested for each kind, and for two breaks at once).
 
 **Throughput** (this machine, 22 cores, host JVM, flat out, a two-node tree with
 two round trips per journey): about 350-450 finished journeys per real second
-(3,400-4,200 records per second), at concurrency 8 and 64 respectively. At clock
-rate 15 that sustains over 1,500 journeys per virtual second, so the driver
-does not lag at any rate the log quota lets a puller read.
+(3,400-4,200 records per second), at concurrency 8 and 64 respectively. A
+virtual clock at rate 15 runs 15 virtual seconds per real second (virtual =
+origin + real elapsed x rate, `src/logs/clock.ts`), so that sustains about 23-30
+journeys per virtual second (84,000-108,000 per virtual hour), well above the
+default peak of one a virtual second. It is also above what the log quota lets a
+puller read at that rate: 60 pages of 1,000 records per real minute is about 1,000
+records, or roughly 100 journeys, per real second, under 7 per virtual second.
 
 **Default rates.** The example above, scaled to a peak of 3,600 journeys per
 virtual hour (60 a minute), plus 300 token and 200 read requests an hour,
