@@ -147,10 +147,15 @@ class Heap<T> {
  * nanosecond, so no arrival lands on the instant a stream starts (the handoff instant). A stream
  * with no end never retires while some hour ahead has a positive rate, however sparse; it ends
  * only after `IDLE_HORIZON_NS` of consecutive zero-rate hours, which is what stops a rate that is
- * zero for ever from spinning. Exported for its test only.
+ * zero for ever from spinning. One call searches at most `LOOKAHEAD_HOURS` hours and then returns
+ * `{ resumeAt }` instead of an arrival, so a positive rate too sparse to arrive soon (1e-12 an hour)
+ * neither blocks the caller nor retires; the driver schedules the resume as an event. Exported for
+ * its test only.
  */
 /** How long a run of zero-rate hours lasts before a stream with no end is retired. */
 const IDLE_HORIZON_NS = 400n * 24n * HOUR_NS;
+/** How many hours one `next` call searches before handing back where to resume. */
+const LOOKAHEAD_HOURS = 400 * 24;
 
 export class Arrivals {
   #cursor: bigint;
@@ -167,9 +172,10 @@ export class Arrivals {
     this.#end = end;
   }
 
-  next(): bigint | undefined {
-    for (;;) {
+  next(): bigint | { readonly resumeAt: bigint } | undefined {
+    for (let hours = 0; ; hours++) {
       if (this.#end !== undefined && this.#cursor >= this.#end) return undefined;
+      if (hours >= LOOKAHEAD_HOURS) return { resumeAt: this.#cursor };
       const perHour = this.#rate(this.#cursor);
       const hourEnd = (this.#cursor / HOUR_NS + 1n) * HOUR_NS;
       if (!(perHour > 0)) {
@@ -219,6 +225,8 @@ type Ev = {
   readonly k3: number;
   /** What the lag report calls it. */
   readonly tag: string;
+  /** A stream's lookahead resume: not traffic, so it is left out of the lag report. */
+  readonly resume?: true;
   readonly run: () => void | Promise<void>;
 };
 
@@ -455,7 +463,7 @@ export class Driver {
         continue;
       }
       this.#queue.pop();
-      this.#noteLag(now - head.t, head.tag);
+      if (head.resume !== true) this.#noteLag(now - head.t, head.tag);
       const task = Promise.resolve()
         .then(() => head.run())
         .catch((error: unknown) => {
@@ -509,48 +517,12 @@ export class Driver {
     let stream = 0;
     for (const [treeIdx, tree] of this.#trees.entries()) {
       const spec = mix.journeys[tree] as JourneySpec;
-      const k1 = stream++;
       const arrivals = new Arrivals(Rng.derive(this.#seed, "arrivals", "journey", tree), (t) => ratePerHour(spec.rate, t) * this.#scale, start, until);
-      let n = 0;
-      const arm = (): void => {
-        const t = arrivals.next();
-        if (t === undefined) return;
-        const idx = n++;
-        this.#push({
-          t,
-          k1,
-          k2: idx,
-          k3: 0,
-          tag: tree,
-          run: () => {
-            arm();
-            return this.#startJourney(treeIdx, spec, idx, t);
-          },
-        });
-      };
-      arm();
+      this.#stream(arrivals, stream++, tree, (idx, t) => this.#startJourney(treeIdx, spec, idx, t));
     }
     for (const [reqIdx, spec] of mix.requests.entries()) {
-      const k1 = stream++;
       const arrivals = new Arrivals(Rng.derive(this.#seed, "arrivals", "request", spec.name), (t) => ratePerHour(spec.rate, t) * this.#scale, start, until);
-      let n = 0;
-      const arm = (): void => {
-        const t = arrivals.next();
-        if (t === undefined) return;
-        const idx = n++;
-        this.#push({
-          t,
-          k1,
-          k2: idx,
-          k3: 0,
-          tag: spec.name,
-          run: () => {
-            arm();
-            this.#request(reqIdx, spec, idx, t);
-          },
-        });
-      };
-      arm();
+      this.#stream(arrivals, stream++, spec.name, (idx, t) => this.#request(reqIdx, spec, idx, t));
     }
     for (const b of this.#breaks) {
       if (b.kind !== "surge" && b.kind !== "template") continue;
@@ -559,26 +531,40 @@ export class Driver {
       const to = until !== undefined && until < b.to ? until : b.to;
       if (from >= to) continue;
       const arrivals = new Arrivals(Rng.derive(this.#seed, "arrivals", "break", b.index), () => b.perHour, from, to);
-      let n = 0;
-      const arm = (): void => {
-        const t = arrivals.next();
-        if (t === undefined) return;
-        const idx = n++;
-        this.#push({
-          t,
-          k1,
-          k2: idx,
-          k3: 0,
-          tag: `break ${b.index} (${b.kind})`,
-          run: () => {
-            arm();
-            if (b.kind === "surge") this.#surge(b, idx, t, b.network);
-            else this.#template(b, idx, t);
-          },
-        });
-      };
-      arm();
+      this.#stream(arrivals, k1, `break ${b.index} (${b.kind})`, (idx, t) => {
+        if (b.kind === "surge") this.#surge(b, idx, t, b.network);
+        else this.#template(b, idx, t);
+      });
     }
+  }
+
+  /**
+   * Arms one arrival stream: each arrival's event arms the next before it fires. A lookahead resume
+   * is an event that only arms again, keyed `k3: -1` so it can never tie with an arrival.
+   */
+  #stream(arrivals: Arrivals, k1: number, tag: string, fire: (idx: number, t: bigint) => void | Promise<void>): void {
+    let n = 0;
+    const arm = (): void => {
+      const next = arrivals.next();
+      if (next === undefined) return;
+      if (typeof next !== "bigint") {
+        this.#push({ t: next.resumeAt, k1, k2: n, k3: -1, tag, resume: true, run: arm });
+        return;
+      }
+      const idx = n++;
+      this.#push({
+        t: next,
+        k1,
+        k2: idx,
+        k3: 0,
+        tag,
+        run: () => {
+          arm();
+          return fire(idx, next);
+        },
+      });
+    };
+    arm();
   }
 
   // ---- journeys ----------------------------------------------------------

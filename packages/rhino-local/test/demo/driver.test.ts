@@ -73,7 +73,10 @@ describe("a stream with no end", () => {
     const arrivals = new Arrivals(rng, () => 2, T0);
     const day = 24n * HOUR;
     let last: bigint | undefined;
-    for (let i = 0; i < 24 * 410; i++) last = arrivals.next();
+    for (let i = 0; i < 24 * 410; i++) {
+      const next = arrivals.next();
+      if (typeof next === "bigint") last = next;
+    }
     expect(last).toBeDefined();
     expect(last! - T0).toBeGreaterThan(405n * day);
   });
@@ -84,7 +87,7 @@ describe("a stream with no end", () => {
     // Positive for the first day only.
     const arrivals = new Arrivals(rng, (t) => (t < T0 + day ? 2 : 0), T0);
     let n = 0;
-    while (arrivals.next() !== undefined) n++;
+    for (let next = arrivals.next(); next !== undefined; next = arrivals.next()) if (typeof next === "bigint") n++;
     expect(n).toBe(24);
   });
   // Astra round 2 P2-2: the idle horizon counts only zero-rate hours, so a stream whose rate is
@@ -92,8 +95,47 @@ describe("a stream with no end", () => {
   // 400 days at 0.00001 an hour, and a horizon counted from the start returned undefined here.
   it("never retires while the rate is positive, however sparse", () => {
     const arrivals = new Arrivals(Rng.derive("sparse"), () => 0.00001, 0n);
-    expect(arrivals.next()).toBeDefined();
+    let next = arrivals.next();
+    for (let calls = 0; next !== undefined && typeof next !== "bigint" && calls < 100; calls++) next = arrivals.next();
+    expect(typeof next).toBe("bigint");
   });
+  // Astra round 3 P2-2: one call searches a bounded stretch, then hands back where to resume, so a
+  // rate this sparse neither hangs the caller nor retires. Discriminating: an unbounded search spun
+  // for about 1e12 hours here; the old 400-day bound returned undefined.
+  it("hands back a continuation after a bounded search, and never retires a positive rate", () => {
+    const arrivals = new Arrivals(Rng.derive("sparse"), () => 1e-12, 0n);
+    const day = 24n * HOUR;
+    for (let call = 1; call <= 5; call++) expect(arrivals.next()).toEqual({ resumeAt: BigInt(call) * 400n * day });
+  });
+});
+
+// Astra round 3 P2-2, in the driver: a 1e-12/h stream beside an ordinary one. The ordinary stream
+// keeps flowing past the sparse one's lookahead bound, and an abort ends the run promptly.
+describe("a sparse stream beside an ordinary one", () => {
+  const mix = () => {
+    const m = requestsOnly() as { requests: { rate: unknown; name: string }[] };
+    const [token, read] = m.requests;
+    return parseMix({ ...m, requests: [{ ...token, rate: { perHour: 0.01 } }, { ...read, name: "sparse", rate: { perHour: 1e-12 } }] });
+  };
+  it("lets the ordinary stream run past the sparse one's lookahead", async () => {
+    const { records } = await runDriver(runner, { mix: mix(), duration: 800n * 24n * HOUR });
+    // 0.01 an hour for 800 days is about 192.
+    expect(records.length).toBeGreaterThan(100);
+    expect(ts(records.at(-1)!) - T0).toBeGreaterThan(400n * 24n * HOUR);
+  }, 30_000);
+  it("ends promptly on abort", async () => {
+    const cfg = config();
+    const sink = new Recording();
+    const real0 = performance.now();
+    // About 100 virtual days a real second.
+    const clock: Clock = { nowNs: () => T0 + BigInt(Math.round((performance.now() - real0) * 1e14)) };
+    const driver = new Driver({ mix: mix(), config: cfg, makeEngine: makeEngineFor(runner, cfg), sink, pacer: clockPacer(clock), seed: "sparse" });
+    const controller = new AbortController();
+    setTimeout(() => controller.abort(), 300);
+    await driver.run({ signal: controller.signal });
+    expect(performance.now() - real0).toBeLessThan(3000);
+    expect(sink.records.length).toBeGreaterThan(0);
+  }, 30_000);
 });
 
 // Astra round 2 P2-3: one wait subscribes to its wake promise once, however many times it polls.
