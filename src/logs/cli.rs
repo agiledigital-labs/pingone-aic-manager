@@ -23,6 +23,10 @@ use crate::logs::{db, journey};
 use crate::onboard::bootstrap::{mint_log_key_via_session, no_redirect_client};
 use crate::{Error, Result};
 
+/// How long `aic logs tx --wait` polls when `--timeout` is not given. Named
+/// so advice that recommends `--wait` can state the bound it actually has.
+pub const TX_WAIT_DEFAULT_SECS: u64 = 60;
+
 #[derive(Subcommand, Debug)]
 pub enum LogsCommand {
     /// Manage the tenant's log API key pair.
@@ -59,7 +63,7 @@ pub enum LogsCommand {
         wait: bool,
         /// Seconds to poll with --wait (ignored otherwise). Still writes
         /// whatever has arrived if the outcome never shows up.
-        #[arg(long, value_name = "SECS", default_value_t = 60)]
+        #[arg(long, value_name = "SECS", default_value_t = TX_WAIT_DEFAULT_SECS)]
         timeout: u64,
     },
     /// Fetch events in an ISO-8601 time range.

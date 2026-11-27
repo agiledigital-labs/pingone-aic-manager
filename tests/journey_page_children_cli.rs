@@ -526,7 +526,7 @@ fn journey_push_with_a_lost_tree_reply_reports_every_node_acknowledged() {
     let (path, tree_id) = tenant.sent_ids.last().unwrap();
     assert!(path.ends_with("/trees/Login"), "{path}");
     assert!(
-        stderr.contains(&format!("`aic logs tx {tree_id} --tenant stub`")),
+        stderr.contains(&format!("`aic logs tx {tree_id} --tenant=stub`")),
         "{stderr}"
     );
     assert_eq!(project.files(), before);
@@ -915,7 +915,7 @@ fn a_write_names_the_id_it_sent_and_no_lookup_comes_from_a_body() {
                     .last()
                     .unwrap_or_else(|| panic!("{case}: the PUT carried no id"));
                 assert!(
-                    both.contains(&format!("`aic logs tx {sent} --tenant stub`")),
+                    both.contains(&format!("`aic logs tx {sent} --tenant=stub`")),
                     "{case}: {both}"
                 );
             }
@@ -1135,10 +1135,71 @@ fn journey_push_never_calls_an_undispatched_write_sent() {
     assert_ne!(assigned, tenant.sent_ids[0].1, "{stderr}");
     assert!(
         stderr.contains(&format!(
-            "if the request reached the tenant, `aic logs tx {assigned} --tenant stub`"
+            "if the request reached the tenant, `aic logs tx {assigned} --tenant=stub`"
         )),
         "{stderr}"
     );
+}
+
+/// The printed `aic logs tx` lookup, split into words by a real shell — what
+/// the operator gets by pasting it. Comparing words rather than text keeps a
+/// correctly quoted path (a `TMPDIR` with a space) from failing the test, and
+/// still fails on a quote that is wrong.
+fn lookup_words(stderr: &str) -> Vec<String> {
+    let start = stderr
+        .find("`aic logs tx ")
+        .unwrap_or_else(|| panic!("no lookup: {stderr}"));
+    let rest = &stderr[start + "`aic ".len()..];
+    let command = &rest[..rest.find('`').unwrap()];
+    let output = Command::new("sh")
+        .arg("-c")
+        .arg(format!("printf '%s\\n' {command}"))
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    String::from_utf8(output.stdout)
+        .unwrap()
+        .lines()
+        .map(str::to_string)
+        .collect()
+}
+
+/// A failed child PUT, pushed to `alias` while `stub` stays the default.
+fn push_failing_to(alias: &str) -> (String, String) {
+    let project = Project::new();
+    std::fs::write(
+        project.0.join(".aic/config.toml"),
+        format!(
+            "project = \"test\"\ndefault_tenant = \"stub\"\n\n\
+             [[tenant]]\nname = \"stub\"\nbase_url = \"https://tenant.example.com\"\ntheme = \"production\"\nscopes = []\n\n\
+             [[tenant]]\nname = \"{alias}\"\nbase_url = \"https://tenant-b.example.com\"\ntheme = \"production\"\nscopes = []\n"
+        ),
+    )
+    .unwrap();
+    project.write_snapshot(&journey());
+    let mut local = journey();
+    local["nodes"]["user"]["validateInput"] = json!(true);
+    project.write_export(&local);
+    // The workspace is per tenant: move the files to the alias's.
+    std::fs::rename(
+        project.0.join("workspace/stub"),
+        project.0.join("workspace").join(alias),
+    )
+    .unwrap();
+    let mut tenant = Tenant::new(journey());
+    tenant.fail_put = Some((
+        "user",
+        json!({"type": "transport", "message": "fixture: reset"}),
+        true,
+    ));
+    let (output, tenant) = project.push(tenant, &[&format!("--tenant={alias}")]);
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_eq!(output.status.code(), Some(1), "{stderr}");
+    let (_, sent) = tenant
+        .sent_ids
+        .last()
+        .unwrap_or_else(|| panic!("no PUT: {stderr}"));
+    (sent.clone(), stderr)
 }
 
 /// Regression (review round 8 P1-2): the printed lookup left the tenant to
@@ -1149,52 +1210,30 @@ fn journey_push_never_calls_an_undispatched_write_sent() {
 /// tenant, is caught.
 #[test]
 fn journey_push_lookup_names_the_tenant_it_wrote_to() {
-    let project = Project::new();
-    std::fs::write(
-        project.0.join(".aic/config.toml"),
-        "project = \"test\"\ndefault_tenant = \"stub\"\n\n\
-         [[tenant]]\nname = \"stub\"\nbase_url = \"https://tenant.example.com\"\ntheme = \"production\"\nscopes = []\n\n\
-         [[tenant]]\nname = \"other\"\nbase_url = \"https://tenant-b.example.com\"\ntheme = \"production\"\nscopes = []\n",
-    )
-    .unwrap();
-    project.write_snapshot(&journey());
-    let mut local = journey();
-    local["nodes"]["user"]["validateInput"] = json!(true);
-    project.write_export(&local);
-    // The workspace is per tenant: move the files to `other`'s.
-    std::fs::rename(
-        project.0.join("workspace/stub"),
-        project.0.join("workspace/other"),
-    )
-    .unwrap();
-    let mut tenant = Tenant::new(journey());
-    tenant.fail_put = Some((
-        "user",
-        json!({"type": "transport", "message": "fixture: reset"}),
-        true,
-    ));
-
-    let (output, tenant) = project.push(tenant, &["--tenant", "other"]);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert_eq!(output.status.code(), Some(1), "{stderr}");
-    let (_, sent) = tenant
-        .sent_ids
-        .last()
-        .unwrap_or_else(|| panic!("no PUT: {stderr}"));
-    assert!(
-        stderr.contains(&format!("`aic logs tx {sent} --tenant other`")),
+    let (sent, stderr) = push_failing_to("other");
+    assert_eq!(
+        lookup_words(&stderr),
+        ["logs", "tx", &sent, "--tenant=other"],
         "{stderr}"
     );
 }
 
-/// Regression (review round 9 P1-2): a push run with `--project` from
-/// another directory printed a lookup without it, so pasting the lookup
-/// where the operator stands read a different project's config and log keys.
-/// The discriminating input is that invocation; the lookup must carry the
-/// project's absolute root. The same push from inside the project (every
-/// other test) prints no `--project`.
+/// Regression (review round 10 P1-2): `--tenant -other` is two flags to
+/// clap however it is quoted, so the lookup for an alias with a leading
+/// hyphen could not be run. The value must be attached to its option.
 #[test]
-fn journey_push_lookup_carries_the_project_it_was_given() {
+fn journey_push_lookup_attaches_a_hyphen_led_tenant() {
+    let (sent, stderr) = push_failing_to("-other");
+    assert_eq!(
+        lookup_words(&stderr),
+        ["logs", "tx", &sent, "--tenant=-other"],
+        "{stderr}"
+    );
+}
+
+/// A failed child PUT pushed from a directory outside the project, which
+/// `choose` points the push at (by flag or environment).
+fn push_from_elsewhere(choose: impl FnOnce(&Project, &mut Command)) -> (String, String, PathBuf) {
     let project = Project::new();
     project.write_snapshot(&journey());
     let mut local = journey();
@@ -1216,20 +1255,49 @@ fn journey_push_lookup_carries_the_project_it_was_given() {
         .env("XDG_STATE_HOME", project.0.join("state"))
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .arg("--project")
-        .arg(&project.0)
-        .args(["--no-prompt", "journey", "push", "Login", "--yes"]);
+        .stderr(Stdio::piped());
+    choose(&project, &mut command);
+    command.args(["--no-prompt", "journey", "push", "Login", "--yes"]);
     let (output, tenant) = run(&project, command, tenant);
     let _ = std::fs::remove_dir_all(&elsewhere);
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
     assert_eq!(output.status.code(), Some(1), "{stderr}");
     let (_, sent) = tenant.sent_ids.last().unwrap_or_else(|| panic!("{stderr}"));
-    assert!(
-        stderr.contains(&format!(
-            "`aic logs tx {sent} --tenant stub --project {}`",
-            project.0.display()
-        )),
+    (sent.clone(), stderr, project.0.clone())
+}
+
+/// Regression (review round 9 P1-2): a push run with `--project` from
+/// another directory printed a lookup without it, so pasting the lookup
+/// where the operator stands read a different project's config and log keys.
+/// The discriminating input is that invocation; the lookup must carry the
+/// project's absolute root. The same push from inside the project (every
+/// other test) prints no `--project`.
+#[test]
+fn journey_push_lookup_carries_the_project_it_was_given() {
+    let (sent, stderr, root) = push_from_elsewhere(|project, command| {
+        command.arg("--project").arg(&project.0);
+    });
+    let project = format!("--project={}", root.display());
+    assert_eq!(
+        lookup_words(&stderr),
+        ["logs", "tx", &sent, "--tenant=stub", &project],
+        "{stderr}"
+    );
+}
+
+/// Regression (review round 10 P1-1): `AIC_PROJECT=<dir> aic journey push`
+/// sets the variable for the push alone, so a lookup without `--project`
+/// pasted into the same shell reads the project of the operator's directory.
+/// An environment-chosen project must be carried exactly as the flag is.
+#[test]
+fn journey_push_lookup_carries_a_project_chosen_by_the_environment() {
+    let (sent, stderr, root) = push_from_elsewhere(|project, command| {
+        command.env("AIC_PROJECT", &project.0);
+    });
+    let project = format!("--project={}", root.display());
+    assert_eq!(
+        lookup_words(&stderr),
+        ["logs", "tx", &sent, "--tenant=stub", &project],
         "{stderr}"
     );
 }

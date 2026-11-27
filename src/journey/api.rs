@@ -858,24 +858,42 @@ struct Lookup {
     /// The tenant the push wrote to, which the lookup must search: the
     /// logs command otherwise resolves its own default.
     tenant: String,
-    /// The project, when the push chose it with `--project`: run from the
-    /// operator's directory, the lookup would otherwise read another
-    /// project's config and log keys — possibly for a tenant of the same
-    /// name. Absolute, so it resolves from anywhere.
+    /// The project, when the push chose it explicitly (`--project` or
+    /// `AIC_PROJECT`): run from the operator's directory, the lookup would
+    /// otherwise read another project's config and log keys — possibly for a
+    /// tenant of the same name. Absolute, so it resolves from anywhere.
     project: Option<PathBuf>,
 }
 
 impl Lookup {
     /// The `aic logs tx` command, each argument quoted to survive a paste.
+    ///
+    /// Option values are attached (`--tenant=<v>`), because quoting is a
+    /// shell matter and cannot stop clap reading a value that starts with `-`
+    /// as a flag of its own. A project root that is not valid UTF-8 cannot be
+    /// printed without losing bytes, so it is left out —
+    /// [`Lookup::project_unprintable`] makes the message say so instead.
     fn command(&self) -> String {
-        let project = self.project.as_ref().map_or(String::new(), |project| {
-            format!(" --project {}", shell_quote(&project.to_string_lossy()))
-        });
+        let project = self
+            .project
+            .as_deref()
+            .and_then(Path::to_str)
+            .map_or(String::new(), |project| {
+                format!(" --project={}", shell_quote(project))
+            });
         format!(
-            "aic logs tx {} --tenant {}{project}",
+            "aic logs tx {} --tenant={}{project}",
             shell_quote(&self.transaction),
             shell_quote(&self.tenant)
         )
+    }
+
+    /// Whether the push had an explicit project that [`Lookup::command`]
+    /// could not print.
+    fn project_unprintable(&self) -> bool {
+        self.project
+            .as_deref()
+            .is_some_and(|project| project.to_str().is_none())
     }
 }
 
@@ -916,14 +934,22 @@ impl std::fmt::Display for PushError {
             withheld_message(&self.source, &format!("`{}`", self.stopped_at))
         )?;
         if self.status != WriteStatus::Refused {
+            let from = if self.lookup.project_unprintable() {
+                " (run it from the project directory: its path is not valid UTF-8, so it \
+                 cannot be printed as `--project`)"
+            } else {
+                ""
+            };
             write!(
                 f,
                 "\n  this write was assigned transaction id {}; if the request reached the \
-                 tenant, `{}` searches the tenant's logs for that id. Events take a while to \
-                 reach the logs, so an empty answer does not mean the write did not land; \
-                 `--wait` polls until the request's completion event arrives",
+                 tenant, `{}`{from} searches the tenant's logs for that id. Events take a \
+                 while to reach the logs, so an empty answer does not mean the write did not \
+                 land; `--wait` polls for the request's completion event for up to {} \
+                 seconds (`--timeout <SECS>` changes that) and then prints what has arrived",
                 self.lookup.transaction,
-                self.lookup.command()
+                self.lookup.command(),
+                crate::logs::cli::TX_WAIT_DEFAULT_SECS
             )?;
         }
         let list = |writes: &[String]| {
@@ -1040,7 +1066,7 @@ pub async fn push(
     }
     let pushed = push_with(
         tenant,
-        crate::config::project_flag_root(),
+        crate::config::explicit_project_root(),
         export,
         writes,
         |node, body, transaction| async move {
@@ -1512,7 +1538,7 @@ mod tests {
         .expect_err("the first write fails");
         let message = error.to_string();
         assert!(
-            message.contains("--tenant 'other tenant' --project '/srv/a b/project'`"),
+            message.contains("--tenant='other tenant' --project='/srv/a b/project'`"),
             "{message}"
         );
         assert!(
@@ -1520,6 +1546,38 @@ mod tests {
             "{message}"
         );
         assert!(message.contains("`--wait`"), "{message}");
+        assert!(message.contains("for up to 60 seconds"), "{message}");
+    }
+
+    /// Regression (review round 10 P1-3): a project root that is not valid
+    /// UTF-8 was printed through `to_string_lossy`, so the pasted lookup named
+    /// a directory that does not exist. The discriminating input is a root
+    /// holding the byte 0xff; the lookup must leave `--project` out and say to
+    /// run it from the project directory, never print a replacement character.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_unprintable_project_root_is_omitted_and_explained() {
+        use std::os::unix::ffi::OsStrExt;
+        let root = Path::new(std::ffi::OsStr::from_bytes(b"/srv/a\xffb/project"));
+        let export = whole_export();
+        let (writes, _) = push_plan(&export).unwrap();
+        let error = push_with(
+            "stub",
+            Some(root),
+            &export,
+            writes,
+            |_, _, _| async { Err(Error::Transport("connection reset".into())) },
+            |_, _| async { Ok(json!({})) },
+        )
+        .await
+        .expect_err("the first write fails");
+        let message = error.to_string();
+        assert!(
+            message.contains(" --tenant=stub` (run it from the project directory"),
+            "{message}"
+        );
+        assert!(!message.contains("--project="), "{message}");
+        assert!(!message.contains('\u{FFFD}'), "{message}");
     }
 
     /// Regression (review round 7 P2-2): a listing row with no string `_id`
@@ -1573,7 +1631,7 @@ mod tests {
         let message = error.to_string();
         assert!(!message.contains("forged-id"), "{message}");
         assert!(
-            message.contains(&format!("`aic logs tx {sent} --tenant stub`")),
+            message.contains(&format!("`aic logs tx {sent} --tenant=stub`")),
             "{message}"
         );
     }

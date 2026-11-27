@@ -756,12 +756,6 @@ fn resolve_project_root(
     }
 }
 
-/// Locate the project root (the dir containing `.aic/`) by walking up from the
-/// working directory — or from `$AIC_PROJECT`, for callers that cannot choose
-/// their working directory — record any tenant/realm implied by a
-/// `workspace/<tenant>/<realm>/` path, install its absolute paths as the
-/// process default, then chdir to the root for relative user arguments and the
-/// workspace.
 /// Quote a value for a command line we are telling someone to run.
 ///
 /// Tenant names are not restricted to a safe character set — `tenant_file_name`
@@ -827,6 +821,12 @@ fn wants_help_or_version(args: impl IntoIterator<Item = std::ffi::OsString>) -> 
         .any(|arg| matches!(arg.to_str(), Some("-h" | "--help" | "-V" | "--version")))
 }
 
+/// Locate the project root (the dir containing `.aic/`) by walking up from the
+/// working directory — or from `$AIC_PROJECT`, for callers that cannot choose
+/// their working directory — record any tenant/realm implied by a
+/// `workspace/<tenant>/<realm>/` path, install its absolute paths as the
+/// process default, then chdir to the root for relative user arguments and the
+/// workspace.
 pub fn bootstrap_project_root() -> Result<()> {
     let cwd = std::env::current_dir().map_err(|error| {
         Error::Config(format!("could not resolve the current directory: {error}"))
@@ -867,8 +867,8 @@ pub fn bootstrap_project_root() -> Result<()> {
     config::set_user_base(start.clone());
     config::set_workspace_context(choose_workspace_context(&root, &start, &cwd, explicit));
     config::set_project_root(root.clone())?;
-    if explicit == Some("--project") {
-        config::set_project_flag_root(root.clone());
+    if explicit.is_some() {
+        config::set_explicit_project_root(root.clone());
     }
     // Still load-bearing for relative user arguments and `workspace/` paths.
     std::env::set_current_dir(&root)
