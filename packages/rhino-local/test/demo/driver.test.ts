@@ -107,6 +107,50 @@ describe("a stream with no end", () => {
     const day = 24n * HOUR;
     for (let call = 1; call <= 5; call++) expect(arrivals.next()).toEqual({ resumeAt: BigInt(call) * 400n * day });
   });
+  // Astra round 4 P2-2: retirement is judged at the lookahead boundary, not deferred past it.
+  // Discriminating: an unaligned all-zero stream handed back a resume 400 days out instead.
+  it("retires an all-zero stream in one call, aligned or not", () => {
+    for (const start of [0n, HOUR / 2n]) expect(new Arrivals(Rng.derive("idle"), () => 0, start).next()).toBeUndefined();
+  });
+  // The control: positive but sparse for 100 hours, then idle for 399 days, so the rate turns
+  // positive past the first call's 400-day lookahead boundary while still inside the idle
+  // horizon. Retiring a stream that is idle at the boundary would lose it.
+  it("keeps a stream whose rate turns positive past the lookahead boundary", () => {
+    const day = 24n * HOUR;
+    const back = 100n * HOUR + 399n * day;
+    const arrivals = new Arrivals(Rng.derive("back"), (t) => (t < 100n * HOUR ? 1e-12 : t < back ? 0 : 2), 0n);
+    let next = arrivals.next();
+    for (let calls = 0; next !== undefined && typeof next !== "bigint" && calls < 10; calls++) next = arrivals.next();
+    expect(typeof next).toBe("bigint");
+    expect(next as bigint).toBeGreaterThanOrEqual(back);
+  });
+});
+
+// Astra round 4 P2-2, at the driver: a run whose only stream is idle for ever ends without waiting.
+// Discriminating: the round-3 driver asked the pacer for one 400-day wait first.
+describe("an idle stream with no end", () => {
+  const run = async (byHourOfWeek: number[], until?: bigint) => {
+    const m = requestsOnly() as { requests: { rate: unknown; name: string }[] };
+    const mix = parseMix({ ...m, requests: [{ ...m.requests[0], rate: { byHourOfWeek } }] });
+    const cfg = config();
+    const sink = new Recording();
+    const base = manualPacer(T0 + HOUR / 2n);
+    const waits: bigint[] = [];
+    const pacer = { nowNs: base.nowNs, waitUntil: (t: bigint, wake: Promise<unknown>) => (waits.push(t), base.waitUntil(t, wake)) };
+    const driver = new Driver({ mix, config: cfg, makeEngine: makeEngineFor(runner, cfg), sink, pacer, seed: "idle" });
+    await driver.run(until === undefined ? {} : { until });
+    return { waits, records: sink.records };
+  };
+  it("returns without calling the pacer when the rate is zero in every hour", async () => {
+    expect(await run(Array<number>(168).fill(0))).toEqual({ waits: [], records: [] });
+  });
+  it("the control: a rate that turns positive later in the week is paced and arrives", async () => {
+    const hours = Array<number>(168).fill(0);
+    hours[100] = 50;
+    const { waits, records } = await run(hours, T0 + 14n * 24n * HOUR);
+    expect(waits.length).toBeGreaterThan(0);
+    expect(records.length).toBeGreaterThan(20);
+  });
 });
 
 // Astra round 3 P2-2, in the driver: a 1e-12/h stream beside an ordinary one. The ordinary stream

@@ -147,10 +147,11 @@ class Heap<T> {
  * nanosecond, so no arrival lands on the instant a stream starts (the handoff instant). A stream
  * with no end never retires while some hour ahead has a positive rate, however sparse; it ends
  * only after `IDLE_HORIZON_NS` of consecutive zero-rate hours, which is what stops a rate that is
- * zero for ever from spinning. One call searches at most `LOOKAHEAD_HOURS` hours and then returns
- * `{ resumeAt }` instead of an arrival, so a positive rate too sparse to arrive soon (1e-12 an hour)
- * neither blocks the caller nor retires; the driver schedules the resume as an event. Exported for
- * its test only.
+ * zero for ever from spinning. Once a call has searched `LOOKAHEAD_HOURS` hours it returns
+ * `{ resumeAt }` at the next positive-rate hour instead of drawing there (a zero-rate run past
+ * that point is bounded by the idle horizon, so a call searches at most twice the lookahead).
+ * So a positive rate too sparse to arrive soon (1e-12 an hour) neither blocks the caller nor
+ * retires; the driver schedules the resume as an event. Exported for its test only.
  */
 /** How long a run of zero-rate hours lasts before a stream with no end is retired. */
 const IDLE_HORIZON_NS = 400n * 24n * HOUR_NS;
@@ -175,15 +176,17 @@ export class Arrivals {
   next(): bigint | { readonly resumeAt: bigint } | undefined {
     for (let hours = 0; ; hours++) {
       if (this.#end !== undefined && this.#cursor >= this.#end) return undefined;
-      if (hours >= LOOKAHEAD_HOURS) return { resumeAt: this.#cursor };
       const perHour = this.#rate(this.#cursor);
       const hourEnd = (this.#cursor / HOUR_NS + 1n) * HOUR_NS;
+      // Zero-rate hours are not cut off by the lookahead: the idle horizon bounds them, and a
+      // stream idle at the boundary must retire now rather than come back in 400 days to do so.
       if (!(perHour > 0)) {
         this.#idleFrom ??= this.#cursor;
         if (this.#cursor - this.#idleFrom >= IDLE_HORIZON_NS) return undefined;
         this.#cursor = hourEnd;
         continue;
       }
+      if (hours >= LOOKAHEAD_HOURS) return { resumeAt: this.#cursor };
       this.#idleFrom = undefined;
       const gap = BigInt(Math.max(1, Math.round(this.#rng.exponential(perHour / Number(HOUR_NS)))));
       const at = this.#cursor + gap;
