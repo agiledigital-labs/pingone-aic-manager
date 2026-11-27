@@ -19,7 +19,9 @@ export const loginFailure = (): {
 
 /**
  * Session properties AM owns: SetSessionPropertiesNode's validation lists them (doc 25, measured
- * 2026-11-25), and a script's putSessionProperty of the first four was measured to fail.
+ * 2026-11-25). A script's putSessionProperty was measured to fail on four of them, `UserId`,
+ * `AuthLevel`, `Service` and `Locale` (doc 25, "Session properties from scripts"); the engine
+ * keeps those in its own `SESSION_OWNED_MEASURED`.
  */
 export const SYSTEM_SESSION_PROPERTIES: readonly string[] = [
   "clientType",

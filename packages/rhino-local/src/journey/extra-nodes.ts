@@ -106,6 +106,10 @@ export function validateExtraNode(type: string, node: NodeDocument): void {
   // UNMEASURED: whether the tenant accepts an ESV-backed length (`{"$int": "&{esv.…}"}`, as it
   // does for retryLimit) was never tried; the emulator refuses it with the measured number refusal.
   if (type === "OneTimePasswordGeneratorNode" && node.length !== undefined) {
+    if (isDocument(node.length) && typeof node.length.$int === "string")
+      throw new RangeError(
+        "Not modelled by the emulator: OneTimePasswordGeneratorNode length as an ESV placeholder (whether the tenant accepts one is unmeasured)",
+      );
     if (typeof node.length !== "number" || !Number.isInteger(node.length) || node.length < 6)
       throw new RangeError(
         "400 Data validation failed for the attribute, One Time Password Length",

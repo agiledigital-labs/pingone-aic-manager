@@ -467,3 +467,21 @@ describe("review round 1 P3-1: only the array auditEntryDetail is measured", () 
     expect(kinds(r.provenance)).toEqual(["assumed"]);
   });
 });
+
+describe("review round 1 P3-3: an ESV-backed OTP length is refused as unmodelled", () => {
+  const build = (length: unknown) => () =>
+    new JourneyConfig({
+      realm: "alpha",
+      trees: {
+        t: { entryNodeId: "g", nodes: { g: { nodeType: "OneTimePasswordGeneratorNode", connections: { outcome: SUCCESS } } } },
+      },
+      nodes: { OneTimePasswordGeneratorNode: { g: { length } } },
+      scripts: {},
+    } as never);
+  it("names the gap rather than the tenant's number refusal", () => {
+    expect(build({ $int: "&{esv.otp.length}" })).toThrow(/Not modelled by the emulator: .*ESV placeholder/);
+  });
+  it("still gives the measured refusal for a number below 6", () => {
+    expect(build(5)).toThrow("400 Data validation failed for the attribute, One Time Password Length");
+  });
+});
