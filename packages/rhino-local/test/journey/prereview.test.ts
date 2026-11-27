@@ -376,6 +376,36 @@ describe("review round 1 P1-3: the persistent cookie's measured Domain", () => {
 });
 
 describe("P3-8 an unknown script logger level is refused, not dropped", () => {
+  // Review round 1 P2-5: with no log sink the emitter never sees the line; the engine must refuse it.
+  it("the engine refuses it, naming the level, with no log sink", async () => {
+    // The real runner, with one line at a level the runtime never produces appended to its reply.
+    const shim = Object.create(runner) as RhinoRunner;
+    shim.eval = (async (...args: Parameters<RhinoRunner["eval"]>) => {
+      const response = await runner.eval(...args);
+      return {
+        ...response,
+        logs: [...(response.logs ?? []), { surface: "logger", level: "fatal", message: "x", args: [] }],
+      };
+    }) as RhinoRunner["eval"];
+    const e = new JourneyEmulator(
+      new JourneyConfig({
+        realm: "alpha",
+        trees: {
+          t: {
+            entryNodeId: "s",
+            nodes: { s: { nodeType: "ScriptedDecisionNode", connections: { true: SUCCESS } } },
+          },
+        },
+        nodes: { ScriptedDecisionNode: { s: { script: "s", outcomes: ["true"] } } },
+        scripts: { s: script("logger.info('kept'); action.goTo('true');") },
+      } as never),
+      shim,
+      idm(),
+    );
+    const name = "script logger level: fatal";
+    expectEmulationFailure(name);
+    refused(await req(e), name);
+  });
   it("JourneyLogs refuses it", async () => {
     const { JourneyLogs } = await import("../../src/journey/emit.ts");
     const records: unknown[] = [];
