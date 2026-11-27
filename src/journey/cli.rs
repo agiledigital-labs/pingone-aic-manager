@@ -306,9 +306,10 @@ fn push_block_message(name: &str, reason: &PushBlockReason) -> String {
             )
         }
         PushBlockReason::Reuse(nodes) => format!(
-            "journey {name} would overwrite existing node(s) {} — not part of this journey on \
-             the tenant, so not in its snapshot, and different from the export. Another \
-             journey may use them. Pass --force=reuse to overwrite them",
+            "journey {name} would overwrite existing node(s) {} — not referenced by this \
+             journey on the tenant, so its drift check cannot vouch for them, and different \
+             from the export. Another journey may use them. Pass --force=reuse to overwrite \
+             them",
             nodes.join(", ")
         ),
     }

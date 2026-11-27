@@ -119,7 +119,9 @@ impl WriteFailure {
     /// was not applied. Everything else, whatever its status, is unknown.
     pub fn from_send(source: Error, measured: &[MeasuredRefusal]) -> Self {
         let status = match &source {
-            Error::ProdConfirmRequired | Error::AuthRequired => WriteStatus::Refused,
+            Error::ProdConfirmRequired | Error::AuthRequired | Error::AgentLocked => {
+                WriteStatus::Refused
+            }
             Error::Api { status, body }
                 if measured
                     .iter()

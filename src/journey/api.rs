@@ -292,8 +292,27 @@ pub(crate) fn page_children(
     node_type: &str,
     config: &Value,
 ) -> Result<Vec<NodeRef>> {
+    let (children, problems) = page_listing(page_id, node_type, config)?;
+    match problems.into_iter().next() {
+        None => Ok(children),
+        Some(problem) => Err(Error::Api {
+            status: 0,
+            body: problem,
+        }),
+    }
+}
+
+/// [`page_children`], keeping each readable child beside the entries that
+/// cannot be addressed, which come back as problems. Only a listing that is
+/// not there at all (no `nodes`, or not an array) is an error: then no child
+/// is known.
+fn page_listing(
+    page_id: &str,
+    node_type: &str,
+    config: &Value,
+) -> Result<(Vec<NodeRef>, Vec<String>)> {
     if node_type != PAGE_NODE {
-        return Ok(Vec::new());
+        return Ok((Vec::new(), Vec::new()));
     }
     let shape_error = |what: String| Error::Api {
         status: 0,
@@ -305,23 +324,23 @@ pub(crate) fn page_children(
     let children = children
         .as_array()
         .ok_or_else(|| shape_error(format!("`nodes` is not an array: {children}")))?;
-    children
-        .iter()
-        .map(|child| {
-            let field = |key| child.get(key).and_then(Value::as_str).map(str::to_owned);
-            match (field("_id"), field("nodeType")) {
-                (Some(id), Some(node_type)) => Ok(NodeRef {
-                    id,
-                    node_type,
-                    display_name: field("displayName"),
-                    page: Some(page_id.to_owned()),
-                }),
-                _ => Err(shape_error(format!(
-                    "child needs a string `_id` and `nodeType`: {child}"
-                ))),
-            }
-        })
-        .collect()
+    let mut refs = Vec::new();
+    let mut problems = Vec::new();
+    for child in children {
+        let field = |key| child.get(key).and_then(Value::as_str).map(str::to_owned);
+        match (field("_id"), field("nodeType")) {
+            (Some(id), Some(node_type)) => refs.push(NodeRef {
+                id,
+                node_type,
+                display_name: field("displayName"),
+                page: Some(page_id.to_owned()),
+            }),
+            _ => problems.push(format!(
+                "page node {page_id}: child needs a string `_id` and `nodeType`: {child}"
+            )),
+        }
+    }
+    Ok((refs, problems))
 }
 
 /// Every node a journey references, each once, a page's children before the
@@ -382,8 +401,11 @@ pub(crate) fn walk_refs(tree: &Value, nodes: &Map<String, Value>) -> (Vec<NodeRe
             }
             self.types.insert(node.id.clone(), node.node_type.clone());
             if let Some(config) = self.nodes.get(&node.id) {
-                match page_children(&node.id, &node.node_type, config) {
-                    Ok(children) => children.into_iter().for_each(|child| self.visit(child)),
+                match page_listing(&node.id, &node.node_type, config) {
+                    Ok((children, problems)) => {
+                        self.problems.extend(problems);
+                        children.into_iter().for_each(|child| self.visit(child));
+                    }
                     Err(error) => self.problems.push(error.to_string()),
                 }
             }
@@ -556,10 +578,13 @@ where
         Err(Error::Api { status: 404, .. }) => None,
         Err(error) => return Err(error),
     };
+    // Keyed by the endpoint a write addresses, `<type>/<id>`, not by id: an
+    // export that relists an id under another type writes to a different
+    // node, which this journey's copy says nothing about.
     let referenced: HashSet<String> = match &remote {
         Some(remote) => journey_refs(&remote.tree, &remote.nodes)?
-            .into_iter()
-            .map(|node| node.id)
+            .iter()
+            .map(NodeRef::label)
             .collect(),
         None => HashSet::new(),
     };
@@ -568,7 +593,7 @@ where
         let Some(config) = local.nodes.get(&node.id) else {
             continue;
         };
-        if referenced.contains(&node.id) {
+        if referenced.contains(&node.label()) {
             continue;
         }
         match fetch_node(node.node_type.clone(), node.id.clone()).await {
@@ -642,11 +667,12 @@ fn push_plan(export: &JourneyExport) -> Result<(Vec<NodeRef>, Vec<NodeRef>)> {
     Ok((writes, absent))
 }
 
-/// The answers to a node `PUT` measured as refusals: answered, and not
-/// applied (2026-11-25, `docs/api/09-journeys.md`). Every other error from a
-/// write — any other status, a lost connection, an unreadable reply — leaves
-/// its outcome unknown. The tree `PUT` has no measured refusal at all.
-const NODE_REFUSALS: &[MeasuredRefusal] = &[
+/// The answers to a **`PageNode`** `PUT` measured as refusals: answered, and
+/// not applied (2026-11-25, `docs/api/09-journeys.md`). Both were measured on
+/// a page write only, so no other node type is given them. Every other error
+/// from a write — any other status, a lost connection, an unreadable reply —
+/// leaves its outcome unknown. The tree `PUT` has no measured refusal at all.
+const PAGE_REFUSALS: &[MeasuredRefusal] = &[
     MeasuredRefusal {
         status: 400,
         message: "Node does not exist",
@@ -726,8 +752,8 @@ impl std::fmt::Display for PushError {
         write!(
             f,
             "\n  the snapshot was not updated. `aic journey status` reads only the nodes the \
-             tenant's tree reaches, so a node written by a create that stopped here, or newly \
-             attached by this push, will not show there — check the writes above before \
+             tenant's current tree and pages reference, so a node written above that no \
+             landed write attached does not show there — check the writes above before \
              pushing again"
         )
     }
@@ -777,8 +803,13 @@ where
     };
     for node in writes {
         let body = export.nodes[&node.id].clone();
+        let measured = if node.node_type == PAGE_NODE {
+            PAGE_REFUSALS
+        } else {
+            &[]
+        };
         if let Err(source) = send_node(node, body).await {
-            return Err(stop(acknowledged, pending, source, NODE_REFUSALS));
+            return Err(stop(acknowledged, pending, source, measured));
         }
         acknowledged.extend(pending.pop_front());
     }
@@ -1286,7 +1317,10 @@ mod tests {
             WriteStatus,
             &'static [&'static str],
         );
-        let cases: [Case; 5] = [
+        fn locked() -> Error {
+            Error::AgentLocked
+        }
+        let cases: [Case; 7] = [
             (
                 USER,
                 lost,
@@ -1322,6 +1356,23 @@ mod tests {
                 WriteStatus::Unknown,
                 &[],
             ),
+            // Round 3 P2-1: the page's refusals were measured on a page write
+            // only; the same text from another node type proves nothing.
+            (
+                USER,
+                absent_child,
+                &[],
+                WriteStatus::Unknown,
+                &[SCRIPT, PAGE, AFTER, "tree"],
+            ),
+            // Round 3 P2-2: the agent answers `Locked` before dispatching.
+            (
+                USER,
+                locked,
+                &[],
+                WriteStatus::Refused,
+                &[SCRIPT, PAGE, AFTER, "tree"],
+            ),
         ];
         for (fail, error, acknowledged, status, not_attempted) in cases {
             let pushed = push_failing_at(fail, error).await;
@@ -1343,7 +1394,7 @@ mod tests {
         );
         assert!(message.contains("not attempted (4)"), "{message}");
         assert!(
-            message.contains("reads only the nodes the tenant's tree reaches"),
+            message.contains("reads only the nodes the tenant's current tree and pages reference"),
             "{message}"
         );
     }
@@ -1487,6 +1538,74 @@ mod tests {
         let (result, reads) = preflight(&whole_export(), || unreachable!()).await;
         assert!(result.unwrap().reused.is_empty());
         assert_eq!(reads.len(), 4, "{reads:?}");
+    }
+
+    /// Regression (review round 3 P1-1): the preflight skipped a node whose
+    /// id the tenant's journey references under **another type**, though the
+    /// write goes to `…/nodes/<new type>/<id>`. The discriminating input
+    /// relists the page's `user` as a `PasswordCollectorNode`, whose endpoint
+    /// holds a different body; the same-type export is the control, which
+    /// reads no extra endpoint.
+    #[tokio::test]
+    async fn the_push_preflight_reads_the_endpoint_a_retyped_child_writes() {
+        for retyped in [true, false] {
+            let mut local = whole_export();
+            if retyped {
+                local.nodes["page"]["nodes"][0]["nodeType"] = json!("PasswordCollectorNode");
+            }
+            let reads = std::cell::RefCell::new(Vec::new());
+            let result = push_preflight_with(
+                &local,
+                || async { Ok(page_tree()) },
+                |node_type, id| {
+                    reads.borrow_mut().push(format!("{node_type}/{id}"));
+                    async move {
+                        match (node_type.as_str(), id.as_str()) {
+                            (_, "page") => Ok(page_config()),
+                            ("PasswordCollectorNode", _) => Ok(json!({"_id": id, "other": 1})),
+                            _ => Ok(json!({"_id": id})),
+                        }
+                    }
+                },
+            )
+            .await;
+            let reused = result.unwrap().reused;
+            let reads = reads.into_inner();
+            if retyped {
+                assert_eq!(
+                    reused.iter().map(NodeRef::label).collect::<Vec<_>>(),
+                    ["PasswordCollectorNode/user"]
+                );
+                assert!(
+                    reads.contains(&"PasswordCollectorNode/user".into()),
+                    "{reads:?}"
+                );
+            } else {
+                assert!(reused.is_empty());
+                assert_eq!(reads.len(), 4, "{reads:?}");
+            }
+        }
+    }
+
+    /// Regression (review round 3 P1-2): one malformed child in a page's
+    /// listing made the whole listing a problem, so the page's valid children
+    /// vanished from the lenient walk — and with them the note that one has
+    /// no body. The discriminating input is `{"_id": "bad"}` beside the valid
+    /// `user`; the strict walk still refuses.
+    #[test]
+    fn a_malformed_page_child_keeps_its_valid_siblings() {
+        let mut page = page_config();
+        page["nodes"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"_id": "bad"}));
+        let export = export_of(&[("page", page), ("zafter", json!({}))]);
+        let (refs, problems) = walk_refs(&export.tree, &export.nodes);
+        assert_eq!(ids(&refs), ["user", "script", "page", "zafter"]);
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert!(problems[0].contains("\"bad\""), "{problems:?}");
+        assert!(journey_refs(&export.tree, &export.nodes).is_err());
+        assert!(page_children("page", "PageNode", &export.nodes["page"]).is_err());
     }
 
     /// Regression (review P2-1): an export pulled before children were
