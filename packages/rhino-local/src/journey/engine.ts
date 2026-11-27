@@ -87,7 +87,8 @@ export type JourneyOptions = {
   /**
    * Where the AIC log records of each authenticate request go. Without a sink nothing is
    * emitted and nothing else changes. `origin` and `latencyMs` are the knobs of
-   * src/journey/emit.ts.
+   * src/journey/emit.ts; `origin` is also the host a persistent cookie's `Domain` names when the
+   * request carries no `url`, sink or not.
    */
   logSink?: JourneyLogOptions["sink"];
   /**

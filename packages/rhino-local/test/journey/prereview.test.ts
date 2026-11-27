@@ -411,6 +411,8 @@ describe("P3-2 a persistent cookie needs a user to name", () => {
     // Review round 1 P1-3: doc 25 measured the tenant Domain on this cookie.
     expect(done.cookies?.[0]?.domain).toBe("tenant.example.com");
     expect(assumed).not.toContain("no Domain attribute");
+    // Review round 2 P1-2: the spelling is the emulator's choice, and says so.
+    expect(assumed).toContain("Domain is the tenant host exactly");
   });
 
 });
@@ -420,13 +422,14 @@ describe("review round 1 P1-3: the persistent cookie's measured Domain", () => {
     const { journeyHttp } = await import("../../src/journey/index.ts");
     const KEY = Buffer.from("invented-persistent-key-0123456789").toString("base64");
     const res = await journeyHttp(cookieJourney({ persistentCookieName: "c", hmacSigningKey: KEY }))({
-      url: "https://tenant.example.com/am/json/realms/root/realms/alpha/authenticate?authIndexType=service&authIndexValue=t",
+      // Review round 2 P1-2: a host other than the configured origin's, which must win.
+      url: "https://login.example.com:7443/am/json/realms/root/realms/alpha/authenticate?authIndexType=service&authIndexValue=t",
       method: "POST",
       headerLines: [["content-type", "application/json"]],
       body: "{}",
     });
     const cookie = res.headers.find(([n, v]) => n === "set-cookie" && v.startsWith("c="))?.[1];
-    expect(cookie).toContain("; Domain=tenant.example.com");
+    expect(cookie).toContain("; Domain=login.example.com;");
   });
 });
 
