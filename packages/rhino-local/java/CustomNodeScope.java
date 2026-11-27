@@ -15,7 +15,7 @@ import org.mozilla.javascript.json.JsonParser;
  * Scripted Decision scope the preamble filled.
  *
  * <pre>
- *   custom scope (ScriptContextScope, no parent): properties, nodeState, outcome
+ *   custom scope (ScriptContextScope, no parent): properties, nodeState, systemEnv, outcome
  *     prototype: {@link Lookup}, which refuses a read of a blocked binding by name
  *       prototype: the job's standard objects (the decision scope's own prototype)
  * </pre>
@@ -29,15 +29,18 @@ import org.mozilla.javascript.json.JsonParser;
  */
 final class CustomNodeScope {
 
-  /** The restricted nodeState view the journey preamble builds in the decision scope. */
-  static final String NODE_STATE = "__rhinoLocalCustomNodeState";
+  /**
+   * The restricted binding views ({@code nodeState}, {@code systemEnv}) the journey preamble builds
+   * in the decision scope, keyed by the name each is bound under here.
+   */
+  static final String VIEWS = "__rhinoLocalCustomViews";
 
   private CustomNodeScope() {}
 
   static Scriptable create(
       Context cx, Scriptable decision, AmHostBridge bridge, List<String> blocked, String properties) {
-    Object nodeState = ScriptableObject.getProperty(decision, NODE_STATE);
-    if (!(nodeState instanceof Scriptable)) throw bridge.protocolFailure("custom node nodeState view");
+    Object views = ScriptableObject.getProperty(decision, VIEWS);
+    if (!(views instanceof Scriptable)) throw bridge.protocolFailure("custom node binding views");
     ScriptContextScope scope = new ScriptContextScope(new SimpleScriptContext());
     scope.setPrototype(new Lookup(bridge, new HashSet<String>(blocked), decision.getPrototype()));
     Object parsed;
@@ -47,7 +50,10 @@ final class CustomNodeScope {
       throw bridge.protocolFailure("custom node properties: " + e.getMessage());
     }
     scope.put("properties", scope, parsed);
-    scope.put("nodeState", scope, nodeState);
+    for (Object id : ((Scriptable) views).getIds()) {
+      String name = String.valueOf(id);
+      scope.put(name, scope, ScriptableObject.getProperty((Scriptable) views, name));
+    }
     scope.put("outcome", scope, Undefined.instance);
     return scope;
   }

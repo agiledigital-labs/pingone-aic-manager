@@ -202,14 +202,19 @@ describe("P2-2 callback _id and pageNodeCallbacks", () => {
 describe("P2-3 custom nodes reach only the measured bindings", () => {
   const SN = "designer-0123456789abcdef0123456789abcdef";
   /**
-   * A journey whose custom node `c` goes to `dump` by `ok` and by Script Error (or to `errorTo`).
+   * A journey whose custom node `c` goes to `dump` by `ok` and by Script Error (or to `errorTo`;
+   * `errDump` dumps like `dump` under the hidden callback id `err`, so the edge taken shows).
    * With `inner`, `c` sits in an inner tree that the outer tree evaluates before `dump`.
    */
   function custom(
     body: string,
     errorOutcome = true,
     using: RhinoRunner = runner,
-    { errorTo = "dump", inner = false }: { errorTo?: string; inner?: boolean } = {},
+    {
+      errorTo = "dump",
+      inner = false,
+      esv = {},
+    }: { errorTo?: string; inner?: boolean; esv?: Record<string, string> } = {},
   ) {
     const node = (next: string) => ({ nodeType: SN, connections: { ok: next, "Script Error": errorTo === "dump" ? next : errorTo } });
     const dump = { nodeType: "ScriptedDecisionNode", connections: { true: SUCCESS } };
@@ -224,10 +229,13 @@ describe("P2-3 custom nodes reach only the measured bindings", () => {
               },
               in: { entryNodeId: "c", innerTreeOnly: true, nodes: { c: node(SUCCESS) } },
             }
-          : { t: { entryNodeId: "c", nodes: { c: node("dump"), dump } } },
+          : { t: { entryNodeId: "c", nodes: { c: node("dump"), dump, errDump: dump } } },
         nodes: {
           [SN]: { c: { greeting: "hi" } },
-          ScriptedDecisionNode: { dump: { script: "dump", outcomes: ["true"] } },
+          ScriptedDecisionNode: {
+            dump: { script: "dump", outcomes: ["true"] },
+            errDump: { script: "errDump", outcomes: ["true"] },
+          },
           ...(inner ? { InnerTreeEvaluatorNode: { e: { tree: "in" } } } : {}),
         },
         customNodeTypes: {
@@ -238,13 +246,16 @@ describe("P2-3 custom nodes reach only the measured bindings", () => {
             script: body,
           },
         },
-        scripts: { dump: script(DUMP) },
+        scripts: { dump: script(DUMP), errDump: script(DUMP.replace("hiddenValueCallback('s'", "hiddenValueCallback('err'")) },
       } as never),
       using,
       idm(),
-      {},
+      { esv },
     );
   }
+  /** The hidden callback id the dump went out under: `s` from `dump`, `err` from `errDump`. */
+  const dumpedBy = (body: JsonValue): JsonValue | undefined =>
+    (body as Wire).callbacks[0]?.output.find((f) => f.name === "id")?.value;
   it("still gives properties, nodeState.get / putShared and outcome", async () => {
     const done = await req(
       custom(
@@ -331,6 +342,58 @@ describe("P2-3 custom nodes reach only the measured bindings", () => {
   it("a bare typeof of a blocked name the script never bound is \"undefined\"", async () => {
     const done = await req(custom("nodeState.putShared('username', typeof httpClient); outcome = 'ok';"));
     expect(dumped(done.body).username).toBe("undefined");
+  });
+  // Review round 6 P1: systemEnv.getProperty is measured in a custom node
+  // (scripts/experiment-journey-esv-placeholders.sh).
+  it("reads a configured ESV through systemEnv.getProperty and takes the listed edge", async () => {
+    const done = await req(
+      custom(
+        "nodeState.putShared('username', systemEnv.getProperty('esv.round6.probe')); outcome = 'ok';",
+        true,
+        runner,
+        { errorTo: "errDump", esv: { "esv.round6.probe": "from-esv" } },
+      ),
+    );
+    expect(done.status).toBe(200);
+    expect(dumpedBy(done.body)).toBe("s");
+    expect(dumped(done.body).username).toBe("from-esv");
+  });
+  // Review round 6 P1: the emulated systemEnv has no member but getProperty, so there is no other
+  // member to refuse by name; an unknown one reads undefined and calling it throws a TypeError,
+  // which routes like any throw. What the tenant's other members do is unmeasured.
+  it("an unknown systemEnv member reads undefined, and calling it routes like a throw", async () => {
+    const done = await req(
+      custom(
+        "nodeState.putShared('username', typeof systemEnv.getSecret); systemEnv.getSecret('esv.x'); outcome = 'ok';",
+        true,
+        runner,
+        { errorTo: "errDump" },
+      ),
+    );
+    expect(dumpedBy(done.body)).toBe("err");
+    expect(dumped(done.body).username).toBe("undefined");
+  });
+  // Review round 6 P2-2: a throw ignores an outcome assigned before it. Discriminating: routing the
+  // throw by the current outcome would take `ok` to `dump`.
+  it("a throw after outcome = 'ok' takes Script Error and keeps the write", async () => {
+    const done = await req(
+      custom("outcome = 'ok'; nodeState.putShared('username', 'wrote'); throw 'boom';", true, runner, {
+        errorTo: "errDump",
+      }),
+    );
+    expect(done.status).toBe(200);
+    expect(dumpedBy(done.body)).toBe("err");
+    expect(dumped(done.body).username).toBe("wrote");
+  });
+  // Review round 6 P2-1: the no-route 401 for an unlisted outcome is assumed, and only there.
+  it("labels the no-route unlisted outcome assumed, never measured", async () => {
+    const done = await req(custom("outcome = 'wrong';", false));
+    expect(done.status).toBe(401);
+    const of = (kind: string) =>
+      (done.provenance ?? []).filter((e) => e.kind === kind).map((e) => e.behavior).join("\n");
+    expect(of("assumed")).toContain("unlisted or unset outcome without an error outcome fails the journey with 401");
+    expect(of("measured")).not.toMatch(/does not list[^;]*else fails the journey/);
+    expect(of("assumed")).not.toContain("outputs");
   });
   // Review round 5 P2-3: outside the named refusals a custom script gets ordinary JavaScript errors,
   // which it can catch. Discriminating: a named refusal for these would be an uncatchable 501.

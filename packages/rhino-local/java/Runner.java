@@ -663,11 +663,6 @@ public final class Runner {
   }
 
   /**
-   * One named fault for both forms of stack exhaustion. When {@code faults} is
-   * open the caller attaches it with any other fault from this job; otherwise
-   * the emulation goes on the response here.
-   */
-  /**
    * A custom node's response value once {@link CustomNodeScope#route} has decided its route: the
    * harvest when the route has a consumer, else only the absent route. With no route the journey
    * fails and keeps nothing the script wrote, so nothing is serialized -- a value the harvest
@@ -677,6 +672,11 @@ public final class Runner {
     return route != null ? bridge.harvestCustom(cx, route) : "{\"customRoute\":null}";
   }
 
+  /**
+   * One named fault for both forms of stack exhaustion. When {@code faults} is
+   * open the caller attaches it with any other fault from this job; otherwise
+   * the emulation goes on the response here.
+   */
   private static Map<String, Object> stackOverflowResponse(
       String id, Throwable error, HarnessFaults faults, String sourceName) {
     Map<String, Object> response = error instanceof RhinoException

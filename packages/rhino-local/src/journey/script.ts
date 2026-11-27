@@ -29,7 +29,8 @@ export type ScriptState = {
   esv?: Record<string, string | null>;
   /**
    * A custom (node designer) node's script: it sees only the bindings doc 25 measured there
-   * (`properties`, `nodeState.get` / `putShared` and the assigned `outcome`); reaching any other
+   * (`properties`, `nodeState.get` / `putShared`, `systemEnv.getProperty` and the assigned
+   * `outcome`); reaching any other
    * one is missing behaviour naming it.
    */
   customNode?: boolean;
@@ -65,8 +66,9 @@ const MEASURED_UTILS = [
   ),
 ];
 /**
- * The names a custom node's script must not reach: every next-gen decision binding but
- * `nodeState`, read from the binding list itself, plus the globals the harness adds beside them.
+ * The names a custom node's script must not reach: every next-gen decision binding but the
+ * `CUSTOM_VIEWS` ones, read from the binding list itself, plus the globals the harness adds beside
+ * them.
  */
 let blockedCache: string[] | undefined;
 export function customBlocked(): string[] {
@@ -77,30 +79,47 @@ export function customBlocked(): string[] {
   const names = new Set(list.bindings.map((binding) => binding.name));
   for (const name of ["existingSession", "require", "sharedState", "transientState"])
     names.add(name);
-  names.delete("nodeState");
+  for (const name of Object.keys(CUSTOM_VIEWS)) names.delete(name);
   blockedCache = [...names].sort();
   return blockedCache;
 }
-/** What a custom node's `nodeState` offers; doc 25 measured these two methods only. */
-const CUSTOM_NODE_STATE = ["get", "putShared"];
 /**
- * A custom node's restricted `nodeState`, built in the decision scope where the bridge is reachable
- * and handed to the custom node's own scope (java/CustomNodeScope.java). Every other method the
- * next-gen `nodeState` has is a refusal naming it. The legacy `getShared` and `getTransient` are
- * not among them -- the decision overlay deletes them first, as doc 25 measured -- so calling one
- * is an ordinary TypeError, a throw like any other.
+ * The bindings a custom node reaches beyond `properties` and `outcome`, and the methods each
+ * offers: `nodeState` `get` and `putShared` (doc 25, custom node types), and `systemEnv`
+ * `getProperty`, which `scripts/experiment-journey-esv-placeholders.sh` calls in a custom node
+ * (doc 25, ESV placeholders in custom node properties). Nothing else of either was measured there.
  */
-const customNodeState = `
-(function (host, allowed) {
-  var state = nodeState, view = {};
-  Object.keys(state).forEach(function (key) {
-    if (typeof state[key] === 'function' && allowed.indexOf(key) === -1)
-      view[key] = host('refusal', 'custom node binding: nodeState.' + key);
+const CUSTOM_VIEWS: Readonly<Record<string, readonly string[]>> = {
+  nodeState: ["get", "putShared"],
+  systemEnv: ["getProperty"],
+};
+/**
+ * A custom node's restricted views of those bindings, built in the decision scope where the bridge
+ * is reachable and handed to the custom node's own scope (java/CustomNodeScope.java). Every other
+ * method the binding has is a refusal naming it (`custom node binding: nodeState.<method>`); the
+ * emulated `systemEnv` has no other method, so there an unknown member is simply undefined. The
+ * legacy `nodeState.getShared` and `getTransient` are not among them -- the decision overlay deletes
+ * them first, as doc 25 measured -- so calling one is an ordinary TypeError, a throw like any other.
+ */
+const customNodeViews = `
+(function (host, views) {
+  var global = this, out = {};
+  Object.keys(views).forEach(function (name) {
+    var target = global[name], allowed = views[name], view = {};
+    Object.keys(target).forEach(function (key) {
+      if (typeof target[key] === 'function' && allowed.indexOf(key) === -1)
+        view[key] = host('refusal', 'custom node binding: ' + name + '.' + key);
+    });
+    allowed.forEach(function (key) {
+      view[key] = function () {
+        var result = target[key].apply(target, arguments);
+        return result === target ? view : result;
+      };
+    });
+    out[name] = view;
   });
-  view.get = function (key) { return state.get(key); };
-  view.putShared = function (key, value) { state.putShared(key, value); return view; };
-  __rhinoLocalCustomNodeState = view;
-})(__rhinoLocalJourneyHost, ${JSON.stringify(CUSTOM_NODE_STATE)});
+  __rhinoLocalCustomViews = out;
+})(__rhinoLocalJourneyHost, ${JSON.stringify(CUSTOM_VIEWS)});
 `;
 const overlay = (roots: string[], maps: { shared: boolean; transient: boolean }) => `
 (function (host, roots, measuredUtils, maps) {
@@ -223,6 +242,6 @@ export function journeyPreamble(state: ScriptState): CasePreamble {
     preamble:
       base.preamble +
       overlay(stubRoots(), state.javaMaps ?? { shared: false, transient: false }) +
-      (state.customNode ? customNodeState : ""),
+      (state.customNode ? customNodeViews : ""),
   };
 }

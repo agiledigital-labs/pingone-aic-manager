@@ -3001,13 +3001,16 @@ Custom Node Designer types: put the type definition in
 `JourneyConfigInput.customNodeTypes`, keyed `designer-<serviceName>`
 (`outcomes`, `errorOutcome`, `inputs`, `outputs`, `script`, `properties`). The
 script runs as an ordinary top-level script in a scope of its own, with
-`properties`, `nodeState` (`get` and `putShared` only) and `outcome` defined in
-it. A read of a next-gen Scripted Decision binding other than `nodeState`
+`properties`, `nodeState` (`get` and `putShared` only), `systemEnv`
+(`getProperty` only, reading `JourneyOptions.esv`) and `outcome` defined in
+it. A read of a next-gen Scripted Decision binding other than these
 (`openidm`, `httpClient`, `logger`, `action`, …, plus `existingSession`,
 `require`, `sharedState` and `transientState`) is `missing`, naming it
 (`custom node binding: openidm`), whether read bare or through `this`; so is a
 call to any other method the next-gen `nodeState` has
-(`custom node binding: nodeState.getObject`). Anything else is ordinary
+(`custom node binding: nodeState.getObject`). The emulated `systemEnv` has no
+other member, so `systemEnv.getSecret` reads `undefined` and calling it is a
+`TypeError`; what the tenant's other members do is unmeasured. Anything else is ordinary
 JavaScript: an unknown global is a `ReferenceError`, and the legacy
 `nodeState.getShared` / `getTransient`, absent from the next-gen `nodeState`
 (doc 25), are a `TypeError` when called; both are throws like any other. A

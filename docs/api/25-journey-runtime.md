@@ -838,17 +838,23 @@ are `400` there. `listOutcomes` is the type's outcomes plus `Script Error` when
 Script bindings: `properties` (STRING a string, BOOLEAN a boolean, multivalued
 an array, an absent multivalued property `[]`, any other absent property
 `undefined`), `nodeState` (`get`, `putShared`) and the assigned global
-`outcome`. A throw, an undeclared outcome or an unset outcome take `Script
+`outcome`; and `systemEnv.getProperty`, which the probe in "ESV placeholders in
+custom node properties" below calls from the custom node's own script to read
+the ESV it compares against. A throw, an undeclared outcome or an unset outcome take `Script
 Error` when `errorOutcome` is true and keep state written before the throw;
 with `errorOutcome: false` a throw is `401`. A missing required property is
 `401`. With `inputs: ["username"]`, reading another key (even one just
 written) returned `null`; an `outputs` list did not restrict writes.
 
-The emulator gives a custom node exactly those bindings. Reading any other
-next-gen binding (`openidm`, `httpClient`, `callbacksBuilder`, `action`, …),
-bare or through `this`, or calling a method the next-gen `nodeState` has other
-than `get` and `putShared`, is `missing`, naming the binding
-(`custom node binding: <name>`); what the tenant does there is unmeasured.
+The emulator gives a custom node exactly those bindings, with `systemEnv`
+limited to `getProperty`. Reading any other next-gen binding (`openidm`,
+`httpClient`, `callbacksBuilder`, `action`, …), bare or through `this`, or
+calling a method the next-gen `nodeState` has other than `get` and
+`putShared`, is `missing`, naming the binding
+(`custom node binding: <name>`); what the tenant does there is unmeasured. The
+emulated `systemEnv` has no member but `getProperty`, so another member reads
+`undefined` and calling it is a `TypeError`; the tenant's other `systemEnv`
+members are unmeasured in a custom node.
 Other names are ordinary JavaScript: an unknown global throws a
 `ReferenceError`, and `nodeState.getShared` / `getTransient`, absent from the
 next-gen `nodeState` as above, throw a `TypeError` when called. A bare

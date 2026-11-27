@@ -1012,11 +1012,11 @@ export class JourneyEmulator {
       const resolved = resolveEsv(config, this.options.esv ?? {}, (name) => this.missing(name));
       const built = customNodeProperties(def, resolved, (name) => this.missing(name));
       this.evidence.measured(
-        "a custom node runs its type's script with the instance's properties bound; a throw, or an outcome the type does not list, takes Script Error when the type has an error outcome, else fails the journey with 401 Login failure; a missing required property fails it with 401",
+        "a custom node runs its type's script with the instance's properties bound; a throw, an outcome the type does not list or an unset outcome takes Script Error when the type has an error outcome; without one a throw fails the journey with 401 Login failure; a missing required property fails it with 401; an outputs list does not restrict its writes",
         "docs/api/25-journey-runtime.md (custom node types, 2026-11-25)",
       );
       this.evidence.assumed(
-        "a custom node's outputs list does not restrict its writes and an undeclared outcome without an error outcome fails like a throw; unmeasured",
+        "a custom node's unlisted or unset outcome without an error outcome fails the journey with 401 like a throw; unmeasured",
       );
       if ("abort" in built)
         return { outcome: null, callbacks: [], abort: this.error(401, "Login failure") };
