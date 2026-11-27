@@ -1409,9 +1409,12 @@ both refuse a journey whose nodes are ambiguous — one id listed under two node
 types, or a page inside a page (which AM refuses) — naming the nodes.
 Every journey diagnostic names an AIC API error by its status and the endpoint
 (`<nodeType>/<id>`, the journey's tree, or the list or action called), never
-by the response body, which can carry a node's config. A gateway error's
-`aic logs tx <id>` lookup is `aic`'s own text, not the server's, and is kept,
-retry ids included.
+by the response body, which can carry a node's config — nor by anything in
+it, including text shaped like the transport's `aic logs tx` lookup. A push
+that stops on a write whose outcome is unknown names the transaction id `aic`
+chose and sent for that write, with its `aic logs tx <id>` lookup; a failed
+read carries no lookup, because the agent picks a read's ids (a fresh one per
+retry) and the CLI cannot know them.
 `using-script` exits non-zero when some journey's answer is unknown: a read
 failed, or a successful reply could not be used — a listing row with no
 `_id`, a tree or page whose node list is not readable, an entry with no
