@@ -241,6 +241,23 @@ describe("P2-3 custom nodes reach only the measured bindings", () => {
     );
     expect(dumped(done.body).username).toBe("hi//alpha");
   });
+  // Review round 1 P1-1: the script's own variables and functions named like a binding are its own.
+  it.each([
+    ["a var", "var logger = 'local'; nodeState.putShared('username', logger); outcome = 'ok';"],
+    ["an assignment", "httpClient = 'local'; nodeState.putShared('username', httpClient); outcome = 'ok';"],
+    ["a later var", "var a = 1, openidm = 'local'; nodeState.putShared('username', openidm); outcome = 'ok';"],
+    [
+      "an uninitialised var",
+      "var logger; nodeState.putShared('username', typeof logger === 'undefined' ? 'local' : 'tenant'); outcome = 'ok';",
+    ],
+    [
+      "a function",
+      "function utils() { return 'local'; } nodeState.putShared('username', utils()); outcome = 'ok';",
+    ],
+  ])("leaves %s named like a binding to the script", async (_, body) => {
+    const done = await req(custom(body));
+    expect(dumped(done.body).username).toBe("local");
+  });
   // Discriminating: with an error outcome, a plain throw would quietly take Script Error.
   it.each([
     ["openidm", "openidm.read('managed/alpha_user/x'); outcome = 'ok';"],

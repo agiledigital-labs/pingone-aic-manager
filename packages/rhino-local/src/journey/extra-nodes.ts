@@ -932,6 +932,12 @@ export function customNodeSource(
       missing(`custom node property ${name} typed ${String(spec.type)} holding a ${given}`);
     properties[name] = value as JsonValue;
   }
+  // A textual scan, so a declaration inside a string or comment also releases its name: that fails
+  // open for that one name, never refuses a variable the script owns.
+  const scan = (pattern: RegExp) =>
+    [...new Set([...String(def.script).matchAll(pattern)].map((m) => m[1] as string))].sort();
+  const functions = scan(/\bfunction\s+([A-Za-z_$][\w$]*)/g);
+  const owned = [...new Set([...scan(/\b(?:var|let|const)\s+([A-Za-z_$][\w$]*)/g), ...functions])];
   const allowed = JSON.stringify(def.outcomes);
   const failure =
     def.errorOutcome === true ? `outcome = ${JSON.stringify(SCRIPT_ERROR_OUTCOME)};` : "throw e;";
@@ -940,7 +946,9 @@ export function customNodeSource(
     "var outcome;",
     "try {",
     // The journey preamble defines the guard for a custom node: every binding but the measured
-    // ones refuses by name (src/journey/script.ts, customGuard).
+    // ones refuses by name (src/journey/script.ts, customGuard). Names the script declares are its
+    // own, so they are released first; one it only assigns is released by the guard's setter.
+    `__rhinoLocalCustomOwn(${JSON.stringify(owned)}, ${JSON.stringify(functions)});`,
     "with (__rhinoLocalCustomGuard) {",
     def.script,
     "}",

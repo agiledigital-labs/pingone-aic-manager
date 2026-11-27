@@ -85,10 +85,24 @@ const customGuard = (blocked: string[]) => `
   // The wrapper customNodeSource builds runs the type's script inside \`with\` over this object, so
   // each name here resolves to it first: a binding the tenant was not seen to give a custom node is a
   // getter that refuses, uncatchably, naming the binding.
-  var guard = {};
+  // A name the script itself assigns is the script's own from then on: the setter removes the
+  // guard's entry and stores the value where the script's top-level variables live. Names the
+  // script declares are released before it runs (customNodeSource, \`__rhinoLocalCustomOwn\`).
+  var guard = {}, global = this;
   blocked.forEach(function (name) {
-    Object.defineProperty(guard, name, { get: host('refusal', 'custom node binding: ' + name) });
+    Object.defineProperty(guard, name, {
+      get: host('refusal', 'custom node binding: ' + name),
+      set: function (value) { delete guard[name]; global[name] = value; },
+      configurable: true,
+    });
   });
+  __rhinoLocalCustomOwn = function (declared, functions) {
+    declared.forEach(function (name) {
+      if (!delete guard[name]) return;
+      // A declared var starts undefined: the tenant gives a custom node no such binding.
+      if (functions.indexOf(name) === -1) global[name] = undefined;
+    });
+  };
   var state = nodeState, view = {};
   Object.keys(state).forEach(function (key) {
     if (typeof state[key] === 'function' && allowed.indexOf(key) === -1)
