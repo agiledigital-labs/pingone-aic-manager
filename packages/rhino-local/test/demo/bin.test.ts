@@ -3,7 +3,7 @@
  * only the helpers' return values. Each run spawns the real bin over the real engine, lets it
  * drive a few journeys on the real clock, and stops it with SIGINT as an operator would.
  */
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -70,3 +70,20 @@ it("exits 0 when every journey ran (the discriminating case for a bin that alway
   expect(stderr).not.toMatch(/errored with HTTP/);
   expect(code).toBe(0);
 }, 120_000);
+
+// Astra review P2-2: an unusable concurrency is refused at the command line, before anything runs.
+// Discriminating: 0 stalled the driver and "x" (NaN) removed the bound.
+it.each(["0", "x", "1.5", "-2"])("refuses --concurrency %s with a named error", (value) => {
+  const journeysPath = join(dir, "conc-journeys.json");
+  const mixPath = join(dir, "conc-mix.json");
+  writeFileSync(journeysPath, JSON.stringify(configInput()));
+  writeFileSync(mixPath, JSON.stringify(mixJson()));
+  const run = spawnSync(
+    process.execPath,
+    [BIN, "--journeys", journeysPath, "--mix", mixPath, "--port", "0", `--concurrency=${value}`],
+    { env: { ...withoutClock(), API_KEY_ID: "id", API_KEY_SECRET: "secret" }, encoding: "utf8", timeout: 60_000 },
+  );
+  expect(run.status).toBe(1);
+  expect(run.stderr).toContain("--concurrency must be a positive integer");
+  expect(run.stderr).not.toContain("listening on");
+});
