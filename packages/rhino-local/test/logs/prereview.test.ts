@@ -126,6 +126,9 @@ describe("P2-4 _queryFilter and unknown parameters", () => {
     const now = r.clock.now;
     r.store.emit(record("am-access", now - 20n * SECOND, { transactionId: "match" }));
     r.store.emit(record("am-access", now - 10n * SECOND, { transactionId: "match" }));
+    // Review round 12 P3: the fresh query reads its own source, which nothing reads before it, so
+    // the continuation's pruning of am-access cannot make it pass.
+    r.store.emit(record("idm-access", now - 20n * SECOND));
     const first = await get(r, { source: "am-access", _pageSize: "1" });
     expect(first.body.result).toHaveLength(1);
     r.clock.now += 31n * 86_400n * SECOND;
@@ -134,7 +137,7 @@ describe("P2-4 _queryFilter and unknown parameters", () => {
     expect(replay.body.result).toEqual([]);
     expect(replay.body.pagedResultsCookie).toBeNull();
     const fresh = await get(r, {
-      source: "am-access",
+      source: "idm-access",
       beginTime: formatRfc3339Ns(now - 3600n * SECOND),
       endTime: formatRfc3339Ns(now),
     });
