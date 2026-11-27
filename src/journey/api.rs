@@ -323,12 +323,13 @@ pub(crate) fn page_children(
     config: &Value,
 ) -> Result<Vec<NodeRef>> {
     let (children, problems) = page_listing(page_id, node_type, config)?;
-    match problems.into_iter().next() {
-        None => Ok(children),
-        Some(problem) => Err(Error::Api {
+    if problems.is_empty() {
+        Ok(children)
+    } else {
+        Err(Error::Api {
             status: 0,
-            body: problem,
-        }),
+            body: problems.join("; "),
+        })
     }
 }
 

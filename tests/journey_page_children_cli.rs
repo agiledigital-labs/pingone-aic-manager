@@ -559,3 +559,93 @@ fn journey_diff_notes_a_malformed_child_beside_a_missing_sibling() {
         "{stderr}"
     );
 }
+
+/// Regression (review round 4 P1-1): a malformed page child was quoted whole
+/// in diagnostics, which reach stderr, status notes and pull errors without
+/// `diff`'s secret masking. The discriminating input is a synthetic secret
+/// inside a malformed child, locally (diff, status) and on the tenant (pull,
+/// status); it must appear on neither stream, while the diagnostic still
+/// names the page and the entry's fields.
+#[test]
+fn journey_diagnostics_never_quote_a_malformed_entry() {
+    const SECRET: &str = "SYNTHETIC-SECRET-7f3a";
+    let with_bad_child = || {
+        let mut copy = journey();
+        copy["nodes"]["page"]["nodes"]
+            .as_array_mut()
+            .unwrap()
+            .extend([
+                json!({"_id": "bad"}),
+                json!({"_id": "bad2", "secretKey": SECRET}),
+            ]);
+        copy
+    };
+    let cases: [(&str, &[&str], bool, bool); 4] = [
+        (
+            "diff",
+            &["diff", "Login", "--local-vs-snapshot", "--json"],
+            true,
+            false,
+        ),
+        ("status", &["status", "Login", "--json"], true, true),
+        ("pull", &["pull", "Login", "--force"], false, true),
+        (
+            "diff remote",
+            &["diff", "Login", "--snapshot-vs-remote"],
+            false,
+            true,
+        ),
+    ];
+    for (case, args, local_bad, remote_bad) in cases {
+        let project = Project::new();
+        project.write_snapshot(&journey());
+        project.write_export(&if local_bad {
+            with_bad_child()
+        } else {
+            journey()
+        });
+        let remote = if remote_bad {
+            with_bad_child()
+        } else {
+            journey()
+        };
+        let (output, _) = project.journey(Tenant::new(remote), args);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(!stdout.contains(SECRET), "{case} stdout: {stdout}");
+        assert!(!stderr.contains(SECRET), "{case} stderr: {stderr}");
+        let both = format!("{stdout}{stderr}");
+        assert!(
+            both.contains("bad2") && both.contains("`secretKey`"),
+            "{case}: the diagnostic still names the entry and its fields: {both}"
+        );
+    }
+}
+
+/// Regression (review round 4 P1-4): status described a local retype by the
+/// tenant's old endpoint. Locally the page's `user` is relisted as a
+/// `PasswordCollectorNode` and edited; the local change must carry that
+/// type, the endpoint a push writes, while the page still comes from the
+/// tenant's copy.
+#[test]
+fn journey_status_names_a_local_retype_by_the_local_type() {
+    let project = Project::new();
+    project.write_snapshot(&journey());
+    let mut local = journey();
+    local["nodes"]["page"]["nodes"][0]["nodeType"] = json!("PasswordCollectorNode");
+    local["nodes"]["user"] = json!({"_id": "user", "validateInput": true});
+    project.write_export(&local);
+
+    let (output, _) = project.journey(Tenant::new(journey()), &["status", "Login", "--json"]);
+    let stdout: Value = serde_json::from_slice(&output.stdout)
+        .unwrap_or_else(|error| panic!("{error}: {}", String::from_utf8_lossy(&output.stderr)));
+    let user = stdout["journeys"][0]["local_changes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|part| part["id"] == "user")
+        .unwrap_or_else(|| panic!("{stdout}"))
+        .clone();
+    assert_eq!(user["node_type"], "PasswordCollectorNode", "{user}");
+    assert_eq!(user["page"], "page", "{user}");
+}

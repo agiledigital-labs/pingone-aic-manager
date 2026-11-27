@@ -1710,4 +1710,25 @@ mod tests {
         let (found, _) = search("other").await;
         assert!(!found, "the control: a script nothing uses");
     }
+
+    /// Regression (review round 4 P1-2): one page entry without a `nodeType`
+    /// made the search skip the whole page, so a valid scripted sibling using
+    /// the script was never read and `using-script` answered "none". The
+    /// discriminating input is that malformed entry beside the scripted child.
+    #[tokio::test]
+    async fn a_malformed_page_entry_does_not_hide_a_scripted_sibling() {
+        let tree = json!({"nodes": {"page": {"nodeType": "PageNode"}}});
+        let found = journey_uses_script_with(&tree, "used", |_, id| async move {
+            Ok(match id.as_str() {
+                "page" => json!({"nodes": [
+                    {"_id": "bad"},
+                    {"_id": "script", "nodeType": "ScriptedDecisionNode"}
+                ]}),
+                "script" => json!({"script": "used"}),
+                _ => json!({}),
+            })
+        })
+        .await;
+        assert!(found);
+    }
 }
