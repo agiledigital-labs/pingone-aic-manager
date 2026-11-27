@@ -1,12 +1,12 @@
 /** Collector and identity nodes; managed policy and writes stay in the shared IDM core. */
 import type { CallbackEffect } from "../case/types.ts";
-import { EmulationFailure } from "../emulation.ts";
 import { isDocument, own, setOwn } from "../idm/document.ts";
 import type { IdmEmulator } from "../idm/emulator.ts";
 import type { Evidence } from "../idm/provenance.ts";
 import type { Document, PropertyConfig, RestResult } from "../idm/types.ts";
 import type { HostCall, JsonValue } from "../protocol.ts";
 import { mergeSharedAttributes } from "./attributes.ts";
+import { idmCall, loginFailure, lookupIdentities } from "./shared.ts";
 import { EXTRA_TYPES, ExtraNodes, type ExtraContext } from "./extra-nodes.ts";
 import type {
   AttributePolicy,
@@ -225,24 +225,8 @@ export class JourneyNodes {
     );
     return { outcome: "outcome", callbacks: [] };
   }
-  private async call(
-    method: HostCall["method"],
-    args: JsonValue[],
-  ): Promise<RestResult> {
-    const response = await this.idm.hostRequest(
-      {
-        type: "call",
-        id: "journey-node",
-        seq: 0,
-        method,
-        args,
-      },
-      true,
-    );
-    for (const entry of response.provenance)
-      this.evidence.add(entry.kind, entry.behavior, entry.source);
-    if (response.emulation) throw new EmulationFailure(response.emulation);
-    return response;
+  private call(method: HostCall["method"], args: JsonValue[]): Promise<RestResult> {
+    return idmCall(this.idm, this.evidence, method, args, true);
   }
   private async find(
     resource: string,
@@ -253,18 +237,15 @@ export class JourneyNodes {
       this.missing("identity lookup with non-string value");
     if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(attribute))
       this.missing(`identity lookup attribute: ${attribute}`);
-    const result = await this.call("query", [
+    const matches = await lookupIdentities(this.idm, this.evidence, this.missing, {
       resource,
-      { _queryFilter: `${attribute} eq ${JSON.stringify(lookup)}` },
-    ]);
-    if (result.status >= 400)
-      this.missing(`identity lookup error: ${result.status}`);
-    if (!isDocument(result.body) || !Array.isArray(result.body.result))
-      this.missing("identity lookup result shape");
-    if (result.body.result.length > 1)
+      attribute,
+      value: lookup,
+      journey: true,
+    });
+    if (matches.length > 1)
       this.missing("identity lookup matched multiple records");
-    const first = result.body.result[0];
-    return isDocument(first) ? first : undefined;
+    return matches[0];
   }
   async run(
     type: string,
@@ -275,6 +256,7 @@ export class JourneyNodes {
     defaultResource: string,
     id: string,
     cookies?: Readonly<Record<string, string>>,
+    acceptLanguage = false,
   ): Promise<NodeResult> {
     if (EXTRA_TYPES.includes(type))
       return this.extra.run(
@@ -286,6 +268,7 @@ export class JourneyNodes {
         submitted,
         defaultResource,
         cookies,
+        acceptLanguage,
       );
     const done = (outcome: string): NodeResult => ({ outcome, callbacks: [] });
     if (
@@ -711,10 +694,7 @@ export class JourneyNodes {
       return {
         outcome: null,
         callbacks: [],
-        abort: {
-          status: 401,
-          body: { code: 401, reason: "Unauthorized", message: "Login failure" },
-        },
+        abort: loginFailure(),
       };
     if (!attrs) this.missing("PatchObjectNode missing objectAttributes");
     // Doc 25 (2026-11-25): a field named in ignoredFields ("sn" or "/sn", matched exactly and

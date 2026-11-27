@@ -6,13 +6,18 @@
  */
 import { randomInt } from "node:crypto";
 import { mergeSharedAttributes } from "./attributes.ts";
+import {
+  SYSTEM_SESSION_PROPERTIES,
+  localizedText,
+  loginFailure,
+  lookupIdentities,
+} from "./shared.ts";
 import { mintCookie, readCookie } from "./cookie.ts";
 import type { CallbackEffect } from "../case/types.ts";
-import { EmulationFailure } from "../emulation.ts";
 import { isDocument, own, setOwn } from "../idm/document.ts";
 import type { IdmEmulator } from "../idm/emulator.ts";
 import type { Evidence } from "../idm/provenance.ts";
-import type { Document, RestResult } from "../idm/types.ts";
+import type { Document } from "../idm/types.ts";
 import type { JsonValue } from "../protocol.ts";
 import type { NodeResult } from "./nodes.ts";
 import type { NodeDocument, SessionDelta, TermsAndConditions } from "./types.ts";
@@ -94,36 +99,6 @@ const APP_MESSAGE = "Get the app from the {{appleLink}} or on {{googleLink}}";
 const APPLE_LINK = "https://apps.apple.com/app/pingid/id891247102";
 const GOOGLE_LINK = "https://play.google.com/store/apps/details?id=prod.com.pingidentity.pingid";
 const COOKIE_SOURCE = "docs/api/25-journey-runtime.md (Persistent cookie value, 2026-11-25)";
-const SYSTEM_PROPERTIES = [
-  "clientType",
-  "FullLoginURL",
-  "Principals",
-  "XUSRef",
-  "Locale",
-  "amlbcookie",
-  "UserId",
-  "loginURL",
-  "logoutHooks",
-  "Service",
-  "HostName",
-  "UserToken",
-  "IndexType",
-  "webhooks",
-  "UserProfile",
-  "AuthLevel",
-  "CharSet",
-  "authInstant",
-  "Host",
-  "AMCtxId",
-  "OidcSid",
-  "sun.am.UniversalIdentifier",
-  "Organization",
-  "Principal",
-];
-const LOGIN_FAILURE = {
-  status: 401,
-  body: { code: 401, reason: "Unauthorized", message: "Login failure" },
-} as const;
 
 /** A node configuration the tenant refuses at write time; the emulator refuses it when the config loads. */
 export function validateExtraNode(type: string, node: NodeDocument): void {
@@ -155,9 +130,9 @@ export function validateExtraNode(type: string, node: NodeDocument): void {
       throw new RangeError(
         "400 Invalid config: At least one of the following properties must be set: properties, maxSessionTime, maxIdleTime",
       );
-    if (named.some((key) => SYSTEM_PROPERTIES.includes(key)))
+    if (named.some((key) => SYSTEM_SESSION_PROPERTIES.includes(key)))
       throw new RangeError(
-        `400 Invalid config: Provided properties cannot include system session properties: [${SYSTEM_PROPERTIES.join(", ")}]`,
+        `400 Invalid config: Provided properties cannot include system session properties: [${SYSTEM_SESSION_PROPERTIES.join(", ")}]`,
       );
   }
 }
@@ -177,27 +152,15 @@ export class ExtraNodes {
     this.ctx = ctx;
   }
 
-  private async query(resource: string, attribute: string, value: string): Promise<Document[]> {
-    const response: RestResult = await this.ctx.idm.hostRequest({
-      type: "call",
-      id: "journey-node",
-      seq: 0,
-      method: "query",
-      args: [
-        resource,
-        {
-          _queryFilter: `${attribute} eq ${JSON.stringify(value)}`,
-          _fields: "_id,userName,password,accountStatus",
-        },
-      ],
+  /** Records by exact attribute value, through IDM's internal view (Data Store reads the password). */
+  private query(resource: string, attribute: string, value: string): Promise<Document[]> {
+    return lookupIdentities(this.ctx.idm, this.ctx.evidence, this.ctx.missing, {
+      resource,
+      attribute,
+      value,
+      fields: "_id,userName,password,accountStatus",
+      journey: false,
     });
-    for (const entry of response.provenance)
-      this.ctx.evidence.add(entry.kind, entry.behavior, entry.source);
-    if (response.emulation) throw new EmulationFailure(response.emulation);
-    if (response.status >= 400) this.ctx.missing(`identity lookup error: ${response.status}`);
-    if (!isDocument(response.body) || !Array.isArray(response.body.result))
-      this.ctx.missing("identity lookup result shape");
-    return response.body.result.filter(isDocument);
   }
 
   private async dataStore(
@@ -220,7 +183,7 @@ export class ExtraNodes {
       return {
         outcome: null,
         callbacks: [],
-        abort: structuredClone(LOGIN_FAILURE),
+        abort: loginFailure(),
       };
     if (typeof username !== "string" || typeof password !== "string")
       this.ctx.missing("DataStoreDecisionNode with a non-string username or password");
@@ -350,7 +313,7 @@ export class ExtraNodes {
       return {
         outcome: null,
         callbacks: [],
-        abort: structuredClone(LOGIN_FAILURE),
+        abort: loginFailure(),
       };
     let digits = "";
     for (let i = 0; i < length; i++) digits += String(randomInt(10));
@@ -462,10 +425,7 @@ export class ExtraNodes {
       return {
         outcome: null,
         callbacks: [],
-        abort: {
-          status: 401,
-          body: { code: 401, reason: "Unauthorized", message: "Login failure" },
-        },
+        abort: loginFailure(),
       };
     }
     const outcome = this.ctx.declared?.(id);
@@ -535,22 +495,39 @@ export class ExtraNodes {
     return { outcome: level >= amount ? "true" : "false", callbacks: [] };
   }
 
-  private message(config: NodeDocument, submitted: CallbackEffect[]): NodeResult {
-    const text = (key: string, fallback: string): string => {
-      const map = config[key];
-      if (map === undefined) return fallback;
-      if (!isDocument(map)) this.ctx.missing(`MessageNode ${key} configuration`);
-      const first = Object.values(map)[0];
-      if (first === undefined) return fallback;
-      if (typeof first !== "string") this.ctx.missing(`MessageNode ${key} value type`);
-      return first;
-    };
+  /**
+   * A node's localized text: one entry was measured for MessageNode and GetAuthenticatorAppNode;
+   * with several, the Page header's measured rule (en, else refuse) is assumed to carry over.
+   */
+  private localized(
+    config: NodeDocument,
+    type: string,
+    key: string,
+    fallback: string,
+    acceptLanguage: boolean,
+  ): string {
+    const map = config[key];
+    if (map === undefined) return fallback;
+    if (!isDocument(map)) this.ctx.missing(`${type} ${key} configuration`);
+    if (Object.keys(map).length > 1)
+      this.ctx.evidence.assumed(
+        `${type} with several locales shows the en entry, as a Page header does; measured with one locale only`,
+      );
+    return (
+      localizedText(map, `${type} ${key}`, this.ctx.missing, acceptLanguage) ?? fallback
+    );
+  }
+
+  private message(
+    config: NodeDocument,
+    submitted: CallbackEffect[],
+    acceptLanguage: boolean,
+  ): NodeResult {
+    const text = (key: string, fallback: string): string =>
+      this.localized(config, "MessageNode", key, fallback, acceptLanguage);
     this.ctx.evidence.measured(
       'MessageNode sends a TextOutputCallback (messageType "0") and a ConfirmationCallback (options yes then no, default option 1); answer 0 takes true, any other index false; no state is written',
       SOURCE,
-    );
-    this.ctx.evidence.assumed(
-      "MessageNode uses the first entry of each language map; only single-entry maps were measured",
     );
     if (!submitted.length)
       return {
@@ -585,16 +562,13 @@ export class ExtraNodes {
    * TextOutputCallback of type "4" (a script) holding the message, then a ConfirmationCallback with the one
    * continue option; any answer takes the one outcome and no state is written.
    */
-  private getAuthenticatorApp(config: NodeDocument, submitted: CallbackEffect[]): NodeResult {
-    const first = (key: string, fallback: string): string => {
-      const map = config[key];
-      if (map === undefined) return fallback;
-      if (!isDocument(map)) this.ctx.missing(`GetAuthenticatorAppNode ${key} configuration`);
-      const value = Object.values(map)[0];
-      if (value === undefined) return fallback;
-      if (typeof value !== "string") this.ctx.missing(`GetAuthenticatorAppNode ${key} value type`);
-      return value;
-    };
+  private getAuthenticatorApp(
+    config: NodeDocument,
+    submitted: CallbackEffect[],
+    acceptLanguage: boolean,
+  ): NodeResult {
+    const first = (key: string, fallback: string): string =>
+      this.localized(config, "GetAuthenticatorAppNode", key, fallback, acceptLanguage);
     const link = (key: "appleLink" | "googleLink", fallback: string): string => {
       const value = config[key] === undefined ? fallback : config[key];
       if (typeof value !== "string" || /['"\\\s]/.test(value))
@@ -612,7 +586,7 @@ export class ExtraNodes {
       PAGE_CHILD_SOURCE,
     );
     this.ctx.evidence.assumed(
-      "GetAuthenticatorAppNode uses the first entry of each language map; the {{appleLabel}} and {{googleLabel}} wildcards are unmeasured",
+      "GetAuthenticatorAppNode's {{appleLabel}} and {{googleLabel}} wildcards are unmeasured",
     );
     if (!submitted.length)
       return {
@@ -649,7 +623,7 @@ export class ExtraNodes {
       SOURCE,
     );
     if (typeof config.prompt !== "string")
-      return { outcome: null, callbacks: [], abort: structuredClone(LOGIN_FAILURE) };
+      return { outcome: null, callbacks: [], abort: loginFailure() };
     if (!submitted.length) {
       const preferred =
         typeof config.defaultChoice === "string" ? list.indexOf(config.defaultChoice) : -1;
@@ -670,7 +644,7 @@ export class ExtraNodes {
       this.ctx.missing("ChoiceCollectorNode callback submission");
     const index = typeof answer.value === "string" ? Number(answer.value) : answer.value;
     if (typeof index !== "number" || !Number.isInteger(index) || index < 0 || index >= list.length)
-      return { outcome: null, callbacks: [], abort: structuredClone(LOGIN_FAILURE) };
+      return { outcome: null, callbacks: [], abort: loginFailure() };
     return { outcome: list[index] ?? null, callbacks: [] };
   }
 
@@ -796,7 +770,7 @@ export class ExtraNodes {
     if (reading.kind === "unmeasured")
       this.ctx.missing(`PersistentCookieDecisionNode over ${reading.what}`);
     if (reading.kind === "abort")
-      return { outcome: null, callbacks: [], abort: structuredClone(LOGIN_FAILURE) };
+      return { outcome: null, callbacks: [], abort: loginFailure() };
     if (reading.kind === "false") return { outcome: "false", callbacks: [] };
     const claims = reading.claims;
     if (claims.sub === null) return { outcome: "false", callbacks: [] };
@@ -836,6 +810,7 @@ export class ExtraNodes {
     submitted: CallbackEffect[],
     defaultResource: string,
     cookies?: Readonly<Record<string, string>>,
+    acceptLanguage = false,
   ): Promise<NodeResult> {
     if (PURE_STUBS.includes(type)) return this.stub(type, id);
     switch (type) {
@@ -850,9 +825,9 @@ export class ExtraNodes {
       case "AuthLevelDecisionNode":
         return this.authLevel(config, shared, true);
       case "MessageNode":
-        return this.message(config, submitted);
+        return this.message(config, submitted, acceptLanguage);
       case "GetAuthenticatorAppNode":
-        return this.getAuthenticatorApp(config, submitted);
+        return this.getAuthenticatorApp(config, submitted, acceptLanguage);
       case "ChoiceCollectorNode":
         return this.choice(config, submitted);
       case "ValidatedUsernameNode":

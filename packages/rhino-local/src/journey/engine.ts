@@ -19,6 +19,7 @@ import { fromWire, toWire, type WireCallback } from "./callbacks.ts";
 import { JourneyNodes, EMULATED, type NodeResult } from "./nodes.ts";
 import { JourneyConfig } from "./config.ts";
 import { journeyPreamble } from "./script.ts";
+import { SYSTEM_SESSION_PROPERTIES, localizedText } from "./shared.ts";
 import { JourneyLogs, type JourneyLogOptions, type RequestLog } from "./emit.ts";
 import {
   EXTRA_OUTCOMES,
@@ -220,14 +221,12 @@ function resolveEsv(
   };
   return walk(config) as NodeDocument;
 }
-/** Session properties AM owns: measured for the first four, listed by SetSessionPropertiesNode's validation for the rest. */
+/** Of the session properties AM owns, the ones a script's putSessionProperty was measured to fail on. */
 const SESSION_OWNED_MEASURED = ["UserId", "AuthLevel", "Service", "Locale"];
-const SESSION_OWNED = [
-  ...SESSION_OWNED_MEASURED,
-  ...["clientType", "FullLoginURL", "Principals", "XUSRef", "amlbcookie", "loginURL", "logoutHooks"],
-  ...["HostName", "UserToken", "IndexType", "webhooks", "UserProfile", "CharSet", "authInstant"],
-  ...["Host", "AMCtxId", "OidcSid", "sun.am.UniversalIdentifier", "Organization", "Principal"],
-];
+/** Whether the request names a language, which makes a choice between locales unmeasured. */
+function acceptsLanguage(request: AuthenticateRequest): boolean {
+  return Object.keys(request.headers ?? {}).some((h) => h.toLowerCase() === "accept-language");
+}
 function mergeSession(before: SessionDelta | undefined, next: SessionDelta): SessionDelta {
   return {
     ...before,
@@ -882,7 +881,7 @@ export class JourneyEmulator {
         );
         return this.error(401, "Login failure");
       }
-      if (SESSION_OWNED.includes(key))
+      if (SYSTEM_SESSION_PROPERTIES.includes(key))
         this.missing(`putSessionProperty of a property AM owns: ${key}`);
       next[key] = value;
     }
@@ -942,6 +941,7 @@ export class JourneyEmulator {
         this.tree(frame.tree).identityResource ?? `managed/${this.config.realm}_user`,
         id,
         request.cookies,
+        acceptsLanguage(request),
       );
       if (result.session) state.session = mergeSession(state.session, result.session);
       // Doc 25 probes: objectAttributes a node writes prints in Java-map form in the next script.
@@ -971,17 +971,13 @@ export class JourneyEmulator {
     const map = config[field];
     if (map === undefined) return {};
     if (!isDocument(map)) this.missing(`PageNode ${field} shape`);
-    const keys = Object.keys(map);
-    if (!keys.length) return {};
-    const lang = Object.keys(request.headers ?? {}).some(
-      (h) => h.toLowerCase() === "accept-language",
+    const value = localizedText(
+      map,
+      `PageNode ${field}`,
+      (name) => this.missing(name),
+      acceptsLanguage(request),
     );
-    if (lang && keys.length > 1)
-      this.missing(`PageNode ${field} with several locales and Accept-Language`);
-    const key = Object.hasOwn(map, "en") ? "en" : keys.length === 1 ? keys[0] : undefined;
-    if (key === undefined) this.missing(`PageNode ${field} with several locales and no en`);
-    const value = map[key];
-    if (typeof value !== "string") this.missing(`PageNode ${field} value`);
+    if (value === undefined) return {};
     this.measured(
       "a PageNode sends pageHeader and pageDescription as header and description beside its callbacks: the en entry, else a sole entry, omitted when empty; a re-sent page repeats them",
     );
@@ -1060,16 +1056,6 @@ export class JourneyEmulator {
         if (!previous)
           this.measured("a throw in a Page child's discovery run fails the first POST with 401");
         return result;
-      }
-      if (
-        previous &&
-        child.nodeType === "product-CaptchaNode" &&
-        own.some((cb) => cb.type === "ReCaptchaCallback" && cb.value === "")
-      ) {
-        this.measured(
-          "a Page whose product-CaptchaNode child is submitted with an empty token fails with 401 Login failure",
-        );
-        return { outcome: null, callbacks: [], abort: this.error(401, "Login failure") };
       }
       // Discovery ignores the child's Action (doc 25); whether a message set there survives is unmeasured.
       if (!previous && state.errorMessage !== message)
