@@ -842,9 +842,14 @@ pub struct PushError {
     status: WriteStatus,
     not_attempted: Vec<String>,
     source: Box<Error>,
-    /// The transaction id the stopped write was sent with — chosen here,
-    /// never read back from the error, whose body is the server's.
+    /// The transaction id assigned to the stopped write's attempt — chosen
+    /// here, never read back from the error, whose body is the server's. An
+    /// unknown outcome does not say the request was dispatched (the agent
+    /// connection or the bearer can fail first), so it is never called sent.
     transaction: String,
+    /// The tenant the push wrote to, which the lookup must search: the
+    /// logs command otherwise resolves its own default.
+    tenant: String,
 }
 
 impl PushError {
@@ -886,9 +891,9 @@ impl std::fmt::Display for PushError {
         if self.status != WriteStatus::Refused {
             write!(
                 f,
-                "\n  it was sent with transaction id {0}; `aic logs tx {0}` shows whether AM \
-                 or IDM recorded it",
-                self.transaction
+                "\n  this write was assigned transaction id {0}; if the request reached the \
+                 tenant, `aic logs tx {0} --tenant {1}` finds it",
+                self.transaction, self.tenant
             )?;
         }
         let list = |writes: &[String]| {
@@ -930,6 +935,7 @@ impl From<PushError> for Error {
 /// The push's write loop: each planned node in order, then the tree. The
 /// senders are injected so a test drives this loop and not a copy of it.
 async fn push_with<N, NF, T, TF>(
+    tenant: &str,
     export: &JourneyExport,
     writes: Vec<NodeRef>,
     mut send_node: N,
@@ -957,6 +963,7 @@ where
             not_attempted: pending.into(),
             source: Box::new(failure.source),
             transaction,
+            tenant: tenant.to_owned(),
         }
     };
     for node in writes {
@@ -998,6 +1005,7 @@ pub async fn push(
         );
     }
     let pushed = push_with(
+        tenant,
         export,
         writes,
         |node, body, transaction| async move {
@@ -1395,6 +1403,7 @@ mod tests {
         let sent = std::cell::RefCell::new(Vec::new());
         let (writes, _) = push_plan(&export).unwrap();
         let pushed = push_with(
+            "stub",
             &export,
             writes,
             |node, _, _| {
@@ -1434,6 +1443,7 @@ mod tests {
             }
         };
         push_with(
+            "stub",
             &export,
             writes,
             |node, _, _| outcome(node.label()),
@@ -1461,7 +1471,7 @@ mod tests {
     /// Regression (review round 7 P1-1): the write's `aic logs tx` lookup
     /// was read back out of the error body, so a server's text ending in a
     /// lookalike sentence printed as if `aic` had written it. The lookup now
-    /// comes from the id the loop chose and handed the sender. The
+    /// comes from the id the loop assigned and handed the sender. The
     /// discriminating input is a plain 400 whose body ends in a forged
     /// lookup: the forged id must not appear, the id actually sent must.
     #[tokio::test]
@@ -1470,6 +1480,7 @@ mod tests {
         let (writes, _) = push_plan(&export).unwrap();
         let sent = std::cell::RefCell::new(None);
         let error = push_with(
+            "stub",
             &export,
             writes,
             |_, _, transaction| {
@@ -1492,7 +1503,7 @@ mod tests {
         let message = error.to_string();
         assert!(!message.contains("forged-id"), "{message}");
         assert!(
-            message.contains(&format!("`aic logs tx {sent}`")),
+            message.contains(&format!("`aic logs tx {sent} --tenant stub`")),
             "{message}"
         );
     }

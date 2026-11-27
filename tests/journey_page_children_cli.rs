@@ -127,8 +127,12 @@ struct Tenant {
     fail_get: Option<(&'static str, Value)>,
     /// An agent reply that replaces the realm's journey listing.
     listing: Option<Value>,
-    /// The caller-chosen transaction ids the requests carried, in order.
-    sent_ids: Vec<String>,
+    /// The caller-chosen transaction ids the requests carried, in order,
+    /// each with its REST path below the trees prefix.
+    sent_ids: Vec<(String, String)>,
+    /// After this many PUTs, every agent ping answers with a protocol
+    /// mismatch, so the next request is never dispatched.
+    ping_fails_after_puts: Option<usize>,
     calls: Vec<(String, String)>,
 }
 
@@ -141,6 +145,7 @@ impl Tenant {
             fail_get: None,
             listing: None,
             sent_ids: Vec::new(),
+            ping_fails_after_puts: None,
             calls: Vec::new(),
         }
     }
@@ -150,7 +155,8 @@ impl Tenant {
         let path = request["path"].as_str().unwrap();
         self.calls.push((method.into(), path.into()));
         if let Some(id) = request["transaction_id"].as_str() {
-            self.sent_ids.push(id.into());
+            let rest = path.strip_prefix(TREES).unwrap_or(path);
+            self.sent_ids.push((rest.into(), id.into()));
         }
         let rest = path.strip_prefix(TREES).unwrap_or_default();
         let found = |value: Option<&Value>| match value {
@@ -198,6 +204,16 @@ impl Tenant {
         }
     }
 
+    fn ping_down(&self) -> bool {
+        let puts = self
+            .calls
+            .iter()
+            .filter(|(method, _)| method == "PUT")
+            .count();
+        self.ping_fails_after_puts
+            .is_some_and(|after| puts >= after)
+    }
+
     fn writes(&self) -> Vec<String> {
         self.calls
             .iter()
@@ -241,6 +257,9 @@ fn run(project: &Project, mut command: Command, mut tenant: Tenant) -> (Output, 
         BufReader::new(&stream).read_line(&mut line).unwrap();
         let request: Value = serde_json::from_str(&line).unwrap();
         let response = match request["op"].as_str().unwrap() {
+            "ping" if tenant.ping_down() => {
+                json!({"type": "protocol_mismatch", "expected": 999, "received": 6})
+            }
             "ping" => json!({"type":"pong","version":"test","pid":1}),
             "status" => json!({"type":"status","unlocked":true,"project_dir":"/tmp/aic-test",
                 "tenants":["stub"],"cached_tokens":[],"idle_remaining_secs":100,"idle_timeout_secs":3600}),
@@ -503,6 +522,13 @@ fn journey_push_with_a_lost_tree_reply_reports_every_node_acknowledged() {
         assert!(!stderr.contains(wrong), "{wrong}: {stderr}");
     }
     assert_eq!(tenant.state["tree"]["description"], "v2", "the tree landed");
+    // Review round 8 P2: the lookup names the id the tree PUT carried.
+    let (path, tree_id) = tenant.sent_ids.last().unwrap();
+    assert!(path.ends_with("/trees/Login"), "{path}");
+    assert!(
+        stderr.contains(&format!("`aic logs tx {tree_id} --tenant stub`")),
+        "{stderr}"
+    );
     assert_eq!(project.files(), before);
 
     tenant.fail_put = None;
@@ -884,12 +910,12 @@ fn a_write_names_the_id_it_sent_and_no_lookup_comes_from_a_body() {
                 "{case}: {both}"
             );
             if put {
-                let sent = tenant
+                let (_, sent) = tenant
                     .sent_ids
                     .last()
                     .unwrap_or_else(|| panic!("{case}: the PUT carried no id"));
                 assert!(
-                    both.contains(&format!("`aic logs tx {sent}`")),
+                    both.contains(&format!("`aic logs tx {sent} --tenant stub`")),
                     "{case}: {both}"
                 );
             }
@@ -1075,4 +1101,78 @@ fn every_unusable_successful_reply_makes_the_script_search_incomplete() {
     assert!(output.status.success(), "{}", streams(&output));
     let stdout: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(stdout, json!(["Login"]));
+}
+
+/// Regression (review round 8 P1-1): the stopped write's id was described
+/// as "sent" whatever happened, but the push assigns it before the call, and
+/// the call can fail before dispatch — here the agent stops answering pings
+/// after the first child's PUT, so the second is never sent. The output must
+/// call the id assigned, make the lookup conditional, and the id it names
+/// must be one no request carried.
+#[test]
+fn a_write_that_was_never_dispatched_is_not_called_sent() {
+    let project = Project::new();
+    project.write_snapshot(&journey());
+    let mut local = journey();
+    local["nodes"]["user"]["validateInput"] = json!(true);
+    local["nodes"]["script"]["script"] = json!("11111111-1111-1111-1111-111111111111");
+    project.write_export(&local);
+    let mut tenant = Tenant::new(journey());
+    tenant.ping_fails_after_puts = Some(1);
+
+    let (output, tenant) = project.push(tenant, &[]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(1), "{stderr}");
+    assert_eq!(
+        tenant.sent_ids.len(),
+        1,
+        "only the first PUT went out: {stderr}"
+    );
+    assert!(!stderr.contains("was sent with"), "{stderr}");
+    let marker = "assigned transaction id ";
+    let at = stderr.find(marker).unwrap_or_else(|| panic!("{stderr}")) + marker.len();
+    let assigned: String = stderr[at..].chars().take_while(|c| *c != ';').collect();
+    assert_ne!(assigned, tenant.sent_ids[0].1, "{stderr}");
+    assert!(
+        stderr.contains(&format!(
+            "if the request reached the tenant, `aic logs tx {assigned} --tenant stub`"
+        )),
+        "{stderr}"
+    );
+}
+
+/// Regression (review round 8 P1-2): the printed lookup left the tenant to
+/// the logs command's own resolution, so with another project default it
+/// searched a tenant the push never wrote. The discriminating input is a
+/// second tenant as the default and `--tenant stub` on the push.
+#[test]
+fn the_lookup_names_the_tenant_the_push_wrote_to() {
+    let project = Project::new();
+    std::fs::write(
+        project.0.join(".aic/config.toml"),
+        "project = \"test\"\ndefault_tenant = \"different\"\n\n\
+         [[tenant]]\nname = \"stub\"\nbase_url = \"https://tenant.example.com\"\ntheme = \"production\"\nscopes = []\n\n\
+         [[tenant]]\nname = \"different\"\nbase_url = \"https://tenant-b.example.com\"\ntheme = \"production\"\nscopes = []\n",
+    )
+    .unwrap();
+    project.write_snapshot(&journey());
+    let mut local = journey();
+    local["nodes"]["user"]["validateInput"] = json!(true);
+    project.write_export(&local);
+    let mut tenant = Tenant::new(journey());
+    tenant.fail_put = Some((
+        "user",
+        json!({"type": "transport", "message": "fixture: reset"}),
+        true,
+    ));
+
+    let (output, tenant) = project.push(tenant, &["--tenant", "stub"]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(1), "{stderr}");
+    let (_, sent) = tenant.sent_ids.last().unwrap();
+    assert!(
+        stderr.contains(&format!("`aic logs tx {sent} --tenant stub`")),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("--tenant different"), "{stderr}");
 }
