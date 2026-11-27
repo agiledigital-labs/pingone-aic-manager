@@ -3001,8 +3001,12 @@ Custom Node Designer types: put the type definition in
 (`outcomes`, `errorOutcome`, `inputs`, `outputs`, `script`, `properties`). The
 script runs with `properties`, `nodeState` (`get` and `putShared` only) and
 `outcome` bound, and any other binding it reads is `missing`, naming it
-(`custom node binding: openidm`); a name the script declares or assigns itself
-(`var logger = …`) is its own and is never refused; a throw or
+(`custom node binding: openidm`); a name the script declares at its own top
+level or assigns itself (`var logger = …`) is its own and is never refused,
+while a helper's locals and declaration-like text in a string or comment leave
+the refusal in place. A top-level function is defined only when its declaration
+is reached, not hoisted as on the tenant: read above it, its name is
+`undefined`. A throw or
 unlisted outcome takes `Script Error` when `errorOutcome` is set. Not modelled:
 the `inputs` read restriction, and `outputs` (also unrestrictive on the tenant).
 The OTP expiry boundary, cookie expiry and `idleTimeout`, and `ValidatedPasswordNode`

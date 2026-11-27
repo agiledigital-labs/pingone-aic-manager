@@ -87,8 +87,10 @@ const customGuard = (blocked: string[]) => `
   // getter that refuses, uncatchably, naming the binding.
   // A name the script itself assigns is the script's own from then on: the setter removes the
   // guard's entry and stores the value where the script's top-level variables live. Names the
-  // script declares are released before it runs (customNodeSource, \`__rhinoLocalCustomOwn\`).
-  var guard = {}, global = this;
+  // script declares at its own top level are released before it runs (customNodeSource,
+  // \`__rhinoLocalCustomOwn\`); the inventory is Rhino's parse of the script alone, so a helper's
+  // locals and declaration-like text in a string or comment release nothing.
+  var guard = {}, global = this, declarations = host('declarations');
   blocked.forEach(function (name) {
     Object.defineProperty(guard, name, {
       get: host('refusal', 'custom node binding: ' + name),
@@ -96,11 +98,16 @@ const customGuard = (blocked: string[]) => `
       configurable: true,
     });
   });
-  __rhinoLocalCustomOwn = function (declared, functions) {
-    declared.forEach(function (name) {
-      if (!delete guard[name]) return;
-      // A declared var starts undefined: the tenant gives a custom node no such binding.
-      if (functions.indexOf(name) === -1) global[name] = undefined;
+  __rhinoLocalCustomOwn = function (source) {
+    declarations(source).forEach(function (name) {
+      // Only a guard entry is reset: any other name (the wrapper's \`properties\`, \`outcome\`) is
+      // the same top-level variable the script redeclared, which a redundant var leaves alone.
+      if (!Object.prototype.hasOwnProperty.call(guard, name)) return;
+      delete guard[name];
+      // A declared name starts undefined: the tenant gives a custom node no such binding. A
+      // function too, because inside the wrapper's block Rhino defines it only when reached, and
+      // until then the global would still be the harness's own binding.
+      global[name] = undefined;
     });
   };
   var state = nodeState, view = {};

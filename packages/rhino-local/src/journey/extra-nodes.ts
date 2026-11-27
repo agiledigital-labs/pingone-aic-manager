@@ -909,6 +909,9 @@ export function customOutcomes(def: CustomNodeType): readonly string[] {
  * assigned `outcome` routed. Absent properties follow the measured shape: a multivalued one is an empty array,
  * any other is undefined. A missing required property is `undefined` here and is the caller's 401.
  */
+/** A JS string literal: JSON, with the two line separators JSON leaves raw but ES5 forbids in one. */
+const jsString = (text: string): string =>
+  JSON.stringify(text).replace(/\u2028/g, "\\u2028").replace(/\u2029/g, "\\u2029");
 export function customNodeSource(
   def: CustomNodeType,
   node: NodeDocument,
@@ -936,23 +939,21 @@ export function customNodeSource(
       missing(`custom node property ${name} typed ${String(spec.type)} holding a ${given}`);
     properties[name] = value as JsonValue;
   }
-  // A textual scan, so a declaration inside a string or comment also releases its name: that fails
-  // open for that one name, never refuses a variable the script owns.
-  const scan = (pattern: RegExp) =>
-    [...new Set([...String(def.script).matchAll(pattern)].map((m) => m[1] as string))].sort();
-  const functions = scan(/\bfunction\s+([A-Za-z_$][\w$]*)/g);
-  const owned = [...new Set([...scan(/\b(?:var|let|const)\s+([A-Za-z_$][\w$]*)/g), ...functions])];
   const allowed = JSON.stringify(def.outcomes);
   const failure =
     def.errorOutcome === true ? `outcome = ${JSON.stringify(SCRIPT_ERROR_OUTCOME)};` : "throw e;";
   const source = [
     `var properties = ${JSON.stringify(properties)};`,
     "var outcome;",
+    // Routing goes through the action captured here, so a script that declares or assigns its own
+    // \`action\` (the tenant gives a custom node none) cannot take the wrapper's away.
+    "var __rhinoLocalCustomRoute = action;",
     "try {",
     // The journey preamble defines the guard for a custom node: every binding but the measured
-    // ones refuses by name (src/journey/script.ts, customGuard). Names the script declares are its
-    // own, so they are released first; one it only assigns is released by the guard's setter.
-    `__rhinoLocalCustomOwn(${JSON.stringify(owned)}, ${JSON.stringify(functions)});`,
+    // ones refuses by name (src/journey/script.ts, customGuard). Names the script declares at its
+    // top level are its own, so they are released first, from Rhino's parse of the script; one it
+    // only assigns is released by the guard's setter.
+    `__rhinoLocalCustomOwn(${jsString(def.script)});`,
     "with (__rhinoLocalCustomGuard) {",
     def.script,
     "}",
@@ -964,7 +965,7 @@ export function customNodeSource(
       ? `  outcome = ${JSON.stringify(SCRIPT_ERROR_OUTCOME)};`
       : '  throw "custom node outcome";',
     "}",
-    "action.goTo(outcome);",
+    "__rhinoLocalCustomRoute.goTo(outcome);",
   ].join("\n");
   return { source };
 }

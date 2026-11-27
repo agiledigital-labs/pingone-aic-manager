@@ -258,6 +258,61 @@ describe("P2-3 custom nodes reach only the measured bindings", () => {
     const done = await req(custom(body));
     expect(dumped(done.body).username).toBe("local");
   });
+  // Review round 2 P1-1: a helper's locals, and a redundant top-level var, leave the wrapper's own
+  // bindings alone. Discriminating: each name is the wrapper's (properties) or the guard's (action).
+  it("keeps a helper-local properties apart from the injected one", async () => {
+    const done = await req(
+      custom(
+        'function f() { var properties = "helper"; return properties; } nodeState.putShared("username", properties.greeting + "/" + f()); outcome = "ok";',
+      ),
+    );
+    expect(dumped(done.body).username).toBe("hi/helper");
+  });
+  it("keeps the injected properties through a bare top-level var", async () => {
+    const done = await req(
+      custom("var properties; nodeState.putShared('username', properties.greeting); outcome = 'ok';"),
+    );
+    expect(dumped(done.body).username).toBe("hi");
+  });
+  it.each([
+    ["a helper-local", "function f() { var action = 1; return action; } f();"],
+    ["a top-level", "var action = 1;"],
+  ])("routes past %s var action", async (_, prefix) => {
+    const done = await req(custom(`${prefix} nodeState.putShared('username', 'local'); outcome = 'ok';`));
+    expect(done.status).toBe(200);
+    expect(dumped(done.body).username).toBe("local");
+  });
+  // The wrapper runs the script inside a block, where Rhino defines a function declaration only
+  // when it is reached, so a released name read above its declaration must not be the harness's own
+  // binding. (The tenant hoists it; that is unmodelled either way, but this way it is not a leak.)
+  it("a function name read above its declaration is not the harness binding", async () => {
+    const done = await req(
+      custom("nodeState.putShared('username', typeof utils); outcome = 'ok'; function utils() {}"),
+    );
+    expect(dumped(done.body).username).not.toBe("object");
+  });
+  // Review round 2 P2-1: declarations come from the parse, not the text. Discriminating: each of the
+  // first two is a declaration a regex misses; each of the last three is text a regex mistakes for one.
+  it.each([
+    ["a later uninitialised declarator", "var n = 1, logger;"],
+    ["a declarator after a comment", "var /* local */ logger;"],
+  ])("releases %s", async (_, prefix) => {
+    const done = await req(
+      custom(
+        `${prefix} nodeState.putShared('username', typeof logger === 'undefined' ? 'local' : 'tenant'); outcome = 'ok';`,
+      ),
+    );
+    expect(dumped(done.body).username).toBe("local");
+  });
+  it.each([
+    ["a string", "var s = 'function logger() {}';"],
+    ["a comment", "// function logger() {}\n"],
+    ["a helper's body", "function f() { function logger() {} return logger; }"],
+  ])("still refuses a free logger declared only in %s", async (_, prefix) => {
+    const name = "custom node binding: logger";
+    expectEmulationFailure(name);
+    refused(await req(custom(`${prefix} logger.info('x'); outcome = 'ok';`)), name);
+  });
   // Discriminating: with an error outcome, a plain throw would quietly take Script Error.
   it.each([
     ["openidm", "openidm.read('managed/alpha_user/x'); outcome = 'ok';"],

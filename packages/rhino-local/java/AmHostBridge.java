@@ -116,6 +116,8 @@ final class AmHostBridge extends BaseFunction {
         return expose(new LogPush());
       case "unsupported":
         return expose(new Unsupported());
+      case "declarations":
+        return expose(new Declarations());
       case "observe":
         if (!(arg(args, 1) instanceof Callable)) throw protocol("journey bridge observe arguments");
         if (args[1] instanceof Refusal) return args[1];
@@ -155,6 +157,24 @@ final class AmHostBridge extends BaseFunction {
       throw missing(
           message.startsWith("rhino-local: ") ? message.substring(13) : message,
           id instanceof CharSequence ? id.toString() : null);
+    }
+  }
+
+  /**
+   * A custom node script's own top-level declarations, as an array of names
+   * ({@link CustomDeclarations}). A script the parser refuses ran through no inventory the
+   * emulator can stand behind, so it is missing behaviour rather than a guess.
+   */
+  private final class Declarations extends BaseFunction {
+    @Override
+    public Object call(Context cx, Scriptable scope, Scriptable thisObj, Object[] args) {
+      java.util.List<String> names;
+      try {
+        names = CustomDeclarations.of(cx, Context.toString(arg(args, 0)));
+      } catch (org.mozilla.javascript.EvaluatorException e) {
+        throw missing("custom node script the emulator cannot inventory: " + e.details());
+      }
+      return cx.newArray(top, names.toArray());
     }
   }
 
