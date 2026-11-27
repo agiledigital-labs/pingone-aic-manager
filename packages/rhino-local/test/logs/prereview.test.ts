@@ -152,4 +152,21 @@ describe("review round 1: repeated parameters and the measured am-core 500s", ()
     const res = await get(await seeded(), window({ source: "am-access", _queryFilter: 'payload/logger eq "x"' }));
     expect(res.status).toBe(501);
   });
+  // Review round 2 P2-2: the measured 500 is for the standalone, well-formed filter only.
+  it("refuses a measured-500 filter beside a transactionId as the unmodelled combination", async () => {
+    const res = await get(
+      await seeded(),
+      window({ source: "am-core", _queryFilter: 'payload/logger eq "x"', transactionId: "keep" }),
+    );
+    expect(res.status).toBe(501);
+    expect(String(res.body["message"])).toContain("transactionId together with _queryFilter");
+  });
+  it.each([['payload/logger eq "\\q"'], ['payload/message co "\\q"']])(
+    "refuses %s, a malformed literal, as unmodelled rather than the measured 500",
+    async (filter) => {
+      const res = await get(await seeded(), window({ source: "am-core", _queryFilter: filter }));
+      expect(res.status).toBe(501);
+      expect(String(res.body["message"])).toContain("_queryFilter");
+    },
+  );
 });

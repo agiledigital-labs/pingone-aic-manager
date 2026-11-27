@@ -2574,8 +2574,9 @@ rate}`; now is `virtual_origin + (real now - real_origin) * rate`, read once at
   (the `transactionId` parameter is the measured prefix match), so treat exactness
   as the emulator's choice. The two filters doc 08 measured failing on `am-core`,
   `payload/logger eq "…"` and `payload/message co "…"`, answer the tenant's `500`
-  there (status measured, body not). Every other filter, those two on any other
-  source, the filter combined with `transactionId`, any parameter given more than
+  there (status measured, body not), standalone and with a string literal JSON
+  reads. Every other filter, those two on any other source or with a malformed
+  literal, any filter combined with `transactionId`, any parameter given more than
   once, and any parameter the server does not know is a `501` naming it: the
   emulator's own refusal for what was never measured, rather than a page that
   silently ignores it. The paging cookie is bound to the filter like the rest of

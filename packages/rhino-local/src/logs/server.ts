@@ -113,34 +113,47 @@ const KNOWN_PARAMS = [
   "_pageSize",
   "_pagedResultsCookie",
 ];
+/** A CREST string literal, read the way JSON reads one; undefined when it is not one. */
+function literal(text: string | undefined): string | undefined {
+  if (text === undefined) return undefined;
+  try {
+    const value: unknown = JSON.parse(text);
+    return typeof value === "string" ? value : undefined;
+  } catch {
+    return undefined;
+  }
+}
+const STRING = '("(?:[^"\\\\]|\\\\.)*")';
 /** The one `_queryFilter` the tenant was seen to honour. */
-const TX_FILTER = /^payload\/transactionId eq ("(?:[^"\\]|\\.)*")$/;
+const TX_FILTER = new RegExp(`^payload/transactionId eq ${STRING}$`);
 /**
  * The filters doc 08 measured failing (2026-08-12, `am-core`, 20 s and 6 h windows alike):
  * `payload/logger eq "…"` and `payload/message co "…"` answer `500 Internal server error`. Only
- * the status is recorded; the body here is the emulator's CREST-style one.
+ * the status is recorded; the body here is the emulator's CREST-style one. Measured standalone and
+ * well formed, so a literal JSON cannot read, or either one beside a `transactionId`, is the 501.
  */
 const MEASURED_500 = [
-  /^payload\/logger eq "(?:[^"\\]|\\.)*"$/,
-  /^payload\/message co "(?:[^"\\]|\\.)*"$/,
+  new RegExp(`^payload/logger eq ${STRING}$`),
+  new RegExp(`^payload/message co ${STRING}$`),
 ];
 /**
- * The id a `_queryFilter` selects. doc 08 records `payload/transactionId eq "…"` working and most
- * other payload fields failing 500; which do not is unrecorded, so every other filter is refused
- * as the emulator's own 501, never answered unfiltered. Exact match is CREST `eq`; that the tenant
- * does not prefix-match here, as it does for the `transactionId` parameter, is unmeasured.
+ * The id a `_queryFilter` selects. doc 08 records `payload/transactionId eq "…"` working, and the
+ * two `MEASURED_500` forms on `am-core` failing 500, which this answers too. Which other filters
+ * fail is unrecorded, so every other filter, and those two on any other source, is refused as the
+ * emulator's own 501, never answered unfiltered. Exact match is CREST `eq`; that the tenant does
+ * not prefix-match here, as it does for the `transactionId` parameter, is unmeasured.
  */
 function filteredTransaction(filter: string, sources: readonly string[]): string {
-  if (sources.length === 1 && sources[0] === "am-core" && MEASURED_500.some((r) => r.test(filter)))
+  const measured500 = MEASURED_500.map((r) => r.exec(filter)).find((m) => m !== null);
+  if (
+    measured500 &&
+    literal(measured500[1]) !== undefined &&
+    sources.length === 1 &&
+    sources[0] === "am-core"
+  )
     throw new HttpError(500, "Internal server error");
-  const match = TX_FILTER.exec(filter);
-  let id: unknown;
-  try {
-    id = match?.[1] === undefined ? undefined : JSON.parse(match[1]);
-  } catch {
-    id = undefined;
-  }
-  if (typeof id !== "string")
+  const id = literal(TX_FILTER.exec(filter)?.[1]);
+  if (id === undefined)
     throw new HttpError(
       501,
       `Not modelled by the emulator: _queryFilter ${filter} (only payload/transactionId eq "<id>" is)`,
@@ -318,10 +331,11 @@ export async function startLogsServer(options: LogsServerOptions): Promise<LogsS
 
     const transactionId = param("transactionId");
     const filterText = param("_queryFilter");
-    const equals = filterText === undefined ? undefined : filteredTransaction(filterText, requested);
-    if (equals !== undefined && transactionId !== undefined) {
+    // Before the filter is read, so the unmodelled combination is never answered as a measured 500.
+    if (filterText !== undefined && transactionId !== undefined) {
       throw new HttpError(501, "Not modelled by the emulator: transactionId together with _queryFilter");
     }
+    const equals = filterText === undefined ? undefined : filteredTransaction(filterText, requested);
     const cookieQuery: CookieQuery = {
       sources: [...sources].sort().join(","),
       begin: beginNs.toString(),
