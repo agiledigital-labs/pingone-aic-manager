@@ -95,7 +95,8 @@ export function customBlocked(): string[] {
  * with extra arguments (`['realm'].map(nodeState.get)` passes value, index and array) behaves as
  * before rather than meeting the binding's arity check. `getProperty` forwards what it is given, as
  * the binding does in a Scripted Decision node; only its one-argument call is measured here, and
- * its overloads and arity error in a custom node are assumed parity with doc 12 (doc 25 says so).
+ * its overloads in a custom node are assumed parity with doc 12, and its arity error is the local
+ * Scripted Decision binding's, whose arity basis runtime.cjs marks assumed (doc 25 says so).
  */
 const CUSTOM_VIEWS: Readonly<Record<string, Readonly<Record<string, number | null>>>> = {
   nodeState: { get: 1, putShared: 2 },

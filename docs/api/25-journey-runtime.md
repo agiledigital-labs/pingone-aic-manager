@@ -857,9 +857,11 @@ emulated `systemEnv` has no member but `getProperty`, so another member reads
 `undefined` and calling it is a `TypeError`; the tenant's other `systemEnv`
 members are unmeasured in a custom node. Only the one-argument
 `getProperty(name)` of a configured ESV is measured there; the emulator passes
-every argument through, so the default-value and typed overloads and the arity
-error are the Scripted Decision binding's (doc 12) — assumed parity, not a
-custom node measurement.
+every argument through, so the default-value and typed overloads follow the
+Scripted Decision binding (doc 12) — assumed parity, not a custom node
+measurement. The arity error is not a doc 12 probe result: it comes from the
+emulator's own Scripted Decision binding, whose `systemEnv.getProperty` arity
+basis is marked assumed (`packages/rhino-local/src/bindings/rhino/runtime.cjs`).
 Other names are ordinary JavaScript: an unknown global throws a
 `ReferenceError`, and `nodeState.getShared` / `getTransient`, absent from the
 next-gen `nodeState` as above, throw a `TypeError` when called. A bare

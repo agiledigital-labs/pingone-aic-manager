@@ -390,7 +390,8 @@ describe("P2-3 custom nodes reach only the measured bindings", () => {
     expect(dumped(done.body).username).toBe("/alpha");
   });
   // Review round 8 P3: getProperty forwards every argument, so its overloads and arity refusal are
-  // the Scripted Decision binding's (doc 12) -- assumed parity; only getProperty(name) is measured.
+  // the local Scripted Decision binding's: overloads assumed parity with doc 12, the arity basis
+  // marked assumed in runtime.cjs; only getProperty(name) is measured.
   it.each([
     ["three arguments select the typed overload", "systemEnv.getProperty('esv.round8.n', '0', 'integer') + 1", "s", "8"],
     ["four arguments meet the binding's arity check", "systemEnv.getProperty('esv.round8.n', '0', 'integer', 'x')", "err", null],
