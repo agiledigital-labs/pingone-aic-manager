@@ -2,7 +2,7 @@
 //! a journey whose page holds child nodes the tree does not list. The socket
 //! belongs to a temporary project and never connects to a tenant.
 
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixListener;
 use std::path::PathBuf;
@@ -114,8 +114,12 @@ fn journey() -> Value {
 /// The fake tenant: the journey's tree and node configs, by REST path.
 struct Tenant {
     state: Value,
-    /// A node id whose PUT answers 503.
-    fail_put: Option<&'static str>,
+    /// A PUT to this node id (or `Login`, the tree) answers with this agent
+    /// reply instead — after applying the write when the flag is set, as a
+    /// reply lost after the tenant acted would.
+    fail_put: Option<(&'static str, Value, bool)>,
+    /// Other journeys' trees, by name, for the realm listing.
+    others: Map<String, Value>,
     calls: Vec<(String, String)>,
 }
 
@@ -124,6 +128,7 @@ impl Tenant {
         Self {
             state,
             fail_put: None,
+            others: Map::new(),
             calls: Vec::new(),
         }
     }
@@ -138,22 +143,30 @@ impl Tenant {
             None => json!({"type": "api_error", "status": 404, "body": "fixture: no such object"}),
         };
         match (method, rest.split('/').collect::<Vec<_>>().as_slice()) {
+            ("GET", ["", "trees?_queryFilter=true&_pageSize=1000"]) => {
+                let names = std::iter::once("Login").chain(self.others.keys().map(String::as_str));
+                let result: Vec<Value> = names.map(|name| json!({"_id": name})).collect();
+                found(Some(&json!({ "result": result })))
+            }
             ("GET", ["", "trees", "Login"]) => found(Some(&self.state["tree"])),
+            ("GET", ["", "trees", name]) => found(self.others.get(*name)),
             ("GET", ["", "nodes", _, id]) => found(self.state["nodes"].get(*id)),
-            ("PUT", ["", "nodes", _, id]) => {
-                if self.fail_put == Some(*id) {
-                    return json!({"type": "api_error", "status": 503, "body": "fixture: unavailable"});
+            ("PUT", ["", kind @ ("nodes" | "trees"), .., id]) => {
+                let failure = self.fail_put.clone().filter(|(failing, ..)| failing == id);
+                if let Some((_, reply, false)) = failure {
+                    return reply;
                 }
                 let mut body = request["body"].clone();
                 body["_id"] = json!(id);
-                self.state["nodes"][*id] = body.clone();
-                found(Some(&body))
-            }
-            ("PUT", ["", "trees", "Login"]) => {
-                let mut body = request["body"].clone();
-                body["_id"] = json!("Login");
-                self.state["tree"] = body.clone();
-                found(Some(&body))
+                if *kind == "trees" {
+                    self.state["tree"] = body.clone();
+                } else {
+                    self.state["nodes"][*id] = body.clone();
+                }
+                match failure {
+                    Some((_, reply, _)) => reply,
+                    None => found(Some(&body)),
+                }
             }
             _ => panic!("unexpected request {method} {path}"),
         }
@@ -265,7 +278,11 @@ fn journey_push_failing_on_a_second_child_reports_three_groups_and_keeps_the_sna
     project.write_export(&local);
     let before = project.files();
     let mut tenant = Tenant::new(journey());
-    tenant.fail_put = Some("script");
+    tenant.fail_put = Some((
+        "script",
+        json!({"type": "api_error", "status": 503, "body": "fixture: unavailable"}),
+        false,
+    ));
 
     let (output, tenant) = project.push(tenant, &[]);
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -381,4 +398,145 @@ fn journey_pull_refuses_to_overwrite_a_local_edit_to_a_page_child_alone() {
             assert_eq!(export["nodes"]["user"]["validateInput"], "remote");
         }
     }
+}
+
+/// Regression (review round 3 P2-2): the agent's `Locked` reply comes before
+/// it dispatches anything, yet a push stopped by one said the write may have
+/// landed. Over the wire, the first child's PUT answers `{"type":"locked"}`;
+/// the control is a lost reply (`transport`) at the same write, which is
+/// unknown.
+#[test]
+fn journey_push_stopped_by_a_locked_agent_says_nothing_landed() {
+    for (reply, outcome) in [
+        (json!({"type": "locked"}), "was refused and not applied"),
+        (
+            json!({"type": "transport", "message": "fixture: reset"}),
+            "may have landed",
+        ),
+    ] {
+        let project = Project::new();
+        project.write_snapshot(&journey());
+        let mut local = journey();
+        local["nodes"]["user"]["validateInput"] = json!(true);
+        project.write_export(&local);
+        let mut tenant = Tenant::new(journey());
+        tenant.fail_put = Some(("user", reply, false));
+
+        let (output, _) = project.push(tenant, &[]);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(1), "{stderr}");
+        assert!(
+            stderr.contains(&format!("UsernameCollectorNode/user {outcome}")),
+            "{outcome}: {stderr}"
+        );
+        assert!(stderr.contains("not attempted (4)"), "{stderr}");
+    }
+}
+
+/// Regression (review round 3 P1-3): with the tree applied and its reply
+/// lost, every node was already attached by the page and tree on the tenant,
+/// yet the advice said a newly attached node "will not show" in status. The
+/// advice now says what status reads instead of predicting what it misses.
+#[test]
+fn journey_push_with_a_lost_tree_reply_reports_every_node_acknowledged() {
+    let project = Project::new();
+    project.write_snapshot(&journey());
+    let mut local = journey();
+    local["nodes"]["user"]["validateInput"] = json!(true);
+    project.write_export(&local);
+    let before = project.files();
+    let mut tenant = Tenant::new(journey());
+    tenant.fail_put = Some((
+        "Login",
+        json!({"type": "transport", "message": "fixture: reset"}),
+        true,
+    ));
+
+    let (output, tenant) = project.push(tenant, &[]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(1), "{stderr}");
+    for expected in [
+        "tree may have landed",
+        "acknowledged by the tenant (4)",
+        "reads only the nodes the tenant's current tree and pages reference",
+    ] {
+        assert!(stderr.contains(expected), "{expected}: {stderr}");
+    }
+    assert!(!stderr.contains("will not show"), "{stderr}");
+    assert_eq!(tenant.state["nodes"]["user"]["validateInput"], true);
+    assert_eq!(project.files(), before);
+}
+
+/// Regression (review round 3 P2-3, round 2 P1-4) at the CLI: Login's
+/// snapshot lists `user` under its private page `other`; on the tenant Login
+/// now lists it under `page`, which Register also uses, and `user` changed.
+/// `status --json` must place the child by the tenant's copy and so mark it
+/// shared with Register. The discriminating input is the move: placing it by
+/// the snapshot gives `other` and no sharing.
+#[test]
+fn journey_status_places_a_moved_child_by_the_tenant_and_marks_it_shared() {
+    let project = Project::new();
+    let mut snapshot = journey();
+    let page = snapshot["nodes"]["page"].take();
+    snapshot["nodes"].as_object_mut().unwrap().remove("page");
+    snapshot["nodes"]["other"] = page;
+    snapshot["nodes"]["other"]["_id"] = json!("other");
+    let entry = snapshot["tree"]["nodes"]
+        .as_object_mut()
+        .unwrap()
+        .remove("page")
+        .unwrap();
+    snapshot["tree"]["nodes"]["other"] = entry;
+    project.write_snapshot(&snapshot);
+    project.write_export(&snapshot);
+    let mut remote = journey();
+    remote["nodes"]["user"]["validateInput"] = json!(true);
+    let mut tenant = Tenant::new(remote);
+    tenant.others.insert(
+        "Register".into(),
+        json!({"_id": "Register", "nodes": {"page": {"nodeType": "PageNode"}}}),
+    );
+
+    let (output, _) = project.journey(tenant, &["status", "Login", "--json"]);
+    let stdout: Value = serde_json::from_slice(&output.stdout)
+        .unwrap_or_else(|error| panic!("{error}: {}", String::from_utf8_lossy(&output.stderr)));
+    let user = stdout["journeys"][0]["remote_changes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|part| part["id"] == "user")
+        .unwrap_or_else(|| panic!("{stdout}"))
+        .clone();
+    assert_eq!(user["page"], "page", "{user}");
+    assert_eq!(user["shared_with"], json!(["Register"]), "{user}");
+}
+
+/// Regression (review round 3 P1-2, P2-3) at the CLI: a page child with no
+/// `nodeType` hid its valid siblings, so `diff` named the bad entry and not
+/// `user`, whose body the export lacks. Both notes must reach stderr.
+#[test]
+fn journey_diff_notes_a_malformed_child_beside_a_missing_sibling() {
+    let project = Project::new();
+    project.write_snapshot(&journey());
+    let mut local = journey();
+    local["nodes"].as_object_mut().unwrap().remove("user");
+    local["nodes"]["page"]["nodes"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"_id": "bad"}));
+    project.write_export(&local);
+
+    let (output, _) = project.journey(
+        Tenant::new(journey()),
+        &["diff", "Login", "--local-vs-snapshot"],
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("the local lists node(s) it does not carry: user —"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("references are not all readable") && stderr.contains(r#""bad""#),
+        "{stderr}"
+    );
 }
