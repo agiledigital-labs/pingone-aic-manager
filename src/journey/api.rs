@@ -747,6 +747,17 @@ where
             continue;
         }
         match fetch_node(node.node_type.clone(), node.id.clone()).await {
+            // Not a config (`null` is what an empty body decodes to): this
+            // read says nothing about the node, so it can be neither equal
+            // nor "reused" — `--force=reuse` must not overwrite on it.
+            Ok(existing) if !existing.is_object() => {
+                return Err(Error::Config(format!(
+                    "could not read node {}, which this push would newly attach: it came \
+                     back as {}, not a config. Nothing was written",
+                    node.label(),
+                    shape(Some(&existing))
+                )));
+            }
             Ok(existing) if content_equal(&existing, config) => {}
             Ok(_) => reused.push(node),
             Err(Error::Api { status: 404, .. }) => {}
@@ -849,10 +860,12 @@ const PAGE_REFUSALS: &[MeasuredRefusal] = &[
     MeasuredRefusal {
         status: 400,
         message: "Invalid config: Node does not exist",
+        appends_id: true,
     },
     MeasuredRefusal {
         status: 400,
         message: "Invalid config: Illegal child node type",
+        appends_id: true,
     },
 ];
 

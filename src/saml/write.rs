@@ -91,15 +91,24 @@ pub enum WriteStatus {
 pub struct MeasuredRefusal {
     pub status: u16,
     pub message: &'static str,
+    /// The endpoint was measured appending the offending value to
+    /// `message` after `": "` (AM's `Invalid config: Node does not exist:
+    /// <id>`), so only `message: <non-empty value>` matches. `false` means
+    /// the message was measured whole (the ESV refusals) and must match
+    /// exactly. Per refusal, because a looser rule for one endpoint must not
+    /// widen what counts as refused at another.
+    pub appends_id: bool,
 }
 
 impl MeasuredRefusal {
     /// Whether an answer of `status` with `body` is this refusal.
     ///
     /// The diagnostic is read **only from the body's top-level `message`
-    /// field**, where AM and the ESV API put it, and must be the whole of it
-    /// or its head followed by `": "` (AM appends the offending value, as in
-    /// `Invalid config: Node does not exist: <id>`). Searching the whole body
+    /// field**, where AM and the ESV API put it, and must be exactly
+    /// `message` — or, when [`MeasuredRefusal::appends_id`], `message`
+    /// followed by `": "` and a non-blank value, never the bare head or an
+    /// empty remainder, since neither is the shape that was measured.
+    /// Searching the whole body
     /// would let a 400 that says something else, with the phrase in another
     /// field, classify a write that may have landed as refused. A body that
     /// is not a JSON object with a string `message` matches nothing.
@@ -113,10 +122,13 @@ impl MeasuredRefusal {
         let Some(message) = fields.get("message").and_then(serde_json::Value::as_str) else {
             return false;
         };
-        message == self.message
-            || message
-                .strip_prefix(self.message)
-                .is_some_and(|rest| rest.starts_with(": "))
+        if !self.appends_id {
+            return message == self.message;
+        }
+        message
+            .strip_prefix(self.message)
+            .and_then(|rest| rest.strip_prefix(": "))
+            .is_some_and(|value| !value.trim().is_empty())
     }
 }
 
@@ -221,17 +233,19 @@ mod tests {
     /// Regression (Astra pre-release P1-2): the measured diagnostic was
     /// searched for anywhere in the body, so a 400 whose `message` said
     /// something else, with the phrase in another field, read as refused.
-    /// It counts only in `message`, whole or followed by `": "` and the value
-    /// AM appends — every ESV and page refusal, through this one matcher.
+    /// It counts only in `message`: whole for a refusal measured whole (ESV),
+    /// and as `message: <value>` for one measured appending a value (page).
     #[test]
     fn a_measured_refusal_is_read_only_from_the_message_field() {
         const PAGE: MeasuredRefusal = MeasuredRefusal {
             status: 400,
             message: "Invalid config: Node does not exist",
+            appends_id: true,
         };
         const LATEST: MeasuredRefusal = MeasuredRefusal {
             status: 400,
             message: "Cannot disable latest secret version",
+            appends_id: false,
         };
         for (refusal, status, body, matched) in [
             (
@@ -240,11 +254,39 @@ mod tests {
                 r#"{"code":400,"message":"Invalid config: Node does not exist: user"}"#,
                 true,
             ),
+            // Regression (Astra round 2 P2-1): the id suffix is the page's
+            // measured shape only. Without it, or with nothing after the
+            // colon, the page message is not what was measured; and an ESV
+            // message, measured whole, matches only whole.
             (
                 PAGE,
                 400,
                 r#"{"code":400,"message":"Invalid config: Node does not exist"}"#,
-                true,
+                false,
+            ),
+            (
+                PAGE,
+                400,
+                r#"{"code":400,"message":"Invalid config: Node does not exist: "}"#,
+                false,
+            ),
+            (
+                PAGE,
+                400,
+                r#"{"code":400,"message":"Invalid config: Node does not exist:  "}"#,
+                false,
+            ),
+            (
+                LATEST,
+                400,
+                r#"{"code":400,"message":"Cannot disable latest secret version: "}"#,
+                false,
+            ),
+            (
+                LATEST,
+                400,
+                r#"{"code":400,"message":"Cannot disable latest secret version: 3"}"#,
+                false,
             ),
             (
                 LATEST,

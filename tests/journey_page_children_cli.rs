@@ -1449,3 +1449,40 @@ fn journey_using_script_reads_two_types_sharing_an_id() {
         tenant.calls
     );
 }
+
+/// Regression (Astra round 2 P1-1): the preflight read of a node the push
+/// newly attaches counted any unequal successful body as existing content,
+/// so a `null` (an empty body) read as "reused" and `--force=reuse` then
+/// overwrote the node and the tree. A non-object body is unread: the push
+/// stops before any write, whatever the override.
+#[test]
+fn journey_push_stops_when_a_newly_attached_node_reads_as_no_config() {
+    for config in [json!(null), json!("text")] {
+        let mut export = journey();
+        export["nodes"]["page"]["nodes"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"_id": "borrowed", "nodeType": "UsernameCollectorNode"}));
+        export["nodes"]["borrowed"] = json!({"_id": "borrowed", "validateInput": false});
+        let mut state = journey();
+        state["nodes"]["borrowed"] = json!({"_id": "borrowed", "validateInput": true});
+        let mut tenant = Tenant::new(state);
+        tenant.fail_get = Some(("borrowed", json!({"type": "json", "value": config})));
+        let project = Project::new();
+        project.write_snapshot(&journey());
+        project.write_export(&export);
+        let (output, tenant) = project.push(tenant, &["--force=reuse"]);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(1), "{config}: {stderr}");
+        assert!(
+            stderr.contains("UsernameCollectorNode/borrowed"),
+            "{config}: {stderr}"
+        );
+        assert!(
+            tenant.writes().is_empty(),
+            "{config}: {:?} {stderr}",
+            tenant.writes()
+        );
+        assert_eq!(tenant.state["nodes"]["borrowed"]["validateInput"], true);
+    }
+}
