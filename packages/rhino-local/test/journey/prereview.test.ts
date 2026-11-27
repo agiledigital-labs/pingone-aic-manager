@@ -308,6 +308,31 @@ describe("P3-1 a blank answer is refused, not read as index 0", () => {
   });
 });
 
+/** seed (puts shared username) -> SetPersistentCookieNode -> Success, so the cookie is set at once. */
+function cookieJourney(cookie: Doc) {
+  return new JourneyEmulator(
+    new JourneyConfig({
+      realm: "alpha",
+      trees: {
+        t: {
+          entryNodeId: "seed",
+          nodes: {
+            seed: { nodeType: "ScriptedDecisionNode", connections: { next: "set" } },
+            set: { nodeType: "SetPersistentCookieNode", connections: { outcome: SUCCESS } },
+          },
+        },
+      },
+      nodes: {
+        ScriptedDecisionNode: { seed: { script: "seed", outcomes: ["next"] } },
+        SetPersistentCookieNode: { set: cookie },
+      },
+      scripts: { seed: script("nodeState.putShared('username','neo');action.goTo('next');") },
+    } as never),
+    runner,
+    idm(),
+    { origin: "https://tenant.example.com" },
+  );
+}
 describe("P3-2 a persistent cookie needs a user to name", () => {
   const KEY = Buffer.from("invented-persistent-key-0123456789").toString("base64");
   const COOKIE = { persistentCookieName: "inventedCookie", hmacSigningKey: KEY, maxLife: 3 };
@@ -320,12 +345,7 @@ describe("P3-2 a persistent cookie needs a user to name", () => {
     );
   });
   it("mints with one, tagging the unconfigured defaults as assumed", async () => {
-    const e = emu(
-      { SetPersistentCookieNode: { node: { hmacSigningKey: KEY } } },
-      "SetPersistentCookieNode",
-      "nodeState.putShared('username','neo')",
-    );
-    const done = await req(e);
+    const done = await req(cookieJourney({ hmacSigningKey: KEY }));
     expect(done.status).toBe(200);
     const assumed = (done.provenance ?? [])
       .filter((entry) => entry.kind === "assumed")
@@ -333,7 +353,25 @@ describe("P3-2 a persistent cookie needs a user to name", () => {
       .join("\n");
     expect(assumed).toContain('uses "session-jwt"');
     expect(assumed).toContain("uses 5 hours");
-    expect(assumed).toContain("no Domain attribute");
+    // Review round 1 P1-3: doc 25 measured the tenant Domain on this cookie.
+    expect(done.cookies?.[0]?.domain).toBe("tenant.example.com");
+    expect(assumed).not.toContain("no Domain attribute");
+  });
+
+});
+
+describe("review round 1 P1-3: the persistent cookie's measured Domain", () => {
+  it("reaches the Set-Cookie header", async () => {
+    const { journeyHttp } = await import("../../src/journey/index.ts");
+    const KEY = Buffer.from("invented-persistent-key-0123456789").toString("base64");
+    const res = await journeyHttp(cookieJourney({ persistentCookieName: "c", hmacSigningKey: KEY }))({
+      url: "https://tenant.example.com/am/json/realms/root/realms/alpha/authenticate?authIndexType=service&authIndexValue=t",
+      method: "POST",
+      headerLines: [["content-type", "application/json"]],
+      body: "{}",
+    });
+    const cookie = res.headers.find(([n, v]) => n === "set-cookie" && v.startsWith("c="))?.[1];
+    expect(cookie).toContain("; Domain=tenant.example.com");
   });
 });
 

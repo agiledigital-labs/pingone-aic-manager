@@ -20,7 +20,7 @@ import { JourneyNodes, EMULATED, type NodeResult } from "./nodes.ts";
 import { JourneyConfig } from "./config.ts";
 import { journeyPreamble } from "./script.ts";
 import { SYSTEM_SESSION_PROPERTIES, localizedText } from "./shared.ts";
-import { JourneyLogs, SCRIPT_LOG_LEVELS, type JourneyLogOptions, type RequestLog } from "./emit.ts";
+import { DEFAULT_ORIGIN, JourneyLogs, SCRIPT_LOG_LEVELS, type JourneyLogOptions, type RequestLog } from "./emit.ts";
 import {
   EXTRA_OUTCOMES,
   STUB_TYPES,
@@ -600,7 +600,17 @@ export class JourneyEmulator {
                     ? { maxSessionTime: session.maxSessionTime }
                     : {}),
                 },
-                ...(session.cookie ? { cookies: [session.cookie] } : {}),
+                ...(session.cookie
+                  ? {
+                      cookies: [
+                        {
+                          ...session.cookie,
+                          domain: new URL(request.url ?? this.options.origin ?? DEFAULT_ORIGIN)
+                            .hostname,
+                        },
+                      ],
+                    }
+                  : {}),
               }
             : {}),
         };

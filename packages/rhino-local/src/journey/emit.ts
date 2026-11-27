@@ -62,6 +62,9 @@ const REASONS: Readonly<Record<number, string>> = {
   500: "Internal Server Error",
 };
 
+/** The tenant the records and cookies name when the caller gives no `origin`. */
+export const DEFAULT_ORIGIN = "https://tenant.example.com";
+
 /** The script logger's levels; any other is an emulator fault, refused rather than dropped. */
 export const SCRIPT_LOG_LEVELS: readonly string[] = ["trace", "debug", "info", "warn", "error"];
 
@@ -87,7 +90,7 @@ export class JourneyLogs {
   constructor(options: JourneyLogOptions) {
     this.sink = options.sink;
     this.now = options.now ?? realNow;
-    this.origin = options.origin ?? "https://tenant.example.com";
+    this.origin = options.origin ?? DEFAULT_ORIGIN;
     this.latencyMs = options.latencyMs;
   }
 

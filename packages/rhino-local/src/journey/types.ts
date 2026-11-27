@@ -74,6 +74,11 @@ export type SetCookie = {
   readonly secure: boolean;
   readonly httpOnly: boolean;
   readonly sameSite: "lax" | "strict" | "none";
+  /**
+   * The tenant's host, which the engine sets as the persistent cookie's `Domain` (doc 25 measured
+   * "the tenant Domain"): the host of the request `url`, else of `JourneyOptions.origin`.
+   */
+  readonly domain?: string;
 };
 /** What a node asks of the session AM creates on success. */
 export type SessionDelta = {

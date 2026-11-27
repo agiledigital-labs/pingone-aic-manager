@@ -284,9 +284,6 @@ export class ExtraNodes {
     // A cookie minted with no user names nobody; what the tenant does then is unmeasured.
     if (typeof shared.username !== "string" || shared.username === "")
       this.ctx.missing("SetPersistentCookieNode with no shared username");
-    evidence.assumed(
-      "SetPersistentCookieNode sets no Domain attribute (host-only cookie); the tenant's Domain is unmeasured",
-    );
     const now = this.ctx.now();
     const value = mintCookie(
       {
@@ -304,8 +301,11 @@ export class ExtraNodes {
       "SetPersistentCookieNode idleTimeout has no measured effect and is not modelled",
     );
     evidence.measured(
-      "SetPersistentCookieNode sets a cookie named persistentCookieName expiring maxLife hours ahead, always Secure, HttpOnly per useHttpOnlyCookie, SameSite as configured",
+      "SetPersistentCookieNode sets a cookie named persistentCookieName expiring maxLife hours ahead, Path=/, the tenant's Domain, always Secure, HttpOnly per useHttpOnlyCookie, SameSite as configured",
       SOURCE,
+    );
+    evidence.assumed(
+      "SetPersistentCookieNode's Domain is the tenant host exactly; doc 25 records the tenant Domain, not its spelling",
     );
     return {
       outcome: "outcome",

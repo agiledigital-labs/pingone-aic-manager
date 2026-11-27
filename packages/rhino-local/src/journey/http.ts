@@ -45,6 +45,7 @@ export function journeyHttp(
             `${cookie.name}=${cookie.value}`,
             `Expires=${cookie.expires}`,
             `Path=${cookie.path}`,
+            ...(cookie.domain === undefined ? [] : [`Domain=${cookie.domain}`]),
             ...(cookie.secure ? ["Secure"] : []),
             ...(cookie.httpOnly ? ["HttpOnly"] : []),
             `SameSite=${cookie.sameSite}`,
