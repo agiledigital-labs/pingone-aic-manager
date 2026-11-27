@@ -26,6 +26,10 @@ FAILURE = "e301438c-0bd0-429c-ab0c-66126501069a"
 CFG = "protocol=2.0,resource=1.0"
 AUTHN = "protocol=1.0,resource=2.1"
 
+# Object-name prefix; a run that must not be mistaken for the default probes (or for a parallel
+# builder's) sets EXPERIMENT_PREFIX, e.g. `kdemo-g2`.
+PREFIX = os.environ.get("EXPERIMENT_PREFIX", "zzemu")
+
 _tok = {"v": None, "at": 0.0}
 
 
@@ -75,7 +79,7 @@ class Fixture:
         self.run = uuid.uuid4().hex[:8]
 
     def name(self, suffix):
-        return f"zzemu-{self.label}-{self.run}-{suffix}"
+        return f"{PREFIX}-{self.label}-{self.run}-{suffix}"
 
     def put(self, kind, path, body):
         st, b, _ = call("PUT", path, body)

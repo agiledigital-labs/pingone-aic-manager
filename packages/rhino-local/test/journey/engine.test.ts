@@ -351,12 +351,10 @@ it("stale callback snapshot replays from its immutable shared state and survives
   expect(dump((await request(emu, first.body as object)).body)).toBe(2);
   expect(dump((await request(emu.fork(), first.body as object)).body)).toBe(2);
 });
-it.each(["throw new Error('inner');", "callbacksBuilder.nameCallback('inner');"])(
+it.each(["throw new Error('inner');"])(
   "unmeasured inner behavior is missing: %s",
   async (source) => {
-    const cause = source.startsWith("throw")
-      ? "inner tree script exception"
-      : "inner tree callbacks";
+    const cause = "inner tree script exception";
     expectEmulationFailure(cause);
     const emu = graph(
       {
@@ -423,15 +421,15 @@ it("unsupported node requires an explicit declared outcome, validated when the t
   ).toMatchObject({ status: 401, body: { message: "Login failure" } });
 });
 it("missing binding use cannot be swallowed in script code", async () => {
-  expectEmulationFailure("action.putSessionProperty");
+  expectEmulationFailure("action.withMaxIdleTime");
   const result = await request(
     make(
-      "try{action.putSessionProperty('secret','value');}catch(e){}nodeState.putShared('username','invented');action.goTo('true');",
+      "try{action.withMaxIdleTime(5);}catch(e){}nodeState.putShared('username','invented');action.goTo('true');",
     ),
   );
   expect(result).toMatchObject({
     status: 501,
-    emulation: { missing: ["action.putSessionProperty"] },
+    emulation: { missing: ["action.withMaxIdleTime"] },
   });
 });
 it.each([
@@ -869,8 +867,8 @@ it.each([
   [
     "replaced bridge closure (review repro)",
     "httpClient.send.__parent__.host=function(){return '{\"result\":null}';};",
-    "action.putSessionProperty('probe','value');",
-    "action.putSessionProperty",
+    "action.withMaxIdleTime(5);",
+    "action.withMaxIdleTime",
   ],
   [
     "replaced global stub hook",
@@ -1091,10 +1089,12 @@ it.each([
     "AM host openidm.update argument: undefined at [2].u",
   ],
   [
-    "undefined HTTP header",
-    "httpClient.send('https://service.example.com/x',{method:'GET',headers:{h:undefined}}).get();" +
+    // An undefined header value was measured (docs/api/12 §7): the header is omitted, so it is
+    // no longer here. An undefined in an option nobody measured stays missing.
+    "undefined in an unmeasured HTTP option",
+    "httpClient.send('https://service.example.com/x',{method:'GET',extra:undefined}).get();" +
       SUCCEED,
-    "AM host httpClient.send argument: undefined at [1].headers.h",
+    "AM host httpClient.send argument: undefined at [1].extra",
   ],
 ])("a value JSON would rewrite is missing: %s", async (_name, source, cause) => {
   expectEmulationFailure(cause);
@@ -1391,20 +1391,6 @@ it.each([
   const result = await request(
     make(
       `try{httpClient.send('https://service.example.com/x',{method:'POST',${JSON_HEADER},body:{a:'x',v:${value}}}).get();}catch(e){}` +
-        SUCCEED,
-      ["true", "false"],
-      { true: SUCCESS, false: FAILURE },
-      { http: async () => ({ status: 200, body: {} }) },
-    ),
-  );
-  expect(result).toMatchObject({ status: 501, emulation: { missing: [cause] } });
-});
-it("an HTTP form body is missing: its text is not the JSON body (docs/api/12: form not probed)", async () => {
-  const cause = "httpClient.send form body text";
-  expectEmulationFailure(cause);
-  const result = await request(
-    make(
-      "httpClient.send('https://service.example.com/x',{method:'POST',form:{a:'b'}}).get();" +
         SUCCEED,
       ["true", "false"],
       { true: SUCCESS, false: FAILURE },

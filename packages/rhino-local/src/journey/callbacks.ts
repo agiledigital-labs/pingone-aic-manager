@@ -6,6 +6,8 @@ export type WireCallback = {
   type: string;
   output: { name: string; value: JsonValue }[];
   input?: { name: string; value: JsonValue }[];
+  /** AM numbers every callback a journey sends, counting up across the whole journey (doc 25). */
+  _id?: number;
 };
 const SUPPORTED = [
   "NameCallback",
@@ -14,6 +16,12 @@ const SUPPORTED = [
   "TextOutputCallback",
   "HiddenValueCallback",
   "StringAttributeInputCallback",
+  "BooleanAttributeInputCallback",
+  "TermsAndConditionsCallback",
+  "ReCaptchaCallback",
+  "ConfirmationCallback",
+  "ChoiceCallback",
+  "ValidatedCreatePasswordCallback",
 ];
 export function toWire(
   callbacks: CallbackEffect[],
@@ -22,7 +30,7 @@ export function toWire(
   return callbacks.map((callback, index) => {
     if (!SUPPORTED.includes(callback.type)) absent(`callback wire type: ${callback.type}`);
     const output = Object.entries(callback)
-      .filter(([key]) => key !== "type")
+      .filter(([key]) => key !== "type" && !(callback.type === "NameCallback" && key === "value"))
       .map(([name, value]) => ({ name, value }));
     const out: WireCallback = { type: callback.type, output };
     if (callback.type !== "TextOutputCallback")
@@ -30,16 +38,28 @@ export function toWire(
         {
           name: `IDToken${index + 1}`,
           value:
-            callback.type === "StringAttributeInputCallback"
+            callback.type === "StringAttributeInputCallback" || callback.type === "NameCallback"
               ? (callback.value ?? "")
+              : callback.type === "BooleanAttributeInputCallback"
+                ? (callback.value ?? false)
               : callback.type === "HiddenValueCallback"
                 ? (callback.id ?? "")
                 : callback.type === "TextInputCallback"
                   ? (callback.defaultText ?? "")
-                  : "",
+                  : callback.type === "TermsAndConditionsCallback"
+                    ? false
+                    : callback.type === "ConfirmationCallback"
+                      ? 0
+                      : callback.type === "ChoiceCallback"
+                        ? (callback.defaultChoice ?? 0)
+                        : "",
         },
       ];
-    if (callback.type === "StringAttributeInputCallback")
+    if (
+      callback.type === "StringAttributeInputCallback" ||
+      callback.type === "BooleanAttributeInputCallback" ||
+      callback.type === "ValidatedCreatePasswordCallback"
+    )
       out.input?.push({ name: `IDToken${index + 1}validateOnly`, value: false });
     return out;
   });
@@ -58,7 +78,16 @@ export function fromWire(
       callback.type !== "TextOutputCallback" &&
       (!Array.isArray(callback.input) ||
         !isDocument(callback.input[0]) ||
-        typeof callback.input[0].value !== "string")
+        (typeof callback.input[0].value !== "string" &&
+          !(
+            (callback.type === "TermsAndConditionsCallback" ||
+              callback.type === "BooleanAttributeInputCallback") &&
+            typeof callback.input[0].value === "boolean"
+          ) &&
+          !(
+            (callback.type === "ConfirmationCallback" || callback.type === "ChoiceCallback") &&
+            typeof callback.input[0].value === "number"
+          )))
     )
       absent("authenticate callback input shape");
     const effect: CallbackEffect = { type: callback.type };
@@ -72,13 +101,17 @@ export function fromWire(
       callback.input[0].value !== undefined
     )
       effect.value = callback.input[0].value;
-    if (callback.type === "StringAttributeInputCallback") {
+    if (
+      callback.type === "StringAttributeInputCallback" ||
+      callback.type === "BooleanAttributeInputCallback" ||
+      callback.type === "ValidatedCreatePasswordCallback"
+    ) {
       if (
         !Array.isArray(callback.input) ||
         !isDocument(callback.input[1]) ||
         typeof callback.input[1].value !== "boolean"
       )
-        absent("StringAttributeInputCallback validateOnly input shape");
+        absent(`${callback.type} validateOnly input shape`);
       effect.validateOnly = callback.input[1].value;
     }
     return effect;

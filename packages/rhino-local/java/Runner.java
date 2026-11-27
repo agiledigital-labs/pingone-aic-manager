@@ -381,6 +381,26 @@ public final class Runner {
     } catch (RuntimeException e) {
       return errorResponse(id, "protocol_error", e, sourceName, -1, -1, null);
     }
+    // A Node Designer script: run in its own scope (CustomNodeScope), not the decision scope.
+    final String customProperties;
+    final List<String> customBlocked;
+    final List<String> customOutcomes;
+    final String customErrorRoute;
+    try {
+      customProperties = Json.optionalString(job, "customProperties");
+      customBlocked = Json.optionalStringList(job, "customBlocked");
+      customOutcomes = Json.optionalStringList(job, "customOutcomes");
+      customErrorRoute = Json.optionalString(job, "customErrorRoute");
+      if ((customProperties == null) != (customBlocked == null)
+          || (customProperties == null) != (customOutcomes == null)
+          || (customProperties == null && customErrorRoute != null)
+          || (customProperties != null && bridge == null)) {
+        throw new IllegalArgumentException(
+            "customProperties, customBlocked and customOutcomes go together, on a journey job");
+      }
+    } catch (RuntimeException e) {
+      return errorResponse(id, "protocol_error", e, sourceName, -1, -1, null);
+    }
 
     final String preludeHash;
     final String preambleData;
@@ -521,6 +541,10 @@ public final class Runner {
         Timing.add("subjectCompile", phase);
       }
 
+      final Scriptable custom =
+          customProperties == null
+              ? null
+              : CustomNodeScope.create(cx, scope, bridge, customBlocked, customProperties);
       final Object completion;
       phase = Timing.now();
       // The subject's own-time accounting runs only for a timed job; untimed,
@@ -528,10 +552,20 @@ public final class Runner {
       final boolean timed = Timing.active();
       final long bracketed = timed ? Timing.total("moduleBody") + Timing.total("harvest") : 0L;
       try {
-        completion = script.exec(cx, scope);
+        completion = script.exec(cx, custom != null ? custom : scope);
       } catch (RhinoException e) {
         if (HarnessFaults.isStackOverflow(e)) return stackOverflowResponse(id, e, faults, sourceName);
-        return errorFromRhino(id, "runtime_error", e);
+        final Map<String, Object> thrown = errorFromRhino(id, "runtime_error", e);
+        // A custom node that throws keeps what it wrote before the throw (doc 25) when its type
+        // routes a throw somewhere: the same decision as a return, made before any harvest.
+        if (custom != null) {
+          final String route = CustomNodeScope.route(null, customOutcomes, customErrorRoute);
+          if (route != null) {
+            thrown.put("valueKind", "string");
+            thrown.put("value", customHarvest(cx, bridge, route));
+          }
+        }
+        return thrown;
       } catch (Error e) {
         if (isInterrupt(e)) {
           return timeoutResponse(id);
@@ -549,7 +583,19 @@ public final class Runner {
       // Harvest outside the author try: its failures are emulation failures, not script errors.
       if (bridge != null) {
         phase = Timing.now();
-        try { return response(id, "ok", JsValues.of(bridge.harvest(cx)), null); }
+        try {
+          return response(
+              id,
+              "ok",
+              JsValues.of(
+                  custom != null
+                      ? customHarvest(
+                          cx,
+                          bridge,
+                          CustomNodeScope.route(CustomNodeScope.outcome(custom), customOutcomes, customErrorRoute))
+                      : bridge.harvest(cx)),
+              null);
+        }
         finally { Timing.add("harvest", phase); }
       }
       // A context whose result is the script's completion value (OIDC claims:
@@ -614,6 +660,16 @@ public final class Runner {
 
   static boolean isInterrupt(Error e) {
     return "Interrupt.".equals(e.getMessage());
+  }
+
+  /**
+   * A custom node's response value once {@link CustomNodeScope#route} has decided its route: the
+   * harvest when the route has a consumer, else only the absent route. With no route the journey
+   * fails and keeps nothing the script wrote, so nothing is serialized -- a value the harvest
+   * cannot serialize must not turn that failure into an emulation failure.
+   */
+  private static String customHarvest(Context cx, AmHostBridge bridge, String route) {
+    return route != null ? bridge.harvestCustom(cx, route) : "{\"customRoute\":null}";
   }
 
   /**

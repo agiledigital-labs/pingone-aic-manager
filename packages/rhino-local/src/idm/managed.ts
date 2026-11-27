@@ -18,6 +18,8 @@ export type Operation = {
   request: RestRequest;
   context: Document;
   internal: boolean;
+  /** An AM journey's call: its reads of alpha_user never carry `password` (doc 25, 2026-11-25). */
+  journey?: boolean;
 };
 export type Reply = { status: number; body: JsonValue; rawBody?: string };
 
@@ -35,7 +37,7 @@ export function revision(request: RestRequest): string | undefined {
 export class ManagedStore {
   private cookieKey = randomBytes(32);
   // Body syntax is unmeasured: recognize our opaque tokens by issuance, not a guessed regex.
-  private passwordTokens = new Set<string>();
+  private passwordTokens = new Map<string, string>();
   private readonly records: Map<string, Document>;
   /** Array properties `materialize` injected per record, which a query reads as absent (round-5 P3-6). */
   private materialized = new Map<string, Set<string>>();
@@ -227,8 +229,11 @@ export class ManagedStore {
     return this.projectVisible(type, object, selectors, op);
   }
 
-  private encodePassword(type: ManagedType, object: Document): void {
+  private encodePassword(type: ManagedType, object: Document, prior: Document | null = null): void {
     if (!Object.hasOwn(object, "password")) return;
+    // A record created without a password is stored with `password: null` (materialize fills every schema
+    // property). Writing it back unchanged is not a password write; a change to or from null stays loud.
+    if (type.name === "alpha_user" && object.password === null && prior?.password === null) return;
     if (type.name === "bravo_user") missing(this.evidence, "bravo_user password semantics");
     if (type.name !== "alpha_user") return;
     if (typeof object.password !== "string") missing(this.evidence, "alpha_user password without measured string value");
@@ -239,15 +244,30 @@ export class ManagedStore {
       return;
     }
     if (/^\{[^}]*\}/.test(object.password)) missing(this.evidence, "alpha_user password scheme is unmeasured");
-    object.password = "{PBKDF2-HMAC-SHA256}" + createHmac("sha512", randomBytes(32)).update(object.password).digest("hex").slice(0, 70);
-    this.passwordTokens.add(object.password);
+    const plain = object.password;
+    object.password = "{PBKDF2-HMAC-SHA256}" + createHmac("sha512", randomBytes(32)).update(plain).digest("hex").slice(0, 70);
+    this.passwordTokens.set(object.password, plain);
+  }
+
+  /** Whether `candidate` is the plain text a token this store issued was made from. A token it never issued verifies nothing. */
+  verifyPassword(token: string, candidate: string): boolean {
+    return this.passwordTokens.get(token) === candidate;
   }
 
   private projectVisible(type: ManagedType, object: Document, selectors: string[], op: Operation): Document {
     if (type.name === "bravo_user" && Object.hasOwn(object, "password")) missing(this.evidence, "bravo_user password semantics");
     const result = project(object, selectors, this.evidence);
     if (type.name !== "alpha_user") return result;
-    if (op.internal) {
+    if (op.internal && op.journey) {
+      // Measured 2026-11-25 inside a journey script: openidm.read (default, ["*"], ["password"]) and
+      // openidm.query (default and _fields "password") never return `password`, for a user created with
+      // one (a `password pr` filter proves it is stored) and one created without.
+      this.evidence.measured(
+        "a journey's openidm read and query of alpha_user never carry password, stored or not",
+        "docs/api/25-journey-runtime.md (Create Object without a password, 2026-11-25)",
+      );
+      delete result.password;
+    } else if (op.internal) {
       if (Object.hasOwn(result, "password")) {
         if (typeof result.password !== "string") missing(this.evidence, "alpha_user password without measured string value");
         if (!result.password.startsWith("{PBKDF2-HMAC-SHA256}")) missing(this.evidence, "alpha_user password representation after retrieval hooks");
@@ -371,7 +391,7 @@ export class ManagedStore {
     if (op.request.method === "PATCH") {
       const patched = this.patch(type, oldObject, op);
       if (isDeepStrictEqual(oldObject, patched)) {
-        this.encodePassword(type, patched);
+        this.encodePassword(type, patched, oldObject);
         this.evidence.measured("no-change PATCH only runs read hooks");
         return { status: 200, body: project(oldObject, fields(op.request.query?._fields), this.evidence) };
       }
@@ -383,7 +403,7 @@ export class ManagedStore {
     }
     this.evidence.assumed("revisions are monotonic decimal strings starting at zero");
     this.implicitSync(type, "update");
-    this.encodePassword(type, object);
+    this.encodePassword(type, object, oldObject);
     const injected = new Set<string>();
     const record = this.materialize(type, { ...object, _id: id, _rev: String(Number(oldObject._rev) + 1) }, injected);
     this.records.set(this.key(type, id), structuredClone(record));

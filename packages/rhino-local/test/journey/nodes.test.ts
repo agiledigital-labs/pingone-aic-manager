@@ -484,6 +484,7 @@ it.each([false, true])(
         { name: "IDToken2", value: "" },
         { name: "IDToken2validateOnly", value: false },
       ],
+      _id: 1,
     });
     const rejected = await request(emu, answer(first.body, ["invented", "Given", "", "secret"]));
     expect(rejected.status).toBe(200);
@@ -518,16 +519,16 @@ it.each(["validateOnly", "policy", "password"])(
     const input = flow(
       type,
       variant === "password"
-        ? { validateInput: true }
+        ? {}
         : { attributesToCollect: ["sn"], validateInputs: variant !== "validateOnly" },
       "",
     );
     const emu = make(input, {}, storage());
     const cause =
       variant === "password"
-        ? "ValidatedPasswordNode validateInput: true or unspecified"
+        ? "ValidatedPasswordNode validateInput unspecified"
         : variant === "policy"
-          ? "AttributeCollectorNode policy evaluation; supply the IDM policy seam for managed writes"
+          ? "AttributeCollectorNode validateInputs: true needs JourneyOptions.attributePolicies"
           : "AttributeCollectorNode validateOnly";
     expectEmulationFailure(cause);
     let result = await request(emu);
@@ -675,6 +676,80 @@ it.each(["id", "attribute", "username", "transient", "absent"])(
     ).toMatchObject({ sn: ["id", "absent"].includes(variant) ? "Family-hook" : "Changed" });
   },
 );
+// Patch Object ignoredFields, measured 2026-11-25 (docs/api/25, "Patch Object ignoredFields"):
+// a named attribute is dropped from the patch, with or without a leading slash, matched exactly,
+// from either objectAttributes map. The discriminating cases: "SN" (a case-insensitive match
+// would ignore sn), an ignored field the seed does not hold, and a transient-held field.
+it.each([
+  ["a bare name", ["sn"], {}, { sn: "Family-hook", givenName: "G1" }],
+  ["a leading-slash pointer", ["/sn"], {}, { sn: "Family-hook", givenName: "G1" }],
+  ["a name in a different case is not ignored", ["SN"], {}, { sn: "S1", givenName: "G1" }],
+  ["a name the seed does not hold", ["zzz"], {}, { sn: "S1", givenName: "G1" }],
+  ["the identity attribute", ["userName"], {}, { sn: "S1", givenName: "G1" }],
+  ["two names", ["sn", "givenName"], {}, { sn: "Family-hook", givenName: "G0" }],
+  ["every field", ["userName", "sn", "givenName"], {}, { sn: "Family-hook", givenName: "G0" }],
+  ["a pointer beside a name", ["/sn", "givenName"], {}, { sn: "Family-hook", givenName: "G0" }],
+  ["a field held in the transient map", ["sn"], { splitSn: true }, { sn: "Family-hook", givenName: "G1" }],
+  ["no ignored fields on a split map", [], { splitSn: true }, { sn: "S1", givenName: "G1" }],
+])("Patch ignoredFields: %s", async (_name, ignoredFields, { splitSn }: { splitSn?: boolean }, expected) => {
+  const idm = storage();
+  await idm.request({
+    method: "PUT",
+    path: "managed/widget/record",
+    body: { userName: "invented", givenName: "G0", sn: "Family" },
+  });
+  const seed = splitSn
+    ? "nodeState.putShared('objectAttributes',{userName:'invented',givenName:'G1'});nodeState.putTransient('objectAttributes',{sn:'S1'});"
+    : "nodeState.putShared('objectAttributes',{userName:'invented',givenName:'G1',sn:'S1'});";
+  const next = await request(
+    make(
+      flow(
+        "PatchObjectNode",
+        {
+          identityResource: "managed/widget",
+          identityAttribute: "userName",
+          patchAsObject: false,
+          ignoredFields,
+        },
+        seed,
+        ["PATCHED", "FAILURE"],
+      ),
+      {},
+      idm,
+    ),
+  );
+  expect(dump(next.body)).toMatchObject({ branch: "PATCHED" });
+  expect((await idm.request({ method: "GET", path: "managed/widget/record" })).body).toMatchObject(
+    expected,
+  );
+  if (ignoredFields.length)
+    expect(next.provenance).toContainEqual(
+      expect.objectContaining({
+        kind: "measured",
+        source: "docs/api/25-journey-runtime.md (Patch Object ignoredFields, 2026-11-25)",
+      }),
+    );
+});
+it.each([
+  ["a nested pointer", ["/a/b"], "PatchObjectNode ignoredFields entry that is not a plain attribute name"],
+  ["a non-string entry", [1], "PatchObjectNode ignoredFields entry that is not a plain attribute name"],
+  ["a non-array value", "sn", "PatchObjectNode ignoredFields that is not an array"],
+])("Patch ignoredFields %s is missing, not guessed", async (_name, ignoredFields, cause) => {
+  expectEmulationFailure(cause);
+  const next = await request(
+    make(
+      flow(
+        "PatchObjectNode",
+        { identityAttribute: "userName", patchAsObject: false, ignoredFields },
+        "nodeState.putShared('objectAttributes',{userName:'invented',sn:'x'});",
+        ["PATCHED", "FAILURE"],
+      ),
+      {},
+      storage(),
+    ),
+  );
+  expect(next.status).toBe(501);
+});
 // docs/api/25 (2026-11-04): objectAttributes[identityAttribute], when present, is the
 // only lookup value; username is consulted only when it is absent, with no fallback.
 const PRECEDENCE = {
@@ -1005,26 +1080,6 @@ it.each(["PatchObjectNode"])("conflicting identity sources are missing: %s", asy
     ),
   ).toMatchObject({ status: 501, emulation: { missing: [cause] } });
 });
-it.each(["CreateObjectNode", "PatchObjectNode", "IdentifyExistingUserNode"])(
-  "split objectAttributes is missing: %s",
-  async (type) => {
-    const cause = `${type} split objectAttributes across shared and transient`;
-    expectEmulationFailure(cause);
-    expect(
-      await request(
-        make(
-          flow(
-            type,
-            { patchAsObject: false },
-            "nodeState.putShared('objectAttributes',{userName:'invented'});nodeState.putTransient('objectAttributes',{password:'secret'});",
-          ),
-          {},
-          storage(),
-        ),
-      ),
-    ).toMatchObject({ status: 501, emulation: { missing: [cause] } });
-  },
-);
 it("Patch patchAsObject is missing", async () => {
   const cause = "PatchObjectNode patchAsObject: true or unspecified";
   expectEmulationFailure(cause);
@@ -1180,7 +1235,7 @@ const COLLECTORS = {
     attrs: { attributesToCollect: ["givenName", "sn"], validateInputs: false, required: true },
   },
 };
-it("a re-sent Page echoes attribute values only; Name and Password go out as first sent", async () => {
+it("a re-sent Page echoes Name and attribute values; Password goes out as first sent", async () => {
   const emu = make(
     collectorPage(
       [
@@ -1202,18 +1257,24 @@ it("a re-sent Page echoes attribute values only; Name and Password go out as fir
   const sent = first.body as WirePage,
     retry = rejected.body as WirePage;
   expect(JSON.stringify(retry)).not.toContain("super-secret-pw");
-  expect(retry.callbacks[0]).toEqual(sent.callbacks[0]);
+  // The re-sent page's callbacks are numbered on from the first send's four (doc 25, callback _id).
+  expect(retry.callbacks[0]).toEqual({
+    ...sent.callbacks[0],
+    input: [{ name: "IDToken1", value: "invented" }],
+    _id: 4,
+  });
   expect(retry.callbacks[3]).toEqual({
     type: "PasswordCallback",
     output: [{ name: "prompt", value: "Password" }],
     input: [{ name: "IDToken4", value: "" }],
+    _id: 7,
   });
   expect(retry.callbacks[1]?.output.find((field) => field.name === "value")?.value).toBe("Given");
-  expect(rejected.provenance).toContainEqual({
-    kind: "assumed",
-    behavior:
-      "a re-sent Page repeats an accepted sibling's callbacks as first sent; measured for PasswordCallback only",
-  });
+  // Review round 3 P2-3: the rejecting child is the attribute collector, so its measurement applies.
+  const measured = (rejected.provenance ?? []).filter((e) => e.kind === "measured").map((e) => e.behavior);
+  expect(measured).toContain(
+    "required empty attribute re-sends the whole page with echoed values and empty failedPolicies",
+  );
   // The re-sent page is what the snapshot expects back.
   const done = await request(
     emu,
@@ -1248,8 +1309,8 @@ it("a scripted Page child after a rejecting sibling is missing before it runs", 
   });
   expect(await widgetCount(idm)).toBe(1);
 });
-it("a ValidatedUsernameNode Page child is missing even with a declared outcome", async () => {
-  const cause = "PageNode child type: ValidatedUsernameNode";
+it("a ValidatedUsernameNode Page child that does not say validateInput: false is missing", async () => {
+  const cause = "ValidatedUsernameNode validateInput: true as a PageNode child";
   expectEmulationFailure(cause);
   const emu = make(
     collectorPage(
@@ -1332,18 +1393,6 @@ it.each([
   ],
   [
     "IdentifyExistingUserNode",
-    { identityAttribute: "mail", identifier: "userName" },
-    "",
-    "IdentifyExistingUserNode with no identity value",
-  ],
-  [
-    "IdentifyExistingUserNode",
-    { identityAttribute: "mail", identifier: "userName" },
-    "nodeState.putShared('username',null);",
-    "IdentifyExistingUserNode null identity source",
-  ],
-  [
-    "IdentifyExistingUserNode",
     { identityAttribute: "mail" },
     "nodeState.putShared('username','invented@example.com');",
     "IdentifyExistingUserNode identifier configuration",
@@ -1369,6 +1418,69 @@ it.each([
       ? await request(emu, answer(first.body, ["invented@example.com"]))
       : first;
   expect(result).toMatchObject({ status: 501, emulation: { missing: [cause] } });
+});
+// Measured 2026-11-25 (docs/api/25, "Identify Existing User with no identity value"): every
+// one of these takes false and writes nothing. The store holds a user, so an implementation that
+// ran the lookup without a filter, or with `undefined`, would find one and answer true.
+it.each([
+  ["nothing seeded", ""],
+  ["empty objectAttributes", "nodeState.putShared('objectAttributes',{});"],
+  ["objectAttributes without the identity attribute", "nodeState.putShared('objectAttributes',{sn:'x'});"],
+  ["a null username", "nodeState.putShared('username',null);"],
+  ["a null identity attribute and no username", "nodeState.putShared('objectAttributes',{mail:null});"],
+  [
+    "a null identity attribute and a null username",
+    "nodeState.putShared('objectAttributes',{mail:null});nodeState.putShared('username',null);",
+  ],
+  ["a null identity attribute in transient", "nodeState.putTransient('objectAttributes',{mail:null});"],
+])("Identify Existing User with %s takes false and writes no identity", async (_name, seed) => {
+  const idm = storage();
+  await idm.request({
+    method: "PUT",
+    path: "managed/widget/record",
+    body: { userName: "invented", mail: "invented@example.com" },
+  });
+  const next = await request(
+    make(
+      flow("IdentifyExistingUserNode", { identityAttribute: "mail", identifier: "userName" }, seed, [
+        "true",
+        "false",
+      ]),
+      {},
+      idm,
+    ),
+  );
+  expect(next.status).toBe(200);
+  const state = dump(next.body) as Record<string, unknown>;
+  expect(state).toMatchObject({ branch: "false", id: null });
+  expect(state.username ?? null).toBeNull();
+  expect(next.provenance).toContainEqual({
+    kind: "measured",
+    behavior:
+      "IdentifyExistingUserNode with no identity value (no username and no objectAttributes[identityAttribute], or only nulls) takes false and writes no state",
+    source: "docs/api/25-journey-runtime.md (Identify Existing User with no identity value, 2026-11-25)",
+  });
+});
+it("Identify Existing User with an empty username is a lookup of the empty string: a miss, username kept", async () => {
+  const idm = storage();
+  await idm.request({
+    method: "PUT",
+    path: "managed/widget/record",
+    body: { userName: "invented", mail: "invented@example.com" },
+  });
+  const next = await request(
+    make(
+      flow(
+        "IdentifyExistingUserNode",
+        { identityAttribute: "mail", identifier: "userName" },
+        "nodeState.putShared('username','');",
+        ["true", "false"],
+      ),
+      {},
+      idm,
+    ),
+  );
+  expect(dump(next.body)).toMatchObject({ branch: "false", id: null, username: "" });
 });
 it("Patch with no identity value records its measured FAILURE", async () => {
   const next = await request(

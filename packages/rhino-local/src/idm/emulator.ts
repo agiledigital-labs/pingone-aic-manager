@@ -61,6 +61,12 @@ export class IdmEmulator {
     return fork;
   }
 
+  /**
+   * Whether `candidate` is the plain text behind an encoded password this emulator issued (a journey's
+   * Data Store Decision). Fidelity, not security: the emulator keeps the plain text of every password it encodes.
+   */
+  verifyPassword(token: string, candidate: string): boolean { return this.managed.verifyPassword(token, candidate); }
+
   /** Forks share the audit view; verdict ownership belongs to each operation. */
   get emulationFailures() { return this.failures.entries; }
 
@@ -116,8 +122,8 @@ export class IdmEmulator {
    * hosts can use hostRequest to inspect REST provenance directly. Host evidence
    * also travels on replies into the evaluation report. Missing evidence travels
    * in the host error metadata and is retained by the outer JVM job even if caught. */
-  readonly onCall = async (call: HostCall): Promise<JsonValue> => {
-    const result = await this.hostRequest(call);
+  readonly onCall = async (call: HostCall, journey = false): Promise<JsonValue> => {
+    const result = await this.hostRequest(call, journey);
     if (result.emulation) throw new EmulationFailure(result.emulation);
     const absent = result.provenance.filter((entry) => entry.kind === "missing").map((entry) => entry.behavior);
     if (result.status >= 400 || absent.length > 0) {
@@ -130,13 +136,14 @@ export class IdmEmulator {
     return result.body;
   };
 
-  hostRequest(call: HostCall): Promise<RestResult> {
-    return this.failures.run(`host ${call.method} ${String(call.args[0])}`, () => this.hostRequestOwned(call));
+  /** `journey`: the call is an AM journey script's or node's, whose view of alpha_user omits `password`. */
+  hostRequest(call: HostCall, journey = false): Promise<RestResult> {
+    return this.failures.run(`host ${call.method} ${String(call.args[0])}`, () => this.hostRequestOwned(call, journey));
   }
 
-  private async hostRequestOwned(call: HostCall): Promise<RestResult> {
+  private async hostRequestOwned(call: HostCall, journey: boolean): Promise<RestResult> {
     const { value, provenance } = await this.evidence.run<Omit<RestResult, "provenance">>(async () => {
-      try { return { status: 200, body: await this.host(call) }; }
+      try { return { status: 200, body: await this.host(call, journey) }; }
       catch (error) {
         const fatal = emulationFailure(error);
         if (fatal) return this.failure(fatal);
@@ -212,7 +219,7 @@ export class IdmEmulator {
     throw new IdmError(404, `Resource '${resource}' not found`);
   }
 
-  private async host(call: HostCall): Promise<JsonValue> {
+  private async host(call: HostCall, journey = false): Promise<JsonValue> {
     // The engine's module load, not a CREST call (sent only by idmRequire jobs).
     if (call.method === "require") return this.scripts.require(call.args);
     try {
@@ -266,7 +273,7 @@ export class IdmEmulator {
       }
       const context = this.chain.getStore() ?? {};
       if (call.method !== "read" && call.method !== "query") this.evidence.assumed("nested host writes commit independently");
-      const result = await this.route({ request, context, internal: true }, call.method);
+      const result = await this.route({ request, context, internal: true, ...(journey ? { journey } : {}) }, call.method);
       if (result.rawBody !== undefined) missing(this.evidence, "script host consumption of invalid JSON endpoint output");
       return result.body;
     } catch (error) {

@@ -646,8 +646,8 @@ if (typeof value === "undefined") {
 }
 ```
 
-Both behaviours were observed on the next-gen engine. Not probed: the `form`
-(form-encoded) option and the legacy `httpClient`.
+Both behaviours were observed on the next-gen engine. The `form` option is §6;
+the legacy `httpClient` was not probed.
 
 ### 3. A top-level `undefined` body is sent as `null` (verified 2026-11-04)
 
@@ -728,6 +728,94 @@ and, for a function, sends source-derived data and the script's variable names
 to the receiver. The non-finite numbers become strings rather than JSON's
 `null`. A `java.util.Date` is the one date type that arrives as a usable value.
 Convert before sending: `date.toISOString()` or `date.getTime()`.
+
+### 6. The `form` option (verified 2026-11-25)
+
+Same shape as §3 to §5: a next-gen journey decision node, one tree per case,
+`POST https://httpbin.org/post`, `options = {method: "POST", form: {...}}`. The
+echo returns the form it parsed and the headers it received, and
+`Content-Length` is the byte length of the body, which is how encodings that
+parse to the same value were told apart. The probe is a throwaway
+`kdemo-g-` fixture set, deleted by name and re-listed empty.
+
+| `options` | Received | `Content-Length` |
+| --- | --- | --- |
+| `form: {a: "1", b: "x y"}` | `Content-Type: application/x-www-form-urlencoded` (no charset), `a=1`, `b=x y` | 9, which is `a=1&b=x+y`: space is `+`, not `%20` (11) |
+| keys and values `"k e&y": "v=1&z"`, `p: "a+b"`, `u: "é"`, `s: "/?#"` | all four parsed back exactly | 46, equal to the standard encoding with `&` `=` `+` `/` `?` `#` and the key's space and `&` escaped |
+| `a: "*"`, `a: "~"` | parsed back | 3 and 5: `*` stays literal, `~` is `%7E` (Java's `URLEncoder`, not RFC 3986's unreserved set) |
+| `a: "%41"` | `%41` back | 7: `%` is `%25` |
+| `a: "\ud83d\ude00"` (astral) | the emoji back | 14: four UTF-8 bytes, `%F0%9F%98%80` |
+| `headers: {"Content-Type": "text/plain"}, form: {a: "1"}` | `application/x-www-form-urlencoded` | 3: the script's header is **replaced** |
+| `body: {x: 1}, form: {a: "1"}` | only `a=1` | 3: the form **wins**, the body is not sent |
+| `form: {}` | `application/x-www-form-urlencoded`, empty | 0 |
+| `headers: {"Content-Type": "application/x-www-form-urlencoded"}, body: "a=1&b=x+y"` (control) | same as the first row | 9 |
+| `form: {n: 1, f: 1.5, t: true, z: null}` | **throws, catchable**: `InternalError: class java.lang.Double cannot be cast to class java.lang.String ...` | nothing sent |
+| `form: {a: "1", u: undefined}` | **throws**: `InternalError: Cannot invoke "String.length()" because "s" is null` | nothing sent |
+| `form: {a: ["p", "q"]}` | **throws**: `InternalError: class org.mozilla.javascript.NativeArray cannot be cast to class java.lang.String ...` | nothing sent |
+
+Every value must be a string; there is no stringification and no repeated key
+for an array. Not measured: the order of the pairs on the wire (the echo parses
+them), a lone surrogate, a `null` value on its own (the case that held one threw
+on the number before it), and a non-object `form`. rhino-local encodes with
+`URLEncoder` (UTF-8), keeps the object's key order, labels both of those
+assumed, and refuses a non-string value as missing behaviour instead of
+reproducing the `InternalError` text, which carries class-loader names.
+
+### 7. A string a script built with `+` is not a `java.lang.String` (verified 2026-11-25)
+
+`scripts/experiment-journey-httpclient-header.sh`: a next-gen journey decision
+node per case, one `httpClient.send` under `try`, to the same httpbin.org echo
+(`/headers` and `/post`, which return what they received, with `Content-Type`
+and `Content-Length`). Objects are throwaway `kdemo-g2-` trees, nodes and
+scripts, deleted by name and re-listed empty. `t` is a non-constant string
+(`var t = ...` computed in the script), so `"Bearer " + t` is a concatenation
+and `"Bearer " + "abc"` is a literal the compiler folds.
+
+Rhino builds a `ConsString` for `+` on non-constant operands. On the tenant
+that is **not** a `java.lang.String`: `typeof` reports `"object"` and it has no
+`constructor`. `.toString()`, `.concat`, `String(x)`, `.slice(0)`,
+`[..].join("")`, `.replace(..)`, `JSON.parse(..)` results and literals are
+`java.lang.String` (`typeof` `"string"`). Wherever AIC needs a `java.lang.String`
+the two differ, and **what it does about it depends on the position**:
+
+| Position | Value | Result |
+| --- | --- | --- |
+| header value | literal; `.toString()`, `.concat`, `String()`, `slice`, `join`, `replace`, `JSON.parse` result; the folded `"Bearer " + "abc"` | sent, and echoed |
+| header value | `"Bearer " + t`; `"" + t`; `s += t`; `"Bearer " + JSON.parse(..).a`; a template literal (via `eval`); `new String(..)` | **`send` throws, catchable**: `InternalError: Cannot add values for key 'X-Probe': Bearer abc` (the same for `Authorization`); nothing sent. It throws at `send`, before `.get()` |
+| header value | `1`, `1.5`, `0`, `1e21`, `true`, `{a: 1}` | the same error, with the value's Java text: `1.0`, `1.5`, `0.0`, `1.0E21`, `true`, `[object Object]` |
+| header value | `null`, `undefined`, `[]` | the header is **absent** at the receiver; no error |
+| header value | `["a"]`, `["a", "b"]` | accepted; the receiver saw `a` and `a,b` (one line or one per element: the echo cannot tell) |
+| header value | `[1]`, `["a", "b" + t]`, `[["a"]]` | throws `InternalError`: `class java.lang.Double cannot be cast to class java.lang.String ...`, the same for `ConsString`, and `null` for the nested array; the first two messages name the web application's class loader |
+| header key | `h["X-" + t] = "v"` | sent as `X-abc`: keys are always strings |
+| URL | `"https://httpbin.org/" + (cond ? "post" : "get")` | sent: the URL is converted |
+| `method` | `"PO" + t.slice(0, 0) + "ST"` | throws `InternalError: class org.mozilla.javascript.ConsString cannot be cast to class java.lang.String ...` (loader named) |
+| `form` value | `{a: "1", b: "x" + t}` | the same `ClassCastException` text; the literal control is sent (docs/api/12 §6) |
+| object `body` value | `{a: "x" + t}` | fine: `{"a":"xabc"}`, `Content-Type: application/json; charset=UTF-8`, length 12 |
+| string `body` | a literal or `.toString()` result, with `Content-Type: application/x-www-form-urlencoded` | sent **raw**, the form parsed by the receiver, the script's header kept (`text/plain`, `application/json` and no header likewise) |
+| string `body` | `"a=1&b=" + t` under **any** header (urlencoded, `text/plain`, `application/json`, none) | sent as a **JSON string**: `"a=1&b=abc"` with its quotes (length 11, not 9), `Content-Type: application/json; charset=UTF-8`, the script's header replaced |
+| string `body` | `"q=\"" + t + "\\\u00e9"` | `"q=\"abc\\é"`: quote and backslash escaped, `é` raw (§4) |
+| string `body` | `JSON.stringify({a: 1})` under `application/json` | raw `{"a":1}`, header unchanged, no charset |
+
+Two measured consequences that were found the hard way. A header built as
+`"Bearer " + token` fails on the tenant with the error above. A urlencoded
+token-request body built by concatenation arrives as a JSON string under
+`application/json` and the token endpoint answers **400**, where the same text
+through `.toString()`, or the `form` option (§6), works. Measured against the
+sandbox's own `/am/oauth2/realms/root/realms/alpha/access_token` with a client
+that does not exist: the literal body and the `form` option both reach client
+authentication (`400 {"error":"invalid_client", ...}`), and the concatenated
+body is turned away before it (`400 {"error":"invalid_request",
+"error_description":"Invalid Content Type"}`). The cause is the type
+of the string, not the content type the script set. The script's own header is
+not what decides, which is why the failure looks like a wrong header.
+
+Not measured: a `ConsString` in a `query` or other option, a number as a body
+that is a string, the array header's wire form, a `ConsString` inside an array
+in an object `body`. rhino-local refuses what it did not measure
+(`Missing journey behavior`): a `ConsString` or other non-string in a header
+array, a `method` or `form` value built with `+` (the tenant text names a class
+loader the emulator does not have), and a header value of any other type. The
+emulator reproduces the two catchable errors and the JSON-string body exactly.
 
 ### `openidm.create` content with an `undefined` value (verified 2026-11-04)
 
@@ -830,7 +918,7 @@ workspace routing slug from `src/aic/script/am.rs::slug_for`.
 | `existingSession` / `resumedFromSuspend` | yes                                                        | yes                                  | **V**     | `existingSession` is `undefined` unless the request carries a session cookie; with one it is a **flat string map**, enumerable with `for…in`. 23 keys on a minimal journey-issued session (2026-09-14): `AMCtxId`, `AuthLevel`, `CharSet`, `FullLoginURL`, `Host`, `HostName`, `IndexType`, `Locale`, `OidcSid`, `Organization`, `Principal`, `Principals`, `Service`, `UserId`, `UserProfile`, `UserToken`, `amlbcookie`, `authInstant`, `clientType`, `loginURL`, `successURL`, `sun.am.UniversalIdentifier`, plus every property a prior journey set with `action.putSessionProperty`. Values are strings (`AuthLevel` is `"0"`, not `0`). There is **no `username` key** — the principal is `UserId`/`Principals`. See `09-journeys.md` → "Minting a session for a test". `resumedFromSuspend` is **false on a callback round trip** (measured 2026-09-14): it belongs to `action.suspend()`, not to the ordinary send-callbacks-and-re-execute cycle, so it is not the way to tell a node's first pass from its later ones — `callbacks.isEmpty()` is. Shared state survives that round trip and transient state does not; see `09-journeys.md` → "What survives a callback round trip". |
 | `cacheManager`                           | no                                                         | yes                                  | **D**     | Next-gen scripted decision only.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | `oauthApplication` / `samlApplication`   | no                                                         | yes                                  | **D**     | Next-gen only, journey-associated.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
-| `auditEntryDetail`                       | yes                                                        | yes                                  | **D**     |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| `auditEntryDetail`                       | **output (measured)**                                      | **output (measured)**                | **D/V**   | **Not a binding the script is handed; a variable it assigns (measured 2026-11-25).** `typeof` is `"undefined"` before assignment and reading it is a `ReferenceError`, on both engines. Assigning a string or an object (`auditEntryDetail = {…}` or `var auditEntryDetail = {…}`) makes the node's `AM-NODE-LOGIN-COMPLETED` carry `info.nodeExtraLogging.auditInfo = <value>`; a top-level array fails the tree (`Invalid auditEntryDetail type from script`); a throw suppresses it. `nodeState` writes and `action.with*` do not reach the record. See `25-journey-runtime.md` and `08-logs.md`. |
 | `realm` / `systemEnv` / `scriptName`     | yes                                                        | yes                                  | **D/V**   | Live AIC-lane probe, 2026-10-01 (next-gen AUTHENTICATION_TREE_DECISION_NODE): `typeof scriptName` was `"string"`; its value was the uploaded subject name. `systemEnv.getProperty("esv.rl.probe.missing")` returned `null` for an absent ESV. |
 | `require()` / library scripts            | **no**                                                     | **yes**                              | **D/V/I** | Only next-gen can `require` libraries. Libraries can require other libraries (17 `lib/` files do). Used in 225 `src/`. **Verified beyond scripted decision (2026-07-29):** works end-to-end from next-gen **token mod, validate scope, evaluate scope and may-act** (the whole reachable OAuth2 family — see the two sections below); `typeof require === "undefined"` in the legacy (`1.0`) token-mod script (`ReferenceError: "require" is not defined.`).                                                                                                                                                                              |
 | `JavaImporter` / Java allowlist          | yes                                                        | **no**                               | **D/I**   | Legacy only. 26 `src/` use `JavaImporter`. Next-gen has no configurable Java access.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |

@@ -22,12 +22,15 @@ and never print a `tokenId`.** Read the fields an experiment needs by name.
 
 ## Verified against
 
-Sandbox tenant, realm `alpha`, **2026-11-02 to 2026-11-04**, next-gen scripted decisions
-(`evaluatorVersion: "2.0"`). Every section names the
-`scripts/experiment-journey-*.sh` run that established it; those scripts
-create their own `zzemu-*` trees, nodes, scripts and users and delete them on
-exit (set `AIC_REPO` to the checkout whose `.aic/` holds the tenant context).
-Anything under "Not yet measured" is not.
+Sandbox tenant, realm `alpha`, **2026-11-02 to 2026-11-04** and, for "Built-in node types" and the sections after it, **2026-11-25**, next-gen scripted decisions
+(`evaluatorVersion: "2.0"`). A section measured by a committed
+`scripts/experiment-journey-*.sh` probe names it; those scripts create their
+own throwaway trees, nodes, scripts and users and delete them on exit (set
+`AIC_REPO` to the checkout whose `.aic/` holds the tenant context). **Not every
+section has one**: some were measured with one-off drivers over
+`scripts/experiment_journey_lib.py` that were not committed, and each such
+section says so. Re-measure before building on a row from one of those you
+doubt. Anything under "Not yet measured" is not measured at all.
 
 ## Page node
 
@@ -66,6 +69,94 @@ shared versus transient can only be told apart by whether a key survives a
 callback round trip, which is how every "shared"/"transient" cell in this file
 was decided.
 
+### Page header, no-callback pages and extra children (verified 2026-11-25)
+
+Measured on the sandbox with throwaway trees (`kdemo-g-`), none left behind.
+**No committed probe**: the driver was a one-off. The `{}` header and
+description every `scripts/experiment-journey-page*.sh` tree sends is the
+control for "sends neither".
+
+| Question | Observed | Control |
+| --- | --- | --- |
+| A page whose only child is a callback-free scripted decision | Not shown: the script ran **once** (a counter it kept read `1` at the next node) and the response was the next node's callbacks; the page left by the script's outcome | The same counter, in a page with a collector, reads 2 after submit (rows above) |
+| `pageHeader` / `pageDescription` | Sent as top-level **`header`** and **`description`** strings beside `callbacks` (after it), taken from the localized map | A page with `{}` for both sends neither |
+| Several locales, no `Accept-Language` | `{en: "E", fr: "F"}` gave `"E"`; a sole `{fr: "F"}` gave `"F"`; an empty string omitted the field | The three maps differ only in their entries |
+| A rejected page re-sent | `header` and `description` repeat on the re-sent page | — |
+| `AcceptTermsAndConditionsNode` after a collector | A `TermsAndConditionsCallback` (version `5.0` here, the realm's terms) follows the `NameCallback`; `true` leaves, `false` re-sends the page with the collector's input echoed | Same page, only the answer changes |
+| `product-CaptchaNode` as the last child | A `ReCaptchaCallback` follows the collector's callback and the page outcomes are the node's `true`/`false`; a token the provider rejects left by `false`, **an empty token fails the journey with `401 Login failure`** | Empty versus non-empty token |
+| A rejected page's `NameCallback` | Re-sent with `input[0].value` set to the submitted name and no `value` output, beside the echoed attribute callbacks (measured with a rejected required attribute and with a declined terms child) | The password callback of the same page goes out empty |
+
+### Validated password (verified 2026-11-25)
+
+`ValidatedPasswordNode` with `validateInput: true`, `passwordAttribute: "password"`, alone as a tree's entry
+node, on the sandbox (**no committed probe**: `scripts/experiment-journey-collectors.sh` covers only
+`validateInput: false`); the realm's policy there is a minimum length of 8 and one character each from digits,
+upper case and lower case.
+
+| Question | Observed | Control |
+| --- | --- | --- |
+| Callback | One `ValidatedCreatePasswordCallback`, outputs in order `echoOn` false, `policies` (`{policyRequirements: ["VALID_TYPE"], fallbackPolicies: null, name: "password", policies: [{policyRequirements: ["VALID_TYPE"], policyId: "valid-type", params: {types: ["string"]}}], conditionalPolicies: null}`), `failedPolicies` `[]`, `validateOnly` false, `prompt` `"Password"`; inputs `IDToken1` `""` and `IDToken1validateOnly` false | `validateInput: false` sends a plain `PasswordCallback` (above) |
+| A password that fails | `200` with the callback sent again; `failedPolicies` holds one **JSON text** per failed requirement, e.g. `{ "policyRequirement": "LENGTH_BASED", "params": { "max-password-length": 0, "min-password-length": 8 } }` and `{ "policyRequirement": "CHARACTER_SET", "params": { "allow-unclassified-characters": true, "character-set-ranges": [  ], "character-sets": [ "0:0123456789", "0:ABCDEFGHIJKLMNOPQRSTUVWXYZ", "0:abcdefghijklmnopqrstuvwxyz" ], "min-character-sets": 3 } }`; the input stays `""` | — |
+| Which requirement fails | `abc` and the empty string: `CHARACTER_SET` then `LENGTH_BASED`; `abcdefgh1` (8 long, two sets): `CHARACTER_SET` only; `Aa1` (three sets, 3 long): `LENGTH_BASED` only; a 120-character three-set password and one with accented letters passed | Each differs from its neighbour in one requirement |
+| A passing password | The node left by `outcome`; transient `password` and transient `objectAttributes {password}`, exactly as with `validateInput: false` | — |
+| `IDToken1validateOnly` true | The callback is sent **again** with `validateOnly` true, `failedPolicies` `[]` for `Aa1Aa1Aa1` and both requirements for `abc`; the node did not leave | The same password with the flag false left |
+
+### Attribute Collector `validateInputs: true` (verified 2026-11-25)
+
+`AttributeCollectorNode` over `givenName`, `sn`, `mail` (`validateInputs: true`), alone and wired to a dump node, on the
+sandbox with throwaway `kdemo-g2-` objects (all deleted; re-list empty). Probe:
+`scripts/experiment-journey-attribute-validate.sh`.
+
+| Case | Measured |
+| --- | --- |
+| First callbacks | `StringAttributeInputCallback` per attribute, `failedPolicies: []`, and `policies` holding the attribute's IDM policy (e.g. `mail`: `policyRequirements ["REQUIRED","VALID_TYPE","VALID_EMAIL_ADDRESS_FORMAT"]`) |
+| `mail` = `not-an-email`, `required: true` | `200`, the page sent again, **every answer kept**, `mail`'s `failedPolicies` = `["{ \"policyRequirement\": \"VALID_EMAIL_ADDRESS_FORMAT\" }"]` (JSON text); nothing written; a valid address on the next step left the node |
+| `mail` empty, `required: true` | page sent again, `failedPolicies` `[]` (as without validation) |
+| `mail` empty, `required: false` | page sent again, `failedPolicies` = `["{ \"policyRequirement\": \"REQUIRED\" }"]` |
+| `givenName` of 600 characters | accepted (no length policy) |
+| `IDToken3validateOnly` true on a bad `mail` | page sent again with that callback's `validateOnly` true and the failed policy; the node did not leave; resubmitting with the flag still true stayed |
+| control: `validateInputs: false`, same bad `mail` | accepted unvalidated |
+
+Not measured: `validateOnly` on a passing value, several failures on one attribute, the format rule beyond
+`not-an-email` failing and an ordinary address passing.
+
+### Attribute Collector slash paths (verified 2026-11-25)
+
+`AttributeCollectorNode` with `validateInputs: false`, `required: false`, on the sandbox; the path walk and
+storage rows come from `scripts/experiment-journey-attribute-boolean.sh`, and the key-order row has no committed
+probe. That realm's schema has
+no nested string property, so the path walk and the storage were measured on `preferences/remember`, the nested
+boolean it does have.
+
+| Question | Observed | Control |
+| --- | --- | --- |
+| Schema lookup | `attributesToCollect: ["preferences/remember"]` found `properties.preferences.properties.remember` (title `Trust this device`), so the lookup walks the path one segment at a time | — |
+| Callback `name` | The path as written, `preferences/remember` | A flat attribute (`givenName`) in the same node is named `givenName` |
+| Stored value | **Nested**: shared `objectAttributes` held `{"preferences":{"remember":true}}`, with no flat `preferences/remember` key | — |
+| Key order | `["preferences/remember","givenName"]` stored `{"givenName":…,"preferences":{…}}`, and the flat `["sn","givenName"]` stored `{"givenName":…,"sn":…}`: top-level keys are **alphabetical**, not in collection order | Both orders collected the same pair the other way round |
+
+A boolean property is a `BooleanAttributeInputCallback`; see the next section. A **string** slash path was not
+measured (no such property on the sandbox); the emulator stores one nested, as the boolean was, and tags that
+assumed.
+
+### Attribute Collector boolean attributes (verified 2026-11-25)
+
+`AttributeCollectorNode` over the nested boolean `preferences/remember` (title `Trust this device`) on the sandbox with
+throwaway `kdemo-g3-` objects (all deleted; get-after 404). Probe: `scripts/experiment-journey-attribute-boolean.sh`.
+
+| Case | Measured |
+| --- | --- |
+| First callback | `BooleanAttributeInputCallback`; output `name` (the path as written), `prompt` (the schema title), `required`, `policies` `{}`, `failedPolicies` `[]`, `validateOnly` false, `value` **false**; inputs `IDToken<n>` (a boolean) and `IDToken<n>validateOnly` |
+| Answered `true` / `false` | Stored as a JSON **boolean** (`{ "preferences": { "remember": true } }`), nested by the path |
+| `required: true`, answered `false` | Accepted: `false` is a value, the page does not stay |
+| `validateInputs: true` | Same callback, `policies` still `{}`; `true` accepted |
+| Answered with the string `"true"` | `400 {"code":400,"reason":"Bad Request","message":"Bad Request"}`; not coerced and not a retry |
+| Beside a string attribute | The string stays a `StringAttributeInputCallback` (`IDToken2`), in collection order; stored keys alphabetical as before |
+
+Not measured: a boolean that is not nested (this realm's only boolean attribute is `preferences/remember`; the path
+walk is the same), a policy attached to a boolean, `validateOnly` true on a boolean, and a re-sent page echoing a
+boolean answer. The emulator refuses a supplied `attributePolicies` entry with requirements on a boolean as missing.
+
 ## Inner Tree
 
 Measured 2026-11-02 with `scripts/experiment-journey-inner-tree.sh`. Outer
@@ -89,6 +180,41 @@ failure node (`fail`).
 | `journey.innerJourney()` | `true` inside, `false` in the outer tree | — |
 | `journey.mustRun()` / `identityResource()` | `false` / `managed/alpha_user` in both | — |
 | An `innerTreeOnly: true` tree invoked directly by `authIndexValue` | `400 {"code":400,"reason":"Bad Request","message":"No Configuration found"}` | The outer trees (`innerTreeOnly: false`) in the same run started normally |
+
+Callbacks and nesting (measured 2026-11-25, sandbox, `kdemo-g-` trees; **no committed probe**, the driver was a
+one-off over `scripts/experiment_journey_lib.py`): outer tree (writes shared `zzOS`,
+transient `zzOT`) → inner 1 (writes `zz1S`/`zz1T`) → inner 2 (writes `zz2S`/`zz2T`, then a
+`UsernameCollectorNode`) → back up to a dump in the outer tree. Each script read the keys, `journey.name()` and
+`journey.innerJourney()`.
+
+| Question | Observed | Control |
+| --- | --- | --- |
+| A collector inside an inner tree | Its `NameCallback` is the response to the first POST; the submission resumes **in the inner tree** (`journey.name()` is the inner tree's, `innerJourney()` true) and the journey went on to finish the outer tree | The same trees with the collector removed finish in one POST |
+| Nested inner trees | Work: outer → inner 1 → inner 2 returned `true` up each level. Shared state is visible at every depth and written back up (`zz2S` seen in inner 1 and the outer tree) | — |
+| Transient at depth | Inner 2 saw neither the outer's `zzOT` nor inner 1's `zz1T`; it saw its own `zz2T` | Inner 1 saw only `zz1T`, not `zzOT` |
+| Transient restored on return, no callback in between | Inner 1 read `zz1T` again after inner 2 ended, and the outer tree read `zzOT` after inner 1 ended | The same run with a callback inside inner 2: both read `null` on return, because a callback round trip drops transient state at **every** level |
+| `journey.name()` / `innerJourney()` | The innermost executing tree's name at each level; `true` in both inner trees, `false` outside | — |
+
+
+### A Page inside an inner tree (verified 2026-11-25)
+
+Measured on the sandbox with `scripts/experiment-journey-inner-page.sh` (throwaway `kdemo-g4-` trees, scripts and nodes, all
+deleted, deletion confirmed by a `GET`). Outer tree: script, then `InnerTreeEvaluatorNode`, then dump nodes for `true` and
+`false`; the inner tree holds the page.
+
+| Question | Observed | Control |
+| --- | --- | --- |
+| Callbacks and properties the client sees | The inner page's callbacks, in page order, with its own `header`, `description` and `stage` (`IN-H`, `IN-D`, `IN-S`) beside `callbacks` | An outer page sends the same shape (case B's outer page, a different page from case A's inner one) |
+| An outer page's properties | **Do not leak**: an outer page with `OUT-H`/`OUT-D`/`OUT-S` was answered, and the inner page (configured with none) came back with no `header`, `description` or `stage` | The outer page's own response carried all three |
+| Resuming | The submission resumes **inside the inner tree**: the inner script after the page ran (it saw the answers) and the inner tree's success routed the outer evaluator to `true` | — |
+| Shared state across the boundary | Outer shared written before the inner tree is read inside it (`os`); inner shared written after the page is read by the outer dump (`is`); the page's `username` is shared and read at every level | — |
+| Transient state across the boundary | Outer transient is **`null` inside** the inner tree (as in the Inner Tree table above); the page's transient `password` was readable (length 13) by the inner script after the page, and **`null` in the outer dump** after the evaluator | The inner script's own `putTransient` is likewise `null` outside |
+| A page visited twice (inner script after the page goes back to the page unless `username == "right"`) | `wrong1`, `wrong2`: the page is sent again each time with `header` and `description`, the outer tree not touched; `right` leaves and the outer dump (`true`) reads `username = "right"` | The `NameCallback` of the revisit carries an empty `input` value (no prefill from the shared `username`) |
+| Empty answers in an inner page | The whole page is sent again with its `header`/`description`; a later answer continues | — |
+| The inner tree ends by its failure node after the page | The outer evaluator takes `false` (the `false` dump ran) | — |
+| Two deep (outer, middle evaluator, innermost page) | The page's callbacks are the first response; its answer resumes in the innermost tree; its shared writes are visible to the middle tree's script and the outer dump | — |
+| `stage` | A page's non-empty `stage` is a top-level string beside `callbacks`; `stage: ""` and no `stage` send none (outer pages, same run). **Unrecorded**: that a re-sent page repeats its `stage`. Every committed page with a `stage` was answered first time, and the committed re-send (case E) is of a page with `header` and `description` only; the emulator repeats it and tags that assumed | Three pages differing only in `stage`. **Unrecorded**: the committed probe sets `stage` only on the inner page of case A and the outer page of case B; the empty and absent controls came from an uncommitted run |
+| Callback `_id` and `pageNodeCallbacks` | **`_id` is unrecorded by the committed probe**: `scripts/experiment_journey_lib.py`'s callback view (`cbs`) drops it, so the numbering below came from an uncommitted run. The `pageNodeCallbacks` value is in the probe's dump, which every case runs and which prints it with `String()`. Every callback the journey sends carries a top-level numeric `_id`, counting up across the whole journey (`0`, `1`, then `2`, `3` on a re-send; `0` then `1` on a revisit). Shared `pageNodeCallbacks` is a **map of callback `_id` to child index** (`{ "0": 0, "1": 1 }`) that **accumulates** one entry per callback of every visit to a page, a re-sent or revisited one included (`{ "0": 0, "1": 1, "2": 0, "3": 1 }` after a re-send). The emulator models both: `_id` counts across the journey, and a `pageNodeCallbacks` that is not a map is `missing` | — |
 
 ## Identify Existing User
 
@@ -139,6 +265,25 @@ rows show the realistic shape (collector writes shared `username`, attribute
 collector writes shared `objectAttributes.mail`) behaves exactly as the seeded
 one.
 
+### Which `username` key it reads (verified 2026-11-25)
+
+Measured with `scripts/experiment-journey-identify-key.sh` (throwaway `kdemo-g4-` trees and users, all deleted).
+The node's `identityAttribute` was `userName`, two users existed, and a dump node after each outcome read both keys.
+
+| Seed | Outcome | Identified |
+| --- | --- | --- |
+| shared `username = A` | `true` | user A |
+| shared `userName = A` (camel case only) | `false` | nobody; `userName` is not a lookup key |
+| shared `username = A`, shared `userName = B` | `true` | user **A**: the lower-case key wins |
+| shared `username = B`, shared `userName = A` | `true` | user **B** |
+| transient `username = A` | `false` | nobody: a transient value is **not** read |
+| transient `userName = A` | `false` | nobody |
+| shared `userName = B`, transient `username = A` | `false` | nobody |
+
+So Identify Existing User reads the **shared** `username` only. Neither the camel-case key nor the transient state is
+consulted, and a camel-case value beside a lower-case one is ignored. The emulator used to read a transient
+`username` like any other `nodeState.get`; it now reads shared state only.
+
 ### A blank or `null` lookup value, and letter case (2026-11-04)
 
 Measured with `scripts/experiment-journey-defaults-case.sh`, run twice with the same result. One user A
@@ -168,6 +313,34 @@ Leading and trailing spaces in `objectAttributes.mail` are ignored the same way
 (`true`), while a space inside the value is a miss (`false`) — verified
 2026-11-04, `scripts/experiment-journey-escaping-query.sh`.
 
+### No identity value at all (2026-11-25)
+
+Measured with `scripts/experiment-journey-identity-empty.sh` (`kdemo-g2-` objects,
+deleted by name, re-listed empty). Same node config (`identityAttribute: "mail"`,
+`identifier: "userName"`); one throwaway user existed with a known `mail`. A seed
+script wrote exactly the keys shown, one dump node per outcome reported what the
+node left.
+
+| Seed | Outcome | State after |
+| --- | --- | --- |
+| `objectAttributes = {mail: <existing>}` (control) | `true` | `_id` and `username` written, as above |
+| `objectAttributes = {mail: <nobody>}` (control) | `false` | no `_id`, `username` null |
+| nothing | **`false`** | no `_id`, no `username`, no `objectAttributes` created |
+| `objectAttributes = {}` | `false` | no `_id`, no `username` |
+| `objectAttributes = {sn: "x"}` | `false` | no `_id`, no `username` |
+| `username = ""` | `false` | no `_id`; `username` stays `""` |
+| `username = null` | `false` | no `_id`, no `username` |
+| `objectAttributes = {mail: null}` | `false` | no `_id` |
+| `objectAttributes = {mail: null}`, `username = null` | `false` | no `_id` |
+| transient `objectAttributes = {mail: null}` | `false` | no `_id` |
+| the same "nothing" with `identityAttribute: "userName"` | `false` | no `_id` |
+
+So the node never errors for want of an identity value: no value, an empty
+object, an object without the key, and nulls in either bucket all take `false`
+and write nothing. The existing user was not found by any of them, which is what
+tells "no lookup" from a lookup with no filter. The tree reached the `false`
+branch with a normal 200 in every row.
+
 `listOutcomes`: `["true","false"]`.
 
 ## Create Object and Patch Object
@@ -186,10 +359,23 @@ back from IDM, not inferred from the outcome.
 | the same in **transient** `objectAttributes` | `CREATED` | user exists | nothing written; `objectAttributes` gone after a round trip (it was never copied to shared) |
 | shared `objectAttributes = {userName}` only (required fields missing) | `FAILURE` | no user | nothing written |
 
-So Create Object reads `objectAttributes` through the same transient-first
-lookup as `nodeState.get`, and **does not return the new `_id` in state**. A
+So Create Object reads `objectAttributes` from either map (when both hold one,
+they are overlaid key by key, transient winning: see "Split
+`objectAttributes`" below), and **does not return the new `_id` in state**. A
 journey that needs the new user's id must look it up afterwards (for example
 with Identify Existing User).
+
+### Create Object without a password, and what a journey reads of `alpha_user` (verified 2026-11-25)
+
+Measured with `scripts/experiment-journey-create-nopassword.sh` (throwaway `kdemo-g4-` users, deleted by name).
+
+- A Create Object whose `objectAttributes` carry no `password` is `CREATED`: the tenant accepts an `alpha_user`
+  without one. A `password pr` filter finds a user created with a password and not one created without.
+- Inside a **journey** script, `openidm.read` (default, `["*"]` and `["password"]`) and `openidm.query` (default and
+  `_fields: "password"`) of `alpha_user` never return `password`, for a user created with one and for one created
+  without. (`docs/api/10-managed-objects.md` records an internal read that does expose the hash; that is the
+  `script?_action=eval` caller, not a journey, which is why the emulator now distinguishes the two.)
+- A later `openidm.patch` of another field on that user succeeds.
 
 ### Patch Object (`listOutcomes`: `["PATCHED","FAILURE"]`)
 
@@ -234,7 +420,7 @@ node that reads `objectAttributes` sees one map or the other, never their
 union. (Create Object and Patch Object above read transient-only and
 shared-only maps; a split map was not fed to them.)
 
-**Not measured:** `ValidatedPasswordNode` with `validateInput: true`; whether
+**Not measured:** whether
 `IDTokenNvalidateOnly: true` suppresses the write.
 
 ## Transient state across a callback-free boundary
@@ -344,24 +530,600 @@ the difference shows: `undefined` is refused `NOT_NULL` exactly as `null` is,
 so the default never lands (2026-11-04, `scripts/experiment-journey-defaults-case.sh`;
 same section of doc 12).
 
+## What a script can put in the audit log (2026-11-25)
+
+Measured 2026-11-25 on the sandbox tenant, realm `alpha`, with one-script
+throwaway trees (`script` node → a sink node that emits a hidden callback so the
+response proves which outcome was taken). Each request carried its own
+`x-forgerock-transactionid`, and the events were read back with
+`aic logs tx <id> --source am-authentication,am-access,am-core`. **No committed
+probe**: the driver was an ad hoc one over `scripts/experiment_journey_lib.py`.
+
+**`auditEntryDetail` is an output variable the script assigns, not a binding it
+is handed.** Before assignment it does not exist (`typeof` is `"undefined"`,
+reading it is a `ReferenceError`). After the script assigns it, the node reads
+it back and AM writes it into that node's `AM-NODE-LOGIN-COMPLETED` record as
+`entries[0].info.nodeExtraLogging.auditInfo`. It works on next-gen (2.0) and
+legacy (1.0) decision nodes alike.
+
+| Script (next-gen ends `action.goTo("true");`, legacy ends `outcome = "true";`) | Observed in `entries[0].info` | Engines |
+| --- | --- | --- |
+| `auditEntryDetail = {"k": "v", "list": ["a", "b"]};` (implicit global) | `nodeExtraLogging: {"auditInfo": {"k": "v", "list": ["a", "b"]}}` | both |
+| `var auditEntryDetail = {…};` at top level | the same | both |
+| `auditEntryDetail = "KDEMO-STR";` | `nodeExtraLogging: {"auditInfo": "KDEMO-STR"}` | both |
+| `auditEntryDetail = ["KDEMO-A", "KDEMO-B"];` (top-level **array**) | **Rejected**: client gets `401 Login failure`; `am-core` WARN `script auditEntryDetail not type String or Map`; no node record; `AM-TREE-LOGIN-COMPLETED` `FAILED` with `nodeExtraLogging: {exception: "An exception occurred during the authentication process", failureReason: "Invalid auditEntryDetail type from script"}`. An array is fine **inside** an object (first row) | both |
+| `{"n": 1, "f": 1.5, "b": true, "z": null, "o": {"x": "y"}, "e": "", "u": undefined}` | `auditInfo: {"b": true, "e": "", "f": 1.5, "n": 1, "o": {"x": "y"}, "u": null, "z": null}`: numbers, booleans, nested objects and `""` survive; `undefined` becomes `null`; the keys came back in alphabetical order | next-gen |
+| `auditEntryDetail = {};` | `nodeExtraLogging: {"auditInfo": {}}` | next-gen |
+| `auditEntryDetail = null;` | no `nodeExtraLogging` key at all (same as never assigning) | next-gen |
+| Assigned, then `goTo("false")` to a sink node | `AM-NODE-LOGIN-COMPLETED` with `nodeOutcome: "false"` **and** `nodeExtraLogging.auditInfo` | both |
+| Assigned, then `goTo("false")` to the Failure node | that node's `AM-NODE-LOGIN-COMPLETED` carries `auditInfo` (`nodeOutcome: "false"`); the following `AM-TREE-LOGIN-COMPLETED` (`FAILED`) has `nodeExtraLogging: {failureReason: "Login failure"}` and no `auditInfo` | next-gen |
+| Assigned, then the script throws (`throw new Error("KDEMO-THROWN")`; legacy throws a string) | **Not emitted.** No `AM-NODE-LOGIN-COMPLETED` for the node; the `AM-TREE-LOGIN-COMPLETED` `nodeExtraLogging` is only the usual `{exception, failureReason}` and the assigned value appears nowhere in `am-authentication` | both |
+
+**Unmeasured edges the emulator assumes** (each tagged assumed in its evidence):
+only a top-level **array** was measured as rejected, so a number, a boolean or a
+Java `Map` is classified the same way (number and boolean fail the tree, a Java
+`Map` is invalid); a Page child's `auditEntryDetail` is dropped with no node
+record of its own; and one assigned by a script that queues callbacks is dropped,
+the node not having completed.
+
+So the value is a **string or a map (JSON object)**, shown under the fixed key
+`auditInfo`; an object holding an array of entries is the way to carry several.
+It is per node execution and rides the completion record, so it exists only for
+nodes that finish. The legacy runs also logged the unrelated `am-core` WARN
+`Found an action result from scripted node, but it was not an Action object`
+(legacy `outcome = "…"` still took the right path).
+
+Other probes, all from a script that did **not** assign `auditEntryDetail`:
+
+| Question | Observed |
+| --- | --- |
+| `action.goTo("true").withDescription(…).withErrorMessage(…).withStage(…).withHeader(…).putSessionProperty(…)` | `AM-NODE-LOGIN-COMPLETED` identical to a bare `goTo("true")`; none of the strings reaches `am-authentication` |
+| `nodeState.putShared("auditEntryDetail", {…})`, `putTransient("nodeExtraLogging", "…")` | no effect on the record. Only an **assignment to the script variable** works |
+| The `action` builder | Methods: `goTo, withDescription, withErrorMessage, withLockoutMessage, withStage, withHeader, withMaxIdleTime, withMaxSessionTime, withIdentifiedUser, withIdentifiedAgent, putSessionProperty, removeSessionProperty, suspend`; none is an audit method |
+| Global scope before assignment | next-gen: `samlApplication, logger, callbacks, idRepository, jwtAssertion, utils, context, action, callbacksBuilder, openidm, requestCookies, cookieName, policy, httpClient, journey, requestParameters, require, cacheManager, secrets, oauthApplication, emailService, locales, systemEnv, requestHeaders, nodeState, resumedFromSuspend, scriptName, realm, jwtValidator`; legacy: `httpClient, sharedState, logger, requestParameters, callbacks, secrets, idRepository, systemEnv, requestHeaders, nodeState, resumedFromSuspend, context, scriptName, realm, transientState`. No audit name in either |
+| A custom outcome name, `goTo("KDEMO-OUTCOME-A")` on a node declaring two such outcomes | `info.nodeOutcome` is `"KDEMO-OUTCOME-A"` |
+| A script that throws (no assignment) | Client `401 Login failure`; no node record; one `AM-TREE-LOGIN-COMPLETED` `FAILED` with `nodeExtraLogging: {exception: "An exception occurred during the authentication process", failureReason: "javax.script.ScriptException: java.util.concurrent.ExecutionException: javax.script.ScriptException: <String(thrown)> (<script name>#1) in <script name> at line number 1 at column number 0"}`. `logger` calls made before the throw are still in `am-core` |
+
+The earlier probe that only read `typeof auditEntryDetail` (and listed the
+global scope) found it undefined; that was correct but did not test assignment.
+
+Where the script `logger` lands is in `08-logs.md`, "Script logger lines".
+
+**A succeeding tree** (measured 2026-11-25, two runs: a journey that identified
+a user by `_id`, and one through an Anonymous User node; both reached Success
+with `200`). Its `AM-TREE-LOGIN-COMPLETED` has `result: "SUCCESSFUL"`,
+`entries[0].info` = `{authLevel, ipAddress, treeName}` and no
+`nodeExtraLogging`, `principal: ["<username>"]` and
+`userId: "id=<universal id>,ou=user,o=alpha,ou=services,ou=am-config"`, where
+the universal id is the identified user's `_id`, or the anonymous user's name.
+Between the node record and the tree record the same request writes an
+`am-activity` `AM-SESSION-CREATED`: `component: "Session"`,
+`operation: "CREATE"`, `topic: "activity"`, `objectId` equal to the journey's
+`trackingIds[0]`, and `runAs` and `userId` both the DN above. The order across
+sources was ACCESS-ATTEMPT, NODE-LOGIN-COMPLETED, SESSION-CREATED,
+TREE-LOGIN-COMPLETED, ACCESS-OUTCOME; rhino-local emits the same.
+A journey that reaches Success with no identified user returns `500` with an
+empty body and was not read back.
+
+**Not measured.**
+Assignment inside a Page node child, or in a node that suspends or sends
+callbacks. A size limit on the value. Whether any other script context (OAuth2,
+SAML, policy) accepts the assignment. Whether this key is emitted at the
+production log level: the sandbox is verbose (`08-logs.md`), and the
+audit topic's own filtering is unmeasured.
+
+## Built-in node types (2026-11-25)
+
+Measured on the sandbox tenant, realm `alpha`, 2026-11-25, next-gen scripted
+decisions. Each node sat in a throwaway tree (`kdemo-nt-*` trees, scripts and
+users, all deleted afterwards) behind a seed script that put the state under
+test, and a dump script reported `nodeState.keys()` and values, on its first
+pass and again after its own callback round trip (a key that survives it is
+shared). **No committed probe** for this section except where a subsection
+names one (CAPTCHA, persistent cookie value): the drivers were one-off scripts
+built on `experiment_journey_lib.py`; re-measure before building on a row you
+doubt.
+`listOutcomes` is quoted from the tenant.
+
+### Data Store Decision (`listOutcomes`: `["true","false"]`)
+
+Config `{}`. Driven with state put by a script (a page of collectors gave the
+same answers).
+
+| Question | Observed | Control |
+| --- | --- | --- |
+| Right password | `true`; **no state written** (no `_id`, `universalId` or `authLevel` change) | Keys before and after identical |
+| Wrong password, another user's password, empty password, unknown user | `false` | Same tree, right password: `true` |
+| Letter case of the username | Case-insensitive: `ALICE`-style input of an existing `userName` is `true` | Exact case: `true` |
+| A mail address as the username | `false`: the lookup is `userName` only | The same user's `userName`: `true` |
+| Where the username and password are read | Username from **shared** state only: a username put in transient state **aborts the journey with 401 `Login failure`**, as does no username or no password. The password is found in either bucket | Shared username plus transient or shared password: `true` |
+
+### Set Session Properties (`listOutcomes`: `["outcome"]`)
+
+| Question | Observed | Control |
+| --- | --- | --- |
+| Config validation (node `PUT`) | `400 Invalid config: At least one of the following properties must be set: properties, maxSessionTime, maxIdleTime` for `{}` and for `{"properties":{}}`. `400 Invalid config: Provided properties cannot include system session properties: [clientType, FullLoginURL, Principals, XUSRef, Locale, amlbcookie, UserId, loginURL, logoutHooks, Service, HostName, UserToken, IndexType, webhooks, UserProfile, AuthLevel, CharSet, authInstant, Host, AMCtxId, OidcSid, sun.am.UniversalIdentifier, Organization, Principal]` for any of them, also beside an allowed one | An allowed name (`kdemoNtProp`) and `maxIdleTime` alone: accepted |
+| Effect | A second journey given the first's session cookie saw every configured property in `existingSession` beside the system ones. `maxIdleTime: 7` / `maxSessionTime: 11` (minutes) moved `getSessionInfo`'s `maxIdleExpirationTime` / `maxSessionExpirationTime` to 7 and 11 minutes after login | A node with neither: 45 and 120 minutes (the realm defaults) |
+| `getSessionProperties` and `getSessionInfo` | Return only the allow-listed properties (`AMCtxId`): a configured property is **not** visible there, only in `existingSession` | — |
+
+### Set Persistent Cookie (`listOutcomes`: `["outcome"]`)
+
+| Question | Observed | Control |
+| --- | --- | --- |
+| Signing key | With neither `hmacSigningKey` nor a secret label configured the journey ends **500 with an empty body**. With a base64 256-bit `hmacSigningKey`: success | Same tree with the key |
+| What the response sets | Three `Set-Cookie`: the session cookie, the persistent cookie, then `amlbcookie`. The persistent one is named `persistentCookieName`, holds a ~1.5 KB value, and has `Expires` = login + `maxLife` **hours** (9 gave +9 h, 3 gave +3 h), `Path=/`, the tenant `Domain`, `Secure`, `HttpOnly`, `SameSite` | `useHttpOnlyCookie: false` dropped `HttpOnly` only |
+| `useSecureCookie: false` | `Secure` was **still set** (the platform forces it) | `true`: set |
+| `sameSite` | `LAX`, `STRICT`, `NONE` came back as `lax`, `strict`, `none` | — |
+
+The value's shape is under "Persistent cookie value" below. Not measured: the
+effect of `idleTimeout`, and signing through a secret label.
+
+### One Time Password Generator (`listOutcomes`: `["outcome"]`)
+
+| Question | Observed | Control |
+| --- | --- | --- |
+| State written | **Shared** `oneTimePassword` (a string of digits, **leading zeros kept**, `00241136`) and `oneTimePasswordTimestamp` (a **number**, epoch **seconds**). Both survived the callback round trip | `maxAuthenticationSessionDuration` (transient) did not |
+| Length | 6, 7 and 8 gave that many digits; a different password every run. A `length` of **9, 10, 11, 12 or 20 passes the node `PUT` but fails the journey with 401 `Login failure`** | A `length` of 0, 3, 4 or 5 is refused at `PUT`: `400 Data validation failed for the attribute, One Time Password Length`. No `length` is accepted, and ran as 8. **Unmeasured**: an ESV-backed `{"$int": "&{esv.…}"}` length; the emulator refuses it when the config loads as not modelled, though Retry Limit's `retryLimit` accepts that form. A literal `{"$int": "7"}` is not a number and keeps the number refusal |
+
+### Retry Limit Decision (`listOutcomes`: `["Retry","Reject"]`)
+
+| Question | Observed | Control |
+| --- | --- | --- |
+| Counter | **Shared** `<node id>.retryCount`, a number that survives round trips; the node id is the key's prefix, so two retry nodes count separately | — |
+| Behaviour | `retryLimit: N` gives `Retry` for visits 1 to N (the count reads 1 to N), then `Reject` on every later visit with the count left at N. Limits 1, 2, 3 and an unset limit (default 3) all fit that | `retryLimit: 0` is refused at `PUT`: `400 Data validation failed for the attribute, Retry Limit. Reason: The value must be greater than zero` |
+| `incrementUserAttributeOnFailure: true` | With `_id` and `username` in shared state, a limit of 2 reached `Reject` and the user's managed record held **no changed attribute** (`GET` with `_fields=*`) | Not measured: AM's own invalid-attempts attribute, which IDM may not expose |
+
+### Accept Terms and Conditions (`listOutcomes`: `["outcome"]`)
+
+| Question | Observed | Control |
+| --- | --- | --- |
+| Callback | One `TermsAndConditionsCallback`, outputs `version`, `terms`, `createDate` (the realm's Terms and Conditions service); `IDToken1` starts as the boolean `false` | — |
+| Answers | `true` or the string `"true"` takes `outcome`. `false`, `"false"` and `""` send the same callback again, writing nothing | — |
+| State | **Shared** `termsAccepted`, a **string** `{ "acceptDate": "<ISO instant, nanoseconds>", "termsVersion": "<version>" }`, and `termsVersion` | Both survived the round trip |
+
+### Username and Password collectors (`listOutcomes`: `["outcome"]`)
+
+Measured 2026-11-25 alone and in a Page of both, answers `""`, `"  "`, a name and a
+password, with a dump script after.
+
+| Question | Observed | Control |
+| --- | --- | --- |
+| Empty username, alone | The `NameCallback` is sent again (HTTP 200, a new `authId`); nothing is written | `"  "` (spaces) was **accepted** and written as `username` |
+| Empty username, empty password or both, in a Page | The Page is sent again with both callbacks | A name and a password: the Page completes and writes `username` and `password` |
+
+Not measured: whether a re-sent `NameCallback` echoes the submitted value.
+
+### CAPTCHA (`product-CaptchaNode`, `listOutcomes`: `["true","false"]`)
+
+A `ReCaptchaCallback` with outputs `recaptchaSiteKey`, `captchaApiUri`, `captchaDivClass`, `reCaptchaV3`,
+`disableSubmission` (from `siteKey`, `apiUri`, `divClass`, `reCaptchaV3`, `disableSubmission`) and an empty-string
+`IDToken1`. The node's other stored fields (`secretKey`, `scoreThreshold` a string such as `"0.5"`, `captchaUri`) do not
+reach the callback.
+
+Re-measured 2026-11-25 (sandbox, throwaway `kdemo-g3-` trees and nodes, deleted; get-after 404; probe
+`scripts/experiment-journey-captcha-v3.sh`) with invented site and secret keys, `reCaptchaV3` true and false, standalone and
+as the last child of a Page after a username collector:
+
+| Case | Measured |
+| ---- | -------- |
+| `reCaptchaV3: true` | The same callback with `reCaptchaV3` **true**; every other output as with false; the same `true`/`false` outcomes |
+| An **empty** token, v2 or v3, alone or in a Page | `401 Login failure` |
+| A **non-empty fake** token, v2 or v3, alone or in a Page | `200`, the node left by **`false`** (the page's `false` outcome in a Page; the collector's username was written) |
+
+This corrects the earlier note here that a fake token also ended 401: with invented keys the non-empty token reached
+`false`. Not measured: a token the provider accepts (so `true` is never reached by a probe), and what `scoreThreshold` does.
+The emulator takes the verdict for a non-empty token from `JourneyOptions.declaredOutcomes`, and fails an empty one 401.
+
+### Message, choice and state nodes (2026-11-25)
+
+All measured on the sandbox with `kdemo-nt-` trees, deleted afterwards.
+
+- `MessageNode` (`listOutcomes`: `["true","false"]`): `TextOutputCallback`
+  (`message`, `messageType` the string `"0"`), then `ConfirmationCallback`
+  (`prompt` empty, `options` `[yes, no]`, `optionType` -1, `defaultOption` 1);
+  the input is `IDToken2` from 0. Defaults are "Default message", "Yes", "No".
+  Answer 0 or "0" takes `true`; 1 and 7 take `false`. No state is written.
+- `ChoiceCollectorNode`: outcomes are the configured choices. One
+  `ChoiceCallback` (`prompt`, `choices`, `defaultChoice`), input `IDToken1`
+  starting at the default index; `defaultChoice` is 0 when absent or not a
+  choice. A missing prompt is `401` at the first request; an index outside
+  0..n-1 is `401`; the string "1" is accepted; duplicate choices are allowed.
+  No state is written.
+- An **empty or blank answer** to either node was not measured. The emulator
+  refuses it as `missing` rather than reading it as index 0 (`Number("")` is
+  0, which would take Message's `true` and Choice's first choice).
+- `SetStateNode` (`["outcome"]`) writes shared `k=v` literally (no `${...}`
+  expansion), overwrites an existing key (`username` included), and accepts an
+  empty map.
+- `ModifyAuthLevelNode` (`["outcome"]` ) adds the increment (negative allowed)
+  to the numeric shared `authLevel`; seeding `authLevel` with a string is a
+  `400`.
+- `AuthLevelDecisionNode` (`["true","false"]`): `true` iff `authLevel >=`
+  the requirement (5 at level 5 is `true`).
+- `AnonymousUserNode` (`["outcome"]`) writes shared `username` =
+  `anonymousUserName` (default `anonymous`); a journey ending there succeeds
+  with `200`, `successUrl` `/enduser/?realm=/alpha`.
+- `SetSuccessUrlNode` writes shared `successUrl`, which the success body
+  carries; with an empty config the response `successUrl` is `null`.
+
+### Validated Username (2026-11-25)
+
+With `validateInput: true` the node sends `ValidatedCreateUsernameCallback`
+carrying a large `policies` payload from the realm's `userName` policy set
+(`REQUIRED`, `MIN_LENGTH`, `VALID_TYPE`, `VALID_USERNAME`,
+`CANNOT_CONTAIN_CHARACTERS` `/`, `MAX_LENGTH`). An empty answer or an existing
+username re-sends it; "ab" and "has space!" are accepted. It writes shared
+`username` and `objectAttributes.userName`. With `validateInput: false` it
+sends a plain `NameCallback` "User Name" and accepts anything; an empty answer
+writes nothing and takes the outcome. The bucket of `objectAttributes` was not
+re-checked for the standalone node.
+
+### One Time Password Collector Decision (2026-11-25)
+
+`listOutcomes`: `["true","false"]`; `PasswordCallback` "One Time Password"; an
+empty answer re-sends it. The right password within `passwordExpiryTime`
+minutes is `true`. A wrong one, one with leading zeros dropped, an expired one,
+a missing OTP or a missing timestamp are `false`. 290 s old in a 5 minute
+window is `true`, 400 s `false`, 90 s in a 1 minute window `false`, expiry 0
+`false`. The exact boundary is unmeasured; a `true` answer **removes** shared
+`oneTimePassword` and `oneTimePasswordTimestamp` (measured as a Page child, see
+"One Time Password Collector Decision and Choice Collector as Page children").
+
+### Persistent Cookie Decision (2026-11-25)
+
+`listOutcomes`: `["true","false"]`. The cookie is a three-part dotted value
+(header `typ` JWT, `cty` JWT, `alg` HS256; the middle part is not plain JSON).
+A valid cookie takes `true` and writes shared `username` = the IDM user's
+`_id` when the user exists, else the name unchanged. No cookie, a tampered
+one, the wrong key or the wrong cookie name take `false`; "notajwt" is `401`.
+`enforceClientIp: true` with the same IP and `idleTimeout` 0 or 1 on a fresh
+cookie still took `true`; expiry and idle behaviour are otherwise unmeasured.
+
+### Persistent cookie value (2026-11-25)
+
+Measured with `scripts/experiment-journey-persistent-cookie.sh` (`kdemo-g3-`
+objects, deleted; a made-up key, never an ESV). `SetPersistentCookieNode`'s
+value is **a compact JWS whose payload is the base64url of a five-part compact
+JWE**: outer header `{"typ":"JWT","cty":"JWT","alg":"HS256"}`, inner header
+`{"typ":"JWT","enc":"A128CBC-HS256","alg":"RSA1_5"}`, about 1.5 KB in all. The
+inner part is encrypted under the tenant's own key, so a caller cannot read or
+forge it. `hmacSigningKey` as a plain base64 string and as `{"$string": "<same
+literal>"}` both mint, and the two cookies have the same shape.
+
+Replayed against a `PersistentCookieDecisionNode` holding the same key:
+
+| Request cookie | Result |
+| --- | --- |
+| The minted value | `true`; shared `username` = the user's `_id` |
+| Another cookie name | `false` |
+| The node holds another key | `false` |
+| Outer re-signed with the same key (control) | `true`, same user |
+| Outer re-signed with the **inner part of another user's cookie** | `true`, **the other user's `_id`**: the identity is in the encrypted part, the signing key only vouches for the outer |
+| One ciphertext byte of the inner part flipped, outer re-signed | `false` |
+| Hand-signed: payload is plain JSON claims (right key, with or without `cty`) | **`401 Login failure`** |
+| Hand-signed: payload is five dotted garbage parts | `false` |
+| Two dotted parts | `false` |
+| Empty value, or no dot | `401 Login failure` |
+
+Not measured: the inner claim names, the expiry rule (the cookie's `Expires`
+is the only known bound), `idleTimeout`, and a value with other dot counts.
+The emulator models the outer JWS exactly and an inner five-part JWE of the
+same cipher under a key of its own, so a cookie it issued is read back by any
+emulator and a hand-signed one is refused as above; it does not model the RSA
+key wrap, and the claim names inside (`sub`, `iat`, `exp`) are its own.
+Without `cookieName` in the options a request cookie reaches the nodes; it is
+refused only when its value is a configured session's.
+
+### Custom (Node Designer) node types (2026-11-25)
+
+**No committed probe for the type, instance, binding, throw and route rows
+below**: they come from an uncommitted run on 2026-11-25. The committed
+`scripts/experiment-journey-esv-placeholders.sh` covers custom node
+properties and their ESV placeholders, and one binding: its custom node script
+calls `systemEnv.getProperty` to read the ESV it compares against.
+
+The sandbox allows creating them. A type is stored at
+`/am/json/node-designer/node-type/<serviceName>-1` (header
+`Accept-API-Version: protocol=2.0,resource=1.0`; `PUT` 201, `DELETE` 200) with
+`serviceName` (32 hex), `version` 1, `displayName`, `description`, `outcomes`,
+`outputs`, `inputs`, `script`, `errorOutcome`, `tags`, `libraries` and
+`properties` (`{name: {title, description, type BOOLEAN|STRING|NUMBER,
+required, multivalued}}`). A tree node references it as
+`nodeType: "designer-<serviceName>"`; the instance `PUT` at
+`.../nodes/designer-<sn>/<id>` carries the property values flat, and the stored
+document adds `_type` and `_outcomes`. `?_action=schema` and `?_action=template`
+are `400` there. `listOutcomes` is the type's outcomes plus `Script Error` when
+`errorOutcome` is true. The AM-NODE-LOGIN-COMPLETED `nodeType` is
+`designer-<serviceName>`.
+
+Script bindings: `properties` (STRING a string, BOOLEAN a boolean, multivalued
+an array, an absent multivalued property `[]`, any other absent property
+`undefined`), `nodeState` (`get`, `putShared`) and the assigned global
+`outcome`; and `systemEnv.getProperty`, which the probe in "ESV placeholders in
+custom node properties" below calls from the custom node's own script to read
+the ESV it compares against. A throw, an undeclared outcome or an unset outcome take `Script
+Error` when `errorOutcome` is true and keep state written before the throw;
+with `errorOutcome: false` a throw is `401`. A missing required property is
+`401`. With `inputs: ["username"]`, reading another key (even one just
+written) returned `null`; an `outputs` list did not restrict writes.
+
+The emulator gives a custom node exactly those bindings, with `systemEnv`
+limited to `getProperty`. Reading any other next-gen binding (`openidm`,
+`httpClient`, `callbacksBuilder`, `action`, …), bare or through `this`, or
+calling a method the next-gen `nodeState` has other than `get` and
+`putShared`, is `missing`, naming the binding
+(`custom node binding: <name>`); what the tenant does there is unmeasured. The
+emulated `systemEnv` has no member but `getProperty`, so another member reads
+`undefined` and calling it is a `TypeError`; the tenant's other `systemEnv`
+members are unmeasured in a custom node. Only the one-argument
+`getProperty(name)` of a configured ESV is measured there; the emulator passes
+every argument through, so the default-value and typed overloads follow the
+Scripted Decision binding (doc 12) — assumed parity, not a custom node
+measurement. The arity error is not a doc 12 probe result: it comes from the
+emulator's own Scripted Decision binding, whose `systemEnv.getProperty` arity
+basis is marked assumed (`packages/rhino-local/src/bindings/rhino/runtime.cjs`).
+Other names are ordinary JavaScript: an unknown global throws a
+`ReferenceError`, and `nodeState.getShared` / `getTransient`, absent from the
+next-gen `nodeState` as above, throw a `TypeError` when called. A bare
+`typeof` of an unbound binding reads `"undefined"`. No custom node inside an
+inner tree was measured, so there the emulator reports a throw or an unlisted
+outcome without `errorOutcome` as `missing` (`inner tree script exception`)
+rather than the `401` above.
+
+### Stub node vocabularies (2026-11-25)
+
+`listOutcomes` measured with template configs: `PollingWaitNode` `[DONE]`
+(+`EXITED` if `exitable`); `PushWaitNode` `[DONE, EXITED]`;
+`PushAuthenticationSenderNode` `[SENT, NOT_REGISTERED]` (+`SKIPPED` if
+`mandatory` is false); `PushResultVerifierNode` `[TRUE, FALSE, EXPIRED,
+WAITING]`; `PushRegistrationNode` three outcomes, which the emulator names by
+their ids `successOutcome`, `failureOutcome`, `timeoutOutcome` (whether the
+tenant listed those ids or display names was not recorded);
+`product-Saml2Node` `[ACCOUNT_EXISTS, NO_ACCOUNT]`; the OTP SMTP and SMS
+senders, `DisplayUserNameNode`, `AnonymousSessionUpgradeNode` and
+`RecoveryCodeDisplayNode` `[outcome]`. The emulator models none of their
+behaviour; the outcome comes from `declaredOutcomes`.
+
+### Success-tree audit record (2026-11-25)
+
+A tree ending in a successful `AnonymousUserNode` produced, in order:
+`AM-ACCESS-ATTEMPT`, `AM-NODE-LOGIN-COMPLETED`, `AM-SESSION-CREATED`
+(`am-activity`, component `Session`, `CREATE`, `userId`
+`id=<name>,ou=user,o=alpha,ou=services,ou=am-config`), `AM-TREE-LOGIN-COMPLETED`
+and `AM-ACCESS-OUTCOME`. The tree record (source `am-authentication`) has
+`component` `Authentication`, `entries[0].info` `{authLevel: "0", ipAddress,
+treeName}`, `principal` `["<name>"]`, `realm` `/alpha`, `result` `SUCCESSFUL`,
+`topic` `authentication`, `transactionId` `<tx>/0` and the same `userId`. The
+node record's `nodeType` was `AnonymousUserNode`.
+
+## Patch Object `ignoredFields` (verified 2026-11-25)
+
+Measured with `scripts/experiment-journey-patch-ignored.sh` (`kdemo-g2-` objects,
+deleted by name, re-listed empty). Each variant had a fresh user (`givenName`
+G0, `sn` S0), seeded `objectAttributes` `{userName, givenName: G1, sn: S1}`, and
+config `identityAttribute: "userName"`, `patchAsObject: false`; the IDM record
+was read back after the run.
+
+| `ignoredFields` | IDM after | Outcome |
+| --- | --- | --- |
+| `[]` and the key absent (controls) | `givenName` G1, `sn` S1 | `PATCHED` |
+| `["sn"]` | `givenName` G1, **`sn` S0** | `PATCHED` |
+| `["/sn"]` | `givenName` G1, **`sn` S0**: a leading slash names the same field | `PATCHED` |
+| `["SN"]` | `givenName` G1, `sn` S1: matched exactly, **case-sensitive** | `PATCHED` |
+| `["zzz"]` | both changed | `PATCHED` |
+| `["sn", "givenName"]` | both unchanged | `PATCHED` |
+| `["/sn", "givenName"]` | both unchanged: a pointer beside a bare name | `PATCHED` |
+| `["userName"]` | both changed; the lookup by `userName` still found the user | `PATCHED` |
+| `["userName", "sn", "givenName"]` (every seeded field) | nothing changed | **`PATCHED`**, not `FAILURE` |
+| `["sn"]` with `sn` in the **transient** `objectAttributes` and the rest shared | `givenName` G1, `sn` S0 | `PATCHED` |
+| `[]` with the same split (control) | both changed | `PATCHED` |
+
+So `ignoredFields` removes each named attribute from the patch, whichever
+`objectAttributes` map held it (the split-map reading in the section below is
+confirmed for Patch), and never affects the lookup. Not measured: a nested
+pointer (`/a/b`), a non-array value, and whether IDM saw an empty patch when
+every field was ignored (the record and the outcome are what was read).
+
+## Split `objectAttributes` (verified 2026-11-25)
+
+Create Object, Patch Object and Identify Existing User each read the shared
+`objectAttributes` map **overlaid** by the transient one, key by key, the
+transient value winning. Measured on the sandbox with throwaway trees:
+
+- Create wrote the union (shared keys plus transient keys) to the new record
+  and wrote no state.
+- Patch found the user from the identity attribute held in either map and
+  applied the union.
+- Identify looked up the merged value, and wrote `userName`, `_id` and
+  `username` to the **shared** map only; neither map was otherwise rewritten.
+
+**No committed probe** for the Create and Identify rows; Patch's is
+confirmed by `scripts/experiment-journey-patch-ignored.sh` (above).
+
+**Not measured:** a key held as an object in both maps (the emulator reports it
+missing rather than guessing a deep merge).
+
+Every node the emulator models that **writes** shared `objectAttributes`
+(Attribute Collector, Identify Existing User, Validated Username) merges into
+the existing map through one helper rather than replacing it; a non-object
+`objectAttributes` there is `missing`. Identify's write-back is the measured
+one; the collectors' merge over keys an earlier node wrote is assumed.
+
+## Nodes as Page children (2026-11-25)
+
+Measured on the sandbox with `scripts/experiment-journey-page-children.sh`, each node run standalone and as a
+`PageNode` child alone and after a `UsernameCollectorNode`. Before one, the probe only `PUT`s the page config
+(the page rule below); no journey runs through it.
+
+| Node | Callbacks as a child | Answer | State written |
+| ---- | -------------------- | ------ | ------------- |
+| `MessageNode` | `TextOutputCallback` (messageType `"0"`) + `ConfirmationCallback` (options yes/no, default 1), same as standalone | index 0 gives `true`; 1 and 5 give `false` | none |
+| `ValidatedUsernameNode` (`validateInput: false`) | one `NameCallback`, prompt `User Name` | any text; empty writes nothing and the node still leaves by `outcome` | shared `username` and `objectAttributes.userName` |
+| `GetAuthenticatorAppNode` | `TextOutputCallback` (messageType `"4"`) + `ConfirmationCallback` with one option, the continue label | any index (0, 1, 7) leaves by `outcome` | none |
+
+- Outcomes: `MessageNode` `true`/`false`, `GetAuthenticatorAppNode` `outcome`.
+- `GetAuthenticatorAppNode` message: a script
+  `document.getElementById("callback_0").innerHTML="<center>MSG</center>"`;
+  `callback_0` is constant whatever the page position. `{{appleLink}}` expands
+  to `<a target='_blank' href='LINK'>Apple App Store</a>`, `{{googleLink}}` to
+  `<a target='_blank' href='LINK'>Google Play Store</a>`. With config `{}` the
+  message is `Get the app from the {{appleLink}} or on {{googleLink}}` and the
+  links are the PingID store pages; the continue label defaults to `Continue`.
+- Page rules: a `MessageNode` before another child is refused on PUT (400
+  `Only the last node in a page can have more than one outcome`);
+  `ValidatedUsernameNode` and `GetAuthenticatorAppNode` (one outcome) may be
+  non-last.
+- Two `NameCallback` children: `username` is the later child's answer;
+  `objectAttributes.userName` is written only by `ValidatedUsernameNode`.
+- A page whose **only** child is a display node (`MessageNode` or
+  `GetAuthenticatorAppNode`) leaves no `pageNodeCallbacks` in shared state. A
+  page of several display children was not tried; the emulator applies the rule
+  to a lone child only.
+- Where `pageNodeCallbacks` exists the tenant's value is a map of callback `_id`
+  to child index (`{ "0": 0, "1": 1 }`), and the emulator stores that map.
+- Not modelled, loud `missing`: `ValidatedUsernameNode` with `validateInput:
+  true` as a child; `GetAuthenticatorAppNode` messages with other wildcards
+  (`{{appleLabel}}`, `{{googleLabel}}`) or a quote, backslash or line break.
+
+### One Time Password Collector Decision and Choice Collector as Page children (verified 2026-11-25)
+
+Measured with `scripts/experiment-journey-page-choice-otp.sh`, each node alone and as a page child (alone, and after a
+`UsernameCollectorNode`), with shared `oneTimePassword = 123456` seeded.
+
+| Node | Callbacks as a child | Answer | Outcome |
+| --- | --- | --- | --- |
+| `OneTimePasswordCollectorDecisionNode` | one `PasswordCallback`, prompt `One Time Password`; after a username child its input is `IDToken2` | `123456` | `true`; shared `oneTimePassword` and `oneTimePasswordTimestamp` are **removed** |
+| | | `000000` | `false`; both keys stay |
+| | | empty | the same page is sent again, no outcome |
+| `ChoiceCollectorNode` (choices alpha, beta, gamma) | one `ChoiceCallback`, prompt `Pick`, `choices`, `defaultChoice` 1 | index 0 / 2 | outcome `alpha` / `gamma` |
+| | | index 7 | `401 Login failure` |
+
+Standalone and as a child the behaviour is the same. `pageNodeCallbacks` is the `{ "0": 0, "1": 1 }` map of
+callback to child as above when a username child sits beside them; a page whose **only** child is one of these two
+leaves no `pageNodeCallbacks` at all, as a lone display node does. That a lone one-time password child is re-sent
+on an empty answer is the table's `empty` row; the probe stops at the first answer, so what `pageNodeCallbacks`
+holds **after** that re-send is unmeasured. The emulator keeps omitting the map there and tags that assumed. Both types were previously refused as page
+children.
+
+## DataStoreDecisionNode and accountStatus (2026-11-25)
+
+Measured on the sandbox: one throwaway `alpha_user` per `accountStatus`, all with the same password; a seed script put
+the user name in shared `username` and the password in transient `password`; `DataStoreDecisionNode` led to dump
+nodes. Probe: `scripts/experiment-journey-datastore-status.sh`. All objects `kdemo-g3-`, deleted, get-after 404.
+
+| `accountStatus` written | Stored | Right password | Wrong password |
+| ----------------------- | ------ | -------------- | -------------- |
+| `active` | `active` | `true` | not run |
+| `Active` | `Active` | `true` | not run |
+| `inactive` | `inactive` | `true` | `false` |
+| `Inactive` | `Inactive` | `true` | not run |
+| `""` | **`active`** | `true` | not run |
+| `null` | **`active`** | `true` | not run |
+| absent | **`active`** | `true` | `false` |
+
+- The node does not read `accountStatus`: any status, in any case, takes the password verdict. The emulator used to
+  refuse anything but `active` as missing; that guess is gone.
+- Separately, the tenant's managed object turned `""`, `null` and an absent status into `active` on create. The IDM
+  emulator does not model that default (a `null` status is rejected there), so a fixture that needs a status other than
+  the ones above says so itself.
+- Not measured: whether a later node (session creation) refuses an inactive account after a `true`.
+
+## Session properties from scripts (2026-11-25)
+
+`action.putSessionProperty` / `removeSessionProperty` in a next-gen scripted decision node, measured on the sandbox with
+throwaway `kdemo-g3-` trees and users (all deleted; get-after 404). A script identified a user and called the methods,
+the journey succeeded, and a second journey given the first's session cookie dumped `existingSession`. Probe:
+`scripts/experiment-journey-session-property.sh`.
+
+| Case | Measured |
+| ---- | -------- |
+| `goTo("true").putSessionProperty("A","1").putSessionProperty("B","2")` | Both on the session |
+| Put then remove the same key in one script | Absent |
+| Script 1 puts A and B, script 2 puts A again and removes B | A is the second value, B is absent: a later node sees and can remove an earlier node's property, and the last write wins |
+| A number value (`5`) | The string `"5"` |
+| Put, then a later node waits on a callback, then success | Kept |
+| Put `UserId`, `AuthLevel`, `Service` or `Locale` | The journey fails `401 Login failure` with no session |
+| Put `UserId`, then a node that sends a callback | `401` straight away: the callback was never sent, so the failure is at the put, not at session creation |
+
+Not measured: the other AM-owned names for a script (the emulator refuses them as `missing`; the 24-name list is
+`SetSessionPropertiesNode`'s validation above), `removeSessionProperty` of a property on the incoming session (`missing`),
+`withMaxIdleTime` / `withMaxSessionTime` on the action (still refused), and a property put in an inner tree.
+
+## httpClient connection failures (2026-11-25)
+
+`httpClient.send(...)` to a host that cannot be reached, in a next-gen scripted decision, with `send` and `.get()` in
+separate `try` blocks. Sandbox, throwaway `kdemo-g3-` trees and scripts (deleted; get-after 404). Probe:
+`scripts/experiment-journey-http-failure.sh`. Targets: loopback port 1, a `.invalid` name, a documentation address.
+
+| Target | Thrown by | Message after `java.util.concurrent.ExecutionException: org.forgerock.openam.scripting.wrappers.HttpClientScriptException: java.lang.RuntimeException: ` |
+| ------ | --------- | ------- |
+| refused (`127.0.0.1:1`) | `.get()` | `java.net.ConnectException: Connection refused (connect failed)` |
+| unresolvable name | `.get()` | `java.net.UnknownHostException: <host>: Name or service not known` |
+| non-routable (`192.0.2.1:81`) | `.get()` | `java.net.ConnectException: Timeout connecting to [/192.0.2.1:81]` |
+
+- `send()` itself returns an object; nothing throws until `.get()`. The thrown value has `name` `JavaException`,
+  `String(e)` is `JavaException: <message>`, `e instanceof Error` is true, and its own keys are
+  `message,fileName,lineNumber,stack,javaException,rhinoException` (`name` is not one). `e.javaException.getClass()` throws.
+- The stack's first line is `\tat <script name>:<line>`.
+- A non-routable address ended in the timeout above rather than hanging the script.
+
+The emulator's `JourneyOptions.http` mock may return `{ failure: { kind: "refused" } }`,
+`{ failure: { kind: "unknown-host" } }` (the host is the URL's) or
+`{ failure: { kind: "connect-timeout", address, port } }` (the tenant names the resolved address, so the mock says it);
+any other kind is `missing`. Not modelled: the `javaException` and `rhinoException` own keys, the stack text, and failures
+of other kinds (TLS, a reset after connect, a read timeout), none measured.
+
+## ESV placeholders in custom node properties (2026-11-25)
+
+Measured with `scripts/experiment-journey-esv-placeholders.sh` (`kdemo-g3-`
+type and nodes, deleted; it reads one ESV the sandbox already holds of each
+type and creates none). A node-designer type with a BOOLEAN, a STRING and a
+NUMBER property, its instances `PUT` with a placeholder, and the script
+reporting `typeof properties.<name>`:
+
+| Instance value | Result |
+| --- | --- |
+| BOOLEAN `{"$bool": "&{esv.<bool ESV>}"}` | stored; the script sees a **boolean** equal to the ESV |
+| BOOLEAN `{"$bool": "true"}`, `"TRUE"`, `"false"` | boolean `true`, `true`, `false` |
+| BOOLEAN `{"$bool": "maybe"}` | stored; boolean **`false`** (any text but `true`, any case) |
+| NUMBER `{"$int": "&{esv.<int ESV>}"}` and `{"$int": "7"}` | stored; a **number** |
+| NUMBER `{"$int": "abc"}`, `{"$int": "1.5"}` | `PUT` refused `500` with an empty body |
+| STRING `{"$string": "&{…}"}`, bare `"&{…}"`, embedded `"a-&{…}-b"` | stored; the script sees the substituted **string** (a bool ESV reads `"true"`) |
+| BOOLEAN or NUMBER with a **bare** `"&{…}"` | `PUT` refused `400 Invalid attribute` |
+| Any placeholder naming an ESV that is not defined | `PUT` refused `400` (`Unable to evaluate the placeholder…`) |
+
+So the wrapper names the property's type (`$bool`, `$int`, `$string`) and a
+bare placeholder is only legal in a STRING property. The emulator reads all
+three wrappers in a custom node's properties and in the built-in nodes it
+emulates, from `JourneyOptions.esv`, with one exception: a One Time Password
+Generator `length` as `{"$int": "&{esv.…}"}` is refused when the config loads,
+as not modelled (whether the tenant accepts it is unmeasured); a bare placeholder in a BOOLEAN or NUMBER
+property, and a property holding another type than it declares, are `missing`.
+
 ## Not yet measured
 
 None of these was exercised; do not build on them as measured:
 
-- Create Object / Patch Object fed a **split** `objectAttributes` (part
-  shared, part transient, as a Validated Password page leaves it); Patch
-  Object with `patchAsObject: true`, or with `ignoredFields`.
-- `ValidatedPasswordNode` with `validateInput: true` (expected to emit
-  `ValidatedCreatePasswordCallback`; not observed), and the effect of
-  `IDTokenNvalidateOnly: true` on any validated callback.
-- A Page node holding a node that is not a collector or scripted decision; a
-  scripted child that calls `action.suspend()` or `withHeader` inside a page.
+- Patch Object with `patchAsObject: true`, or `ignoredFields` entries that are nested pointers.
+- `ValidatedPasswordNode` with `validateInput: true` inside a Page, or with a
+  `maxLength` or a character-set minimum count other than `0`, or the effect of
+  `IDTokenNvalidateOnly: true` on a validated *password* callback inside a Page; `validateOnly` on a *passing* attribute value.
+- A Page node holding a node other than the collectors, a scripted decision,
+  Terms and Conditions, Captcha and the nodes in "Nodes as Page children"; a
+  scripted child that calls
+  `action.suspend()` or `withHeader` inside a page; a `pageHeader` with
+  several locales under an `Accept-Language` request.
 - `withLockoutMessage` on an account that is actually locked out.
 - Inner Tree with `displayErrorOutcome: true` when the inner tree throws; an
-  inner tree that sends callbacks; nested inner trees.
+  inner-tree Page whose child is not a collector, a scripted decision, Terms and
+  Conditions, Captcha, a one-time-password collector or a choice collector; an inner Page after a rejection by a non-collector child.
 - Replaying the `authId` of a step that led to **success** (whether a second
   session is minted).
-- Message Node, Choice Collector, Polling Wait, Email Suspend and other node
-  types not named above.
+- Polling Wait's runtime behaviour (its outcome vocabulary is in "Stub node
+  vocabularies"), Email Suspend and other node types not named above or in
+  "Built-in node types" (Message and Choice are measured there).
+- Any of the nodes in "Built-in node types" inside a Page (except those in
+  "Nodes as Page children"), inside an inner tree, or with a configuration
+  other than the one listed there.
 - Any of this in realm `bravo` or under a `noSession` / `transactionalOnly`
   tree.

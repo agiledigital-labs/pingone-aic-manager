@@ -2519,6 +2519,93 @@ the old behaviour: `require` is the `missing` behaviour `require`. The emulator
 opts its own jobs in with `idmRequire: true`, which turns `require` into a
 `require` host call that it answers from the provider.
 
+## Monitoring logs server
+
+`src/logs/` emulates the tenant's `GET /monitoring/logs`, so a client written for
+a real tenant (kikori-aic's `pull`) reads emulator traffic through the same API.
+Three parts: a shared clock (`clock.ts`), an in-memory `LogStore` that is a
+`LogSink` producers emit into (`store.ts`), and the HTTP server (`server.ts`).
+Import them from `@agiledigital/pingone-aic-script-tester/logs`:
+
+```ts
+import { clockFromEnv, LogStore, startLogsServer } from "@agiledigital/pingone-aic-script-tester/logs";
+
+const clock = clockFromEnv(); // KIKORI_CLOCK file, or real time
+const store = new LogStore({ clock });
+const server = await startLogsServer({ store, clock, keys: { id, secret }, port: 0 });
+// store.emit({ source: "am-access", timestamp, type: "application/json", payload })
+```
+
+Or run `aic-emulator-logs [--port N] [--seed records.jsonl] [--retention-days N]
+[--requests-per-minute N|off]` with `API_KEY_ID` / `API_KEY_SECRET` (the names
+kikori-aic reads) in the environment.
+
+- **Clock.** `KIKORI_CLOCK` names a JSON file `{real_origin, virtual_origin,
+rate}`; now is `virtual_origin + (real now - real_origin) * rate`, read once at
+  start. All three fields are required, the origins RFC 3339, `rate` a positive
+  finite number; anything else is refused with a `clock file: ...` error. The
+  arithmetic is exact integer nanoseconds (not doubles), truncating toward zero.
+  The real-time source is injectable.
+- **Precision.** Timestamps are compared as nanosecond integers, so two records a
+  microsecond apart either side of a bound are told apart. Records are served
+  verbatim; the store parses only `timestamp` (and `payload.transactionId` for
+  the filter).
+- **Bounds.** `(beginTime, endTime]`: exclusive at an exact event timestamp at
+  the begin, inclusive at the end (measured, docs/api/08-logs.md). A window over
+  24 hours is a 400 naming the span. `endTime` is required with `beginTime`.
+  With neither, the server serves the last hour (unmeasured on the tenant).
+- **Paging.** `_pageSize` defaults to and is capped at 1000 (400 outside 1..1000).
+  Reply `{result, resultCount, pagedResultsCookie}`; a null cookie ends the
+  window. A cookie is a stateless snapshot: it names the filter, the upper bound
+  actually served (`min(endTime, now)` at the first page), the highest record
+  sequence that existed then, and the position after the last record returned.
+  A retried cookie therefore returns the same page even if records have since
+  arrived inside the window, as long as the page's records are still retained;
+  once one passes retention a retry skips it (see Retention). A fresh query sees
+  new records. It also carries the window
+  the first page resolved, so with bounds omitted a continuation pages that same
+  last hour after the clock moves. A cookie presented with a different query (other
+  sources, filter, or explicit bounds) is a 400.
+- **Sources.** Comma-separated; `am-everything` / `idm-everything` expand to every
+  `am-*` / `idm-*` stream (the doc does not say what the aggregates cover beyond
+  "catch-all roll-ups", so all of them, `*-core` included). Each record keeps its
+  own stream in `source`. Other sources the tenant lists (`ctsstore`,
+  `userstore*`) are accepted and empty; anything else is a 400.
+- **`transactionId`** is a prefix match on `payload.transactionId`, as measured.
+- **`_queryFilter`** serves one form, `payload/transactionId eq "<id>"`
+  (docs/api/08-logs.md records it working). The emulator matches it **exactly**,
+  as CREST `eq` reads; the doc has no exact-versus-prefix control for this filter
+  (the `transactionId` parameter is the measured prefix match), so treat exactness
+  as the emulator's choice. The two filters doc 08 measured failing on `am-core`,
+  `payload/logger eq "…"` and `payload/message co "…"`, answer the tenant's `500`
+  there (status measured, body not), standalone and with a string literal JSON
+  reads. Every other filter, those two on any other source or with a malformed
+  literal, any filter combined with `transactionId`, any parameter given more than
+  once, and any parameter the server does not know is a `501` naming it: the
+  emulator's own refusal for what was never measured, rather than a page that
+  silently ignores it. The paging cookie is bound to the filter like the rest of
+  the query.
+- **Publication.** A record is visible once virtual now >= its timestamp (zero
+  lag, which meets "published within two virtual minutes"). A record stamped in
+  the future stays hidden until the clock reaches it.
+- **Retention.** 30 days of virtual time by default; expired records are dropped
+  lazily, on every write and every read of a source (an idle source included), so
+  slightly older ones may linger, never younger ones lost.
+- **Auth.** `x-api-key` / `x-api-secret`; anything else is `401` with a CREST-style
+  body `{code, reason, message}` (the doc records the status, not the body).
+- **Rate limit.** 60 requests per real minute for the **whole environment**,
+  every source sharing one quota, as the tenant documents it (docs/api/08-logs.md;
+  documented by Ping, not measured); over quota is `429` with `Retry-After` in whole seconds,
+  rounded up, until the oldest counted request leaves the window. Rejected and
+  unauthenticated requests spend nothing. `requestsPerMinute` configures it;
+  `false` disables it.
+- **Faults.** `fault` (option) or `server.setFault(hook)`: a hook that sees
+  `{sources, cookie, attempt}` and returns `{status, body?, retryAfterSeconds?}` to
+  answer instead of the real reply. It runs after auth and the quota, so an
+  injected 5xx still spends quota, as a real one does.
+
+Not served: `/monitoring/logs/sources`, `/monitoring/logs/tail`, and any `_queryFilter` but the ones above.
+
 ## Artefacts
 
 Committed under `generated/`:
@@ -2676,6 +2763,10 @@ const result = await journey.request({
 });
 ```
 
+The `http` mock may also return `{ failure: { kind: "refused" | "unknown-host" } }` or
+`{ failure: { kind: "connect-timeout", address, port } }`: the script's `httpClient.send(...).get()` then throws the
+JavaException the tenant throws (doc 25, "httpClient connection failures").
+
 The caller supplies one IDM emulator per test, shared with the journey, so
 script `openidm` calls execute managed hooks in that instance. `fork()` shares
 frozen config and the runner, forks IDM records, copies authentication snapshots,
@@ -2688,8 +2779,10 @@ IDM. Callbacks use the tenant `{authId, callbacks}` output/input envelopes;
 `aic/callbacks.ts` fills their inputs unchanged. Queued callbacks beat `goTo`;
 the node runs again on resume. Shared state survives, transient survives
 callback-free edges and is dropped at a round trip. Inner trees share shared
-state, isolate their transient state and restore outer transient state. Inner
-exceptions, callbacks and nested inner trees remain missing. Unsupported bindings, session-property actions, `noSession`, unsupported tree
+state, isolate their transient state and restore outer transient state. Callbacks
+inside an inner tree resume there and inner trees nest; a Page inside an inner
+tree works like any Page, with its own header/description/stage (doc 25), and inner
+exceptions remain missing. Unsupported bindings, session-property actions, `noSession`, unsupported tree
 flags and unmocked HTTP are fatal missing behavior, even if script catches or
 `finally` tries to hide the failure. So is every `rhino-local:` diagnostic the
 binding runtime raises for behaviour it does not model (an argument count whose
@@ -2725,8 +2818,19 @@ such header, a string or top-level non-object body, `\r`/`\b`/`\f`, a C1
 control, a lone low surrogate, a
 fraction or an integer past 1e6, or a number the script engine holds as a Java
 Integer (written as an integer, which is measured for `s.length`, `indexOf` and
-`size()` results and assumed for a `JSON.parse` result). A `form` request is
-missing, because its body is not the JSON text. `objectAttributes` that a node
+`size()` results and assumed for a `JSON.parse` result). A `form` request goes out
+urlencoded as Java's `URLEncoder` writes it, with the content type AIC sets, and the
+mock's third argument carries it as `contentType` (docs/api/12 §6); a
+non-string value is missing. A string a script built with `+` is a Rhino
+`ConsString`, which AIC does not treat as a `java.lang.String` (docs/api/12
+§7): as a header value (and a number, a boolean, an object or a `new String`)
+`send` throws the tenant's catchable `InternalError: Cannot add values for key
+'Authorization': Bearer abc`, and as the `body` it goes out as a JSON string
+(`"a=1&b=abc"`, quotes included) under `application/json; charset=UTF-8`,
+replacing the script's header, which is why a urlencoded token body built by
+`+` gets a 400 there; `.toString()`, `String(x)`, `concat`, `slice`, `join` and
+`replace` results are plain strings and pass. A `form` value or a `method` built
+with `+` is missing behaviour. `objectAttributes` that a node
 wrote, or that crossed a callback round trip, reaches the next script as a Java
 map (`get`/`put` work); its printed form is measured, the methods are inferred
 and labelled assumed.
@@ -2789,8 +2893,9 @@ runs, since whether AM runs it is unmeasured. `ValidatedPasswordNode` (`validate
 transient password and transient objectAttributes. `nodeState.get` returns the
 whole transient value when present, otherwise shared; objectAttributes maps are
 never merged across these buckets. Extending that shadowing to other caller keys
-is labelled assumed. The shared `pageNodeCallbacks` value is assumed to be the
-merged wire array; doc 25 measures its presence/lifetime, not its contents.
+is labelled assumed. Every callback carries a top-level `_id` counting across the
+journey, and shared `pageNodeCallbacks` is the measured map of callback `_id` to
+child index, accumulating over re-sends and revisits (doc 25).
 Page discovery evaluates every script child once for real and retains its state
 effects, ignoring its goTo (measured); submission evaluates each child again.
 `withErrorMessage` in a discovery run, or alongside queued callbacks, is missing:
@@ -2825,14 +2930,334 @@ and aborts with 401 when an identifier names nobody. Identify/Create do not add
 an extra principal-existence check at Success: doc 25 does not establish one.
 Create alone leaves username absent and therefore cannot produce a session.
 
-Attribute policy evaluation/validateOnly, validated-password validation,
-split objectAttributes passed to Create/Patch/Identify, conflicting identity
-sources for Patch, a null identity source, `httpClient.send` with no URL, Identify with no identity value at all, Patch with neither an
+#### Built-in node types added from the 2026-11-25 measurements
+
+`src/journey/extra-nodes.ts` holds these; each row is measured in doc 25
+("Built-in node types"). Config is read from the node JSON as the tenant stores
+it, and the node `PUT` refusals are raised by `JourneyConfig` as `RangeError`s
+carrying the tenant's `400` text.
+
+- `DataStoreDecisionNode` checks shared `username` (a username only in
+  transient state aborts 401, as on the tenant) and the password from either
+  bucket against the IDM emulator's `alpha_user`, case-insensitively on
+  `userName`, and writes no state. The IDM emulator now keeps the plain text of
+  a password it stored, so it can answer this (fidelity, not security). An
+  account that is inactive or has no password is `missing`.
+- `SetSessionPropertiesNode`, `SetPersistentCookieNode`: the result of a
+  successful `request` carries `session: {properties, maxIdleTime?,
+  maxSessionTime?}` (minutes) and `cookies` (the persistent cookie, `Secure`
+  always set, `Expires` = now + `maxLife` hours, `SameSite` lower-cased);
+  `journeyHttp` emits them as `Set-Cookie`. The persistent cookie's value has the
+  tenant's shape: an HS256 JWS (`cty` JWT) over a five-part JWE. The outer part
+  is a real HMAC under `hmacSigningKey` (a plain string, or `{"$string": ...}`
+  with a literal or an `&{esv.…}` placeholder from `JourneyOptions.esv`); the
+  inner part is sealed with A128CBC-HS256 under a constant key of the emulator's
+  own (`alg` is `dir`, not the tenant's RSA1_5), carrying `sub`, `iat` and `exp`,
+  which are the emulator's claim names. So a cookie one emulator issued is read
+  by any other, `PersistentCookieDecisionNode` takes the user from the sealed
+  part (not the signing key), and a hand-signed cookie with plain claims is a
+  401, as measured (doc 25, "Persistent cookie value"). Not modelled: the RSA
+  key wrap, the tenant's claim names, an expiry rule beyond `exp`, `idleTimeout`.
+  A configuration with no `hmacSigningKey` ends as the tenant's empty 500.
+  Request cookies need no `cookieName` option: they reach the nodes, and only
+  one whose value is a configured `sessions` key is refused for want of a name. The emulator does **not**
+  mint a session cookie or build `existingSession` from a newly issued tokenId.
+- `OneTimePasswordGeneratorNode` writes shared `oneTimePassword` (digit string,
+  leading zeros kept) and `oneTimePasswordTimestamp` (epoch seconds); lengths
+  above 8 abort 401 as measured.
+- `RetryLimitDecisionNode` counts in shared `<nodeId>.retryCount`. The user
+  attribute behind `incrementUserAttributeOnFailure` is not modelled (no
+  IDM-visible change was measured).
+- `AcceptTermsAndConditionsNode` sends `TermsAndConditionsCallback`; the terms
+  come from `JourneyOptions.termsAndConditions` (`{version, terms,
+  createDate}`), the tenant takes them from a realm service. The accept
+  timestamp carries milliseconds then zeros; the tenant's nanoseconds are not
+  reproducible.
+- `product-CaptchaNode` is a **stub**: the `ReCaptchaCallback` shape is
+  measured, but the provider verdict could not be reproduced on the tenant, so
+  the outcome must come from `declaredOutcomes` (undeclared is `missing`).
+  `reCaptchaV3` is not modelled. `JourneyOptions.now` replaces the clock.
+
+Also implemented from the second batch (doc 25 sections of the same date):
+`AnonymousUserNode`, `SetSuccessUrlNode`, `SetStateNode`, `ModifyAuthLevelNode`,
+`AuthLevelDecisionNode`, `MessageNode`, `ChoiceCollectorNode` (new
+`ConfirmationCallback` and `ChoiceCallback` support),
+`ValidatedUsernameNode` (`validateInput: false` only; `true` must be declared),
+`OneTimePasswordCollectorDecisionNode` and `PersistentCookieDecisionNode`
+(reads the request cookie). Username and Password collectors re-prompt on an
+empty answer. Stubs whose outcome comes from `declaredOutcomes`: push nodes,
+`PollingWaitNode`, `product-Saml2Node`, the OTP senders and a few display
+nodes.
+
+`ValidatedUsernameNode` (with `validateInput: false`), `MessageNode` and
+`GetAuthenticatorAppNode` run standalone and as `PageNode` children, as measured
+(doc 25, "Nodes as Page children"). A `MessageNode` must be the last child, and a
+page whose only child is a display node, a one-time-password collector or a choice
+collector leaves no `pageNodeCallbacks`. An empty or blank answer to a
+`MessageNode` or `ChoiceCollectorNode` is `missing` (unmeasured), not index 0.
+
+ESV placeholders in node configuration (`&{esv.…}`, bare or wrapped as
+`{"$string": …}`, `{"$int": …}` or `{"$bool": …}`) resolve from
+`JourneyOptions.esv` for the emulated node types and for custom node
+properties; `$bool` follows Java's `parseBoolean` (doc 25, "ESV placeholders in
+custom node properties"). An unconfigured ESV is `missing`.
+
+Custom Node Designer types: put the type definition in
+`JourneyConfigInput.customNodeTypes`, keyed `designer-<serviceName>`
+(`outcomes`, `errorOutcome`, `inputs`, `outputs`, `script`, `properties`). The
+script runs as an ordinary top-level script in a scope of its own, with
+`properties`, `nodeState` (`get` and `putShared` only), `systemEnv`
+(`getProperty` only, reading `JourneyOptions.esv`) and `outcome` defined in
+it. A read of a next-gen Scripted Decision binding other than these
+(`openidm`, `httpClient`, `logger`, `action`, …, plus `existingSession`,
+`require`, `sharedState` and `transientState`) is `missing`, naming it
+(`custom node binding: openidm`), whether read bare or through `this`; so is a
+call to any other method the next-gen `nodeState` has
+(`custom node binding: nodeState.getObject`). The emulated `systemEnv` has no
+other member, so `systemEnv.getSecret` reads `undefined` and calling it is a
+`TypeError`; what the tenant's other members do is unmeasured. Anything else is ordinary
+JavaScript: an unknown global is a `ReferenceError`, and the legacy
+`nodeState.getShared` / `getTransient`, absent from the next-gen `nodeState`
+(doc 25), are a `TypeError` when called; both are throws like any other. A
+bare `typeof` of an unbound binding is `"undefined"`, as for any unbound name
+(`typeof this.httpClient` refuses), and `"logger" in this` is `false`. A name
+the script declares or assigns at its own top level (`var logger = …`) is its
+own and is never refused, and declarations hoist as in any script; a helper's
+locals and declaration-like text in a string or comment leave the refusal in
+place. Top-level `const` and `let` behave as in a Scripted Decision script (doc
+12). `outcome` routes by the string value the host reads when the script ends,
+computed (`'o' + suffix`) or literal; a `new String('ok')` object is not a
+string and is treated as unlisted. That is the host's read, not the script's: a
+script that reads back a top-level `outcome = 'o' + suffix` sees
+`typeof outcome === 'object'`, and `outcome === 'ok'` is false, while a
+`join` reads back as a primitive. Doc 12 measures the same top-level coercion
+in a Scripted Decision scope; a custom node's read-back and the routing of a
+boxed string are unmeasured. A throw or
+unlisted outcome takes `Script Error` when `errorOutcome` is set; without it the
+journey fails with `401` at the top level, and in an inner tree, which is
+unmeasured, it is `missing` (`inner tree script exception`). Not modelled:
+the `inputs` read restriction, and `outputs` (also unrestrictive on the tenant).
+The OTP expiry boundary, cookie expiry and `idleTimeout`, and `ValidatedPasswordNode`
+or Page children for the new nodes are unmeasured or unsupported.
+
+An Attribute Collector accepts a slash path (`preferences/otp`): the schema is
+walked a segment at a time, the callback is named by the path and the value is
+stored nested. Only a string property is built, and it is taken from the
+measured boolean case, so the run says so.
+
+Captcha (as the last child) and Terms and Conditions are accepted as Page
+children, a Page sends its `pageHeader` and `pageDescription` as `header` and
+`description`, and a Page whose children queue no callbacks passes through.
+
+Patch Object's `ignoredFields` drops each named attribute (`sn` or `/sn`, case-sensitive) from the patch, from either `objectAttributes` map (docs/api/25).
+
+Identify Existing User with no identity value (none, empty, or only nulls) takes `false` and
+writes nothing, as measured (docs/api/25).
+
+Gaps in this set: the persistent cookie's `secretLabelIdentifier` signing, claims
+and `idleTimeout` are not modelled.
+
+validateOnly on a passing attribute value, a policy requirement other than `REQUIRED` / `VALID_EMAIL_ADDRESS_FORMAT`, validated-password validation inside
+a Page or beyond the `JourneyOptions.passwordPolicy` fields (`minLength`,
+`characterSets` as `"0:<chars>"`, `minCharacterSets`), a key held as an object in both split objectAttributes maps, conflicting identity
+sources for Patch, a null identity source for Patch, `httpClient.send` with no URL, Patch with neither an
 identity value nor objectAttributes, a non-object shared objectAttributes under
 AttributeCollector or Identify, `ValidatedPasswordNode` over an existing
 transient objectAttributes, a `ValidatedUsernameNode` Page child, callbacks
 posted without an authId to an entry node other than a scripted decision, a
-non-array `outcomes` configuration, Patch patchAsObject/ignoredFields, Page
-headers/descriptions and nested Pages remain fatal missing behavior when
+non-array `outcomes` configuration, Patch patchAsObject (and `ignoredFields` that is not a list of plain attribute names) and
+nested Pages remain fatal missing behavior when
 reached. Policy evaluation is not copied
 into the journey layer: managed writes use the existing IDM policy seam.
+
+AttributeCollector with `validateInputs: true` (doc 25, 2026-11-25) takes its
+policy from `JourneyOptions.attributePolicies`, the sibling of `passwordPolicy`
+(the tenant reads both from IDM, so the caller supplies what the tenant
+reported): `{ mail: { policies: <the callback's policies, verbatim>,
+requirements: ["REQUIRED", "VALID_EMAIL_ADDRESS_FORMAT"] } }`. A failing page is
+sent again with answers kept and `failedPolicies` as JSON text; `validateOnly`
+re-sends. An attribute with no entry, or any other requirement, is missing.
+
+### Journey log records (`logSink`)
+
+`JourneyOptions.logSink` makes the journey emulator write the AIC log records an
+`authenticate` request produces into a `LogSink` (`src/logs/record.ts`), in a
+tenant's order. Without a sink nothing is emitted and nothing else changes.
+`now` (epoch nanoseconds, default real time) is injected, so a virtual clock
+drives the timestamps; `origin` spells `http.request.path` when the request has
+no `url`; `latencyMs` overrides the measured `response.elapsedTime`. The request
+may carry `url`, `clientIp`, `userAgent` and `transactionId` (or the
+`x-forgerock-transactionid` header, which becomes `<id>/0`).
+
+Per request, in order: `am-access` `AM-ACCESS-ATTEMPT`; each script's `logger.*`
+lines (`am-core`, `trace` never, `debug` and up as the sandbox emits them, logger
+`scripts.AUTHENTICATION_TREE_DECISION_NODE.<script id>.(<script name>)`); one
+`am-authentication` `AM-NODE-LOGIN-COMPLETED` per node that completed
+(`nodeOutcome` is always a string); `AM-TREE-LOGIN-COMPLETED` when the tree ends;
+the am-core 401 WARN; `am-access` `AM-ACCESS-OUTCOME`. Every record of one
+journey, across its round trips, carries one `trackingIds[0]`. A script that
+throws writes no node record and the measured am-core ERROR and three WARN
+lines; an abandoned journey simply stops. A decision script may assign a
+top-level `auditEntryDetail` (a string or an object): it lands in that node's
+record as `nodeExtraLogging.auditInfo` (keys sorted, `undefined` as `null`;
+`null` or unassigned writes nothing; an array, number or boolean fails the tree
+with 401; a throw writes nothing). `nodeState.putShared("auditEntryDetail", ...)`
+does not count. Shapes: `docs/api/08-logs.md` ("Script logger lines, and the
+node completion record") and `docs/api/25-journey-runtime.md` ("What a script can
+put in the audit log"). To read a script's output back in a test, collect the
+records and filter: the script's `logger.*` calls are the `am-core` records whose
+`payload.logger` starts `scripts.` (`payload.level`, `payload.message`, already formatted, in call order), and an
+`auditEntryDetail` assignment is `payload.entries[0].info.nodeExtraLogging.auditInfo`
+on the `AM-NODE-LOGIN-COMPLETED` record of its node:
+
+```ts
+const records: LogRecord[] = [];
+const emu = new JourneyEmulator(config, runner, idm, {
+  logSink: { emit: (record) => records.push(record) },
+});
+await emu.request({ method: "POST", path: "authenticate", query, body: {} });
+const lines = records
+  .filter((r) => String((r.payload as { logger?: string }).logger).startsWith("scripts."))
+  .map((r) => r.payload);
+```
+
+The successful end `AM-TREE-LOGIN-COMPLETED` was never
+measured (the sandbox answers 500); it is written in one function,
+`RequestLog.treeSucceeded` in `src/journey/emit.ts`, so a measurement changes one
+place. Every other unmeasured choice is marked `UNMEASURED` in that file.
+
+### `failAt`
+
+`JourneyOptions.failAt({tree, nodeId})` is a harness hook for the demo driver,
+not an AM behaviour. When it answers true for a node that is about to complete
+normally, the node's record is written with `nodeOutcome` `"false"`, the tree
+ends in `AM-TREE-LOGIN-COMPLETED` with a failure, and the request answers 401
+`Login failure`, whatever the node's own script decided. Absent, nothing
+changes.
+
+## Demo driver
+
+`src/demo/` and `aic-emulator-demo` drive synthetic traffic through the journey
+emulator into the monitoring logs server, so a log-anomaly demo has a tenant to
+pull from. **Everything it writes is synthetic.** Journey records come from the
+real engine running the journeys you give it; the non-journey OAuth2 token and
+IDM read traffic is invented from the mix file and writes only `am-access` /
+`idm-access` records and the `am-core` / `idm-core` lines the mix lists. Users
+are `user0001@example.com` style, networks are the CIDRs you name, and the
+mix refuses any email domain that is not reserved for documentation.
+
+```sh
+API_KEY_ID=... API_KEY_SECRET=... KIKORI_CLOCK=clock.json \
+  aic-emulator-demo --journeys journeys.json --mix mix.json \
+    [--breaks breaks.json] [--port 8080] [--seed demo] [--scale 1] \
+    [--concurrency 8] [--retention-days 30] [--requests-per-minute 60|off]
+```
+
+It starts the logs server, then runs the driver on the shared clock until
+SIGINT. It runs journeys on Java 25 like the rest of the package; from a source
+checkout (not the packed tarball, which ships prebuilt classes) that has to be a
+JDK, since the runner classes are compiled on first use: point `JAVA_HOME` (or
+`AIC_SCRIPT_TESTER_JAVA_HOME`) at a JDK 25, or it fails with `spawn javac ENOENT`. It prints a status line every 30 s (journeys started, finished, errored, lag). On SIGINT or SIGTERM it prints the final report (journeys by outcome, errored by status) and exits `1` if any journey hit an engine `501` (an unmodelled behaviour) or `400`, else `0`.
+
+**Journeys file.** One JSON object: the `JourneyConfig` input (`realm`, `trees`,
+`nodes`, `scripts`) plus an optional `idm` key (an IDM config) for nodes that
+read managed objects.
+
+**Mix file** (`version: 1`; every refusal names its path in the file):
+
+```json
+{
+  "version": 1,
+  "tenant": { "host": "tenant.example.com", "realm": "alpha" },
+  "journeys": {
+    "tree-a": {
+      "rate": { "perHour": 600, "daily": [24 numbers], "weekly": [7 numbers] },
+      "users": { "count": 500, "domain": "example.com" },
+      "networks": [{ "cidr": "198.51.100.0/24", "share": 1 }],
+      "userAgents": ["..."],
+      "latencyMs": { "medianMs": 30, "p95Ms": 90 },
+      "abandon": 0.1,
+      "steps": [{
+        "thinkSeconds": [1, 5],
+        "answers": [
+          { "label": "good", "outcome": "success", "share": 0.8, "fill": { "NameCallback": "{username}" } },
+          { "label": "bad", "outcome": "failure", "share": 0.2, "fill": { "NameCallback": "intruder" } }
+        ]
+      }],
+      "http": [{ "match": "...", "responses": [{ "share": 1, "status": 200, "body": {} }] }]
+    }
+  },
+  "requests": [{
+    "name": "token", "stream": "am-access", "method": "POST",
+    "path": "/am/oauth2/realms/root/realms/alpha/access_token",
+    "rate": { "perHour": 300 }, "networks": [...],
+    "status": [{ "share": 0.95, "status": "SUCCESSFUL", "statusCode": 200 },
+               { "share": 0.05, "status": "FAILED", "statusCode": 401 }],
+    "core": []
+  }]
+}
+```
+
+A rate is either `{perHour, daily[24], weekly[7]}` (the base rate times a daily
+and a weekly multiplier) or `{byHourOfWeek: [168 numbers]}`, hour 0 being Monday
+00:00 UTC. `fill` maps a callback type to the value put in its first input;
+`{username}`, `{email}` and `{userId}` are replaced by the journey's user.
+Shares need not sum to 1; they are weights. `outcome` is the author's intent and
+only labels the driver's tallies.
+
+**Breaks** are read from kikori-aic's break file as it is (the same file drives
+the generator and the emulator): `endpoint` (a share of requests under a path
+fail, and hit requests run `slower` times slower; the path is an absolute-URL
+prefix of `http.request.path`, as the generator matches it, so a bare `/am/...`
+matches nothing), `node-fails` (a share of
+journeys at a node end there), `template` (a new message at a rate in a stream)
+and `surge` (extra requests from one network). A window is `[from, to)` in
+virtual time. Unknown fields are refused as the Rust parser does. Each break
+draws from its own random stream, so records outside its window are those of a
+run without it (tested for each kind, and for two breaks at once).
+
+**Behaviour.**
+
+- Arrivals are Poisson per journey and per request stream, redrawn at each
+  virtual hour boundary. Every random choice is keyed by (seed, journey or
+  request), and every timestamp is scheduled, not read from a clock, so the same
+  seed gives the same records at any `--concurrency`.
+- The driver emits nothing at or before the instant it starts; the first record
+  is strictly after it. That is the history-to-live handoff: a puller's
+  `beginTime` is exclusive.
+- `--scale` multiplies base rates (not breaks). `--concurrency` bounds journeys
+  in flight; waiting for a slot delays a journey but never changes what it does.
+- The report carries lag (virtual time behind the clock, which journeys), and
+  throughput. Lag is only meaningful against a real pacer; a flat-out run
+  (tests) has none.
+
+**Throughput** (this machine, 22 cores, host JVM, flat out, a two-node tree with
+two round trips per journey): about 350-450 finished journeys per real second
+(3,400-4,200 records per second), at concurrency 8 and 64 respectively. At clock
+rate 15 that sustains over 1,500 journeys per virtual second, so the driver
+does not lag at any rate the log quota lets a puller read.
+
+**Default rates.** The example above, scaled to a peak of 3,600 journeys per
+virtual hour (60 a minute), plus 300 token and 200 read requests an hour,
+writes per virtual minute about 234 `am-access`, 149 `am-authentication`, 117
+`am-core` and 3 `idm-access` rows (about 500 for `am-everything`). At rate 15
+the whole-environment quota of 60 requests a real minute at 1,000 rows a page
+reads 4,000 rows per virtual minute, so a puller keeps up with a margin of
+eight; the ceiling to stay under is about 1,000 rows per virtual minute per
+source. These are demo choices, not measurements of any tenant.
+
+**Unmeasured** (choices the tenant was not observed making):
+
+- The OAuth2 `component` string and an `am-access` outcome's `detail.reason` on
+  anything but the 401.
+- `idm-access`'s `request.{protocol,operation}` block (carried over from the AM
+  CREST shape).
+- A `template` break's level and logger (`am-core`/`idm-core` lines).
+- A `surge` break's copy semantics: it emits extra requests from the network; it
+  does not copy existing ones.
+- The successful `AM-TREE-LOGIN-COMPLETED` shape (see the journey log records).
+- `AM-ACCESS-OUTCOME`'s stamp against its `elapsedTime`: the outcome is stamped
+  at the end of the request's scheduled work and `elapsedTime` is drawn from the
+  mix's latency, so they need not agree to the millisecond.
+- Whether `http.request.path` is absolute (`https://host/...`) or stripped; the
+  driver writes it absolute.
