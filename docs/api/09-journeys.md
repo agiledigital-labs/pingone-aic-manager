@@ -363,11 +363,17 @@ aic journey using-script <script-uuid> --realm alpha
 ```
 
 It lists journeys with a node whose config holds the script UUID in a top-level
-`script` or `scriptId` field. It reads one config per node of a type that can
-hold a script — `ScriptedDecisionNode`, `DeviceMatchNode` (counted by its
-`script` field whether or not `useScript` is set), `ConfigProviderNode`, and
-any other type whose name contains `Script` — and decides on the config alone,
-not the type name.
+`script` or `scriptId` field, deciding on the config alone, not the type name.
+Per journey it reads the tree, then each `PageNode` (to find the children the
+tree does not list), then the config of each node, in the tree or a page, of a
+type that can hold a script — `ScriptedDecisionNode`, `DeviceMatchNode`
+(counted by its `script` field whether or not `useScript` is set),
+`ConfigProviderNode`, and any other type whose name contains `Script`. It stops
+reading a journey at its first match, and a node two journeys share is read
+once for each. When any read fails the command still prints what it found but
+exits non-zero, and `--json` prints
+`{"journeys": [...], "incomplete": true, "unread": [...]}` instead of the plain
+array, because a missing journey is then not evidence the script is unused.
 
 ## Object shape (real example from sandbox)
 

@@ -1408,8 +1408,15 @@ snapshot; `status` then notes the child the export lacks. `pull` and `push`
 both refuse a journey whose nodes are ambiguous — one id listed under two node
 types, or a page inside a page (which AM refuses) — naming the nodes.
 Every journey diagnostic names an AIC API error by its status and the endpoint
-(`<nodeType>/<id>`, or the tree), never by the response body, which can carry
-a node's config.
+(`<nodeType>/<id>`, the journey's tree, or the list or action called), never
+by the response body, which can carry a node's config. A gateway error's
+`aic logs tx <id>` lookup is `aic`'s own text, not the server's, and is kept,
+retry ids included.
+`using-script` exits non-zero when any read failed (a journey's tree, a node,
+a page or a page entry it could not address): the journeys it did find are
+still printed, but a journey not listed may still use the script. With
+`--json` a complete search prints the usual array; an incomplete one prints
+`{"journeys": [...], "incomplete": true, "unread": ["<journey>: <what>", ...]}`.
 
 `push` writes each node, then the tree, as separate requests. When one fails,
 the error sorts the writes into three groups: those the tenant acknowledged
