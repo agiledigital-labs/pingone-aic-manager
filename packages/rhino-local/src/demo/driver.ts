@@ -126,27 +126,37 @@ class Heap<T> {
 
 /**
  * Poisson arrivals from a rate that is constant within each virtual hour. A gap is at least one
- * nanosecond, so no arrival lands on the instant a stream starts (the handoff instant). Exported
- * for its test only.
+ * nanosecond, so no arrival lands on the instant a stream starts (the handoff instant). A stream
+ * with no end runs for as long as its rate keeps producing arrivals; it ends only after a search of
+ * `IDLE_HORIZON_NS` past its last arrival (or its start) finds no hour with a positive rate, which
+ * is what stops a rate that is zero for ever from spinning. Exported for its test only.
  */
+/** How far a stream searches past its last arrival for an hour with a positive rate. */
+const IDLE_HORIZON_NS = 400n * 24n * HOUR_NS;
+
 export class Arrivals {
   #cursor: bigint;
   readonly #end: bigint | undefined;
   readonly #rng: Rng;
   readonly #rate: (t: bigint) => number;
-  readonly #horizon: bigint;
+  /** Where the current search for a positive-rate hour began: the start, or the last arrival. */
+  #searchFrom: bigint;
 
   constructor(rng: Rng, rate: (t: bigint) => number, start: bigint, end?: bigint) {
     this.#rng = rng;
     this.#rate = rate;
     this.#cursor = start;
     this.#end = end;
-    this.#horizon = start + 400n * 24n * HOUR_NS;
+    this.#searchFrom = start;
   }
 
   next(): bigint | undefined {
     for (;;) {
-      if (this.#cursor >= this.#horizon || (this.#end !== undefined && this.#cursor >= this.#end)) return undefined;
+      if (
+        this.#cursor - this.#searchFrom >= IDLE_HORIZON_NS ||
+        (this.#end !== undefined && this.#cursor >= this.#end)
+      )
+        return undefined;
       const perHour = this.#rate(this.#cursor);
       const hourEnd = (this.#cursor / HOUR_NS + 1n) * HOUR_NS;
       if (!(perHour > 0)) {
@@ -157,6 +167,7 @@ export class Arrivals {
       const at = this.#cursor + gap;
       if (at < hourEnd) {
         this.#cursor = at;
+        this.#searchFrom = at;
         return this.#end !== undefined && at >= this.#end ? undefined : at;
       }
       this.#cursor = hourEnd;

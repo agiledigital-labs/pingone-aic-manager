@@ -62,6 +62,32 @@ describe("handoff", () => {
   });
 });
 
+// Astra review P2-1: the horizon renews with each arrival, so a recurring stream with no end keeps
+// going. Discriminating: a horizon fixed at start + 400 days ended this stream on day 400.
+describe("a stream with no end", () => {
+  it("still yields arrivals past day 400 at a constant rate", () => {
+    const rng = Object.create(Rng.prototype) as Rng;
+    // A half-hour gap from each hour's start: one arrival an hour, at :30.
+    rng.exponential = () => Number(HOUR) / 2;
+    const arrivals = new Arrivals(rng, () => 2, T0);
+    const day = 24n * HOUR;
+    let last: bigint | undefined;
+    for (let i = 0; i < 24 * 410; i++) last = arrivals.next();
+    expect(last).toBeDefined();
+    expect(last! - T0).toBeGreaterThan(405n * day);
+  });
+  it("ends when the rate stays zero for the whole idle horizon", () => {
+    const rng = Object.create(Rng.prototype) as Rng;
+    rng.exponential = () => Number(HOUR) / 2;
+    const day = 24n * HOUR;
+    // Positive for the first day only.
+    const arrivals = new Arrivals(rng, (t) => (t < T0 + day ? 2 : 0), T0);
+    let n = 0;
+    while (arrivals.next() !== undefined) n++;
+    expect(n).toBe(24);
+  });
+});
+
 describe("rates", () => {
   it("follow the daily and weekly curves over a virtual day", async () => {
     const daily = Array<number>(24).fill(1);
