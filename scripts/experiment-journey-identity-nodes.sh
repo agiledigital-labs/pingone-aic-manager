@@ -96,8 +96,6 @@ try:
         rows = idm_user_by_name(fx.name(n))
         log(f"--- IDM after create, userName={fx.name(n)}: {len(rows)} row(s)",
             json.dumps([{k: r.get(k) for k in ('sn',)} for r in rows]))
-        for r in rows:
-            fx.track("user", f"{USERS}/{r['_id']}")
 
     po = {"identityResource": f"managed/{REALM}_user", "patchAsObject": False,
           "ignoredFields": [], "identityAttribute": "userName"}
@@ -112,6 +110,15 @@ try:
         log(f"--- IDM sn after {tag}: {b.get('sn') if isinstance(b, dict) else b}")
 finally:
     log("--- cleanup")
+    # Users the CreateObjectNode cases made carry this run's names. Found here rather than after
+    # the cases, so a case that raises still leaves none behind; a failed lookup must not stop
+    # the AM cleanup below.
+    try:
+        for n in ("c1", "c2", "c3"):
+            for r in idm_user_by_name(fx.name(n)):
+                fx.track("user", f"{USERS}/{r['_id']}")
+    except Exception as e:  # still delete the AM objects
+        log("    created-user lookup failed:", e)
     for line in fx.cleanup():
         log("   ", line)
 PY
