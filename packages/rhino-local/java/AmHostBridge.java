@@ -1108,7 +1108,10 @@ final class AmHostBridge extends BaseFunction {
           .append(new Encoder(cx, "auditEntryDetail value: ", "").write(audit, "").text())
           .append('}');
     } else {
-      out.append(",\"auditEntryDetail\":{\"invalid\":true}");
+      // Only a top-level array was measured rejected; the engine labels the other kinds assumed.
+      out.append(",\"auditEntryDetail\":{\"invalid\":")
+          .append(audit instanceof NativeArray ? "\"array\"" : "\"other\"")
+          .append('}');
     }
     return out.append('}').toString();
   }

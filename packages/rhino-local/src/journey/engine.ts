@@ -853,15 +853,17 @@ export class JourneyEmulator {
         javaMapObjectAttributes: { shared: boolean; transient: boolean };
       };
       errorMessage: string | null;
-      auditEntryDetail?: { value?: JsonValue; invalid?: true };
+      auditEntryDetail?: { value?: JsonValue; invalid?: "array" | "other" };
     };
     // AM fails the tree on an `auditEntryDetail` that is not a string or a map, and writes no node
     // record for it (measured 2026-11-25, docs/api/25-journey-runtime.md).
     if (result.auditEntryDetail?.invalid) {
-      this.measured("an auditEntryDetail that is not a string or a map fails the tree with 401");
-      this.evidence.assumed(
-        "an auditEntryDetail that is a number, a boolean or a Java Map is classified like the measured array (a number or boolean fails the tree, a Java Map is invalid); only a top-level array was measured",
-      );
+      if (result.auditEntryDetail.invalid === "array")
+        this.measured("an auditEntryDetail that is a top-level array fails the tree with 401");
+      else
+        this.evidence.assumed(
+          "an auditEntryDetail that is neither a string, a map nor an array (a number, a boolean, a Java Map) fails the tree with 401 like the measured array; only the array was measured",
+        );
       if (inner) this.missing("inner tree script exception");
       if (log)
         log.treeFailed(

@@ -439,3 +439,31 @@ describe("P3-4 one localized-text rule for Page headers and node messages", () =
     refused(await req(e), name);
   });
 });
+
+describe("review round 1 P3-1: only the array auditEntryDetail is measured", () => {
+  const journey = (assign: string) =>
+    new JourneyEmulator(
+      new JourneyConfig({
+        realm: "alpha",
+        trees: {
+          t: { entryNodeId: "s", nodes: { s: { nodeType: "ScriptedDecisionNode", connections: { true: SUCCESS } } } },
+        },
+        nodes: { ScriptedDecisionNode: { s: { script: "s", outcomes: ["true"] } } },
+        scripts: { s: script(`${assign} action.goTo('true');`) },
+      } as never),
+      runner,
+      idm(),
+    );
+  const kinds = (provenance: readonly { kind: string; behavior: string }[] | undefined) =>
+    (provenance ?? []).filter((p) => p.behavior.includes("auditEntryDetail")).map((p) => p.kind);
+  it("an array is the measured 401", async () => {
+    const r = await req(journey("auditEntryDetail = ['a'];"));
+    expect(r.status).toBe(401);
+    expect(kinds(r.provenance)).toEqual(["measured"]);
+  });
+  it("a number is the same 401, labelled assumed", async () => {
+    const r = await req(journey("auditEntryDetail = 7;"));
+    expect(r.status).toBe(401);
+    expect(kinds(r.provenance)).toEqual(["assumed"]);
+  });
+});
