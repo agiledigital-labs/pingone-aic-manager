@@ -614,12 +614,14 @@ pub const NOTHING_SENT: &str = "**Nothing has been sent.**";
 pub const SECRET_ALREADY_EXISTS: MeasuredRefusal = MeasuredRefusal {
     status: 400,
     message: "Failed to create secret, the secret already exists",
+    appends_id: false,
 };
 
 /// `…/versions/{v}?_action=changestatus` naming the latest version.
 pub const CANNOT_DISABLE_LATEST: MeasuredRefusal = MeasuredRefusal {
     status: 400,
     message: "Cannot disable latest secret version",
+    appends_id: false,
 };
 
 /// A failed rotation write's message: [`WriteFailure::message`] with the
