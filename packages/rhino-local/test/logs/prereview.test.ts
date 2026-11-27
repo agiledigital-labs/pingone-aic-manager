@@ -92,6 +92,33 @@ describe("P2-4 _queryFilter and unknown parameters", () => {
     const unfiltered = await get(r, window({ _pagedResultsCookie: String(cookie), _pageSize: "1" }));
     expect(unfiltered.status).toBe(400);
   });
+  // Review round 10 P2-1: with both bounds omitted the first page resolves the last hour, and the
+  // cookie carries that window. Discriminating: re-resolving it after the clock moves made the
+  // continuation a different query, a 400, and the second match unreachable.
+  it("pages a filtered query with implicit bounds while the clock advances", async () => {
+    const r = await rig();
+    const now = r.clock.now;
+    r.store.emit(record("am-access", now - 20n * SECOND, { transactionId: "match" }));
+    r.store.emit(record("am-access", now - 15n * SECOND, { transactionId: "other" }));
+    r.store.emit(record("am-access", now - 10n * SECOND, { transactionId: "match" }));
+    const query = { source: "am-access", _queryFilter: 'payload/transactionId eq "match"', _pageSize: "1" };
+    const first = await get(r, query);
+    expect(first.status).toBe(200);
+    expect(first.body.result.map((x) => x.timestamp)).toEqual([formatRfc3339Ns(now - 20n * SECOND)]);
+    r.clock.now += SECOND;
+    const next = await get(r, { ...query, _pagedResultsCookie: String(first.body.pagedResultsCookie) });
+    expect(next.status).toBe(200);
+    expect(next.body.result.map((x) => x.timestamp)).toEqual([formatRfc3339Ns(now - 10n * SECOND)]);
+    expect(next.body.pagedResultsCookie).toBeNull();
+    // The cookie still belongs to its query: an explicit bound it was not issued with is a 400.
+    const bounded = await get(r, {
+      ...query,
+      beginTime: formatRfc3339Ns(now - 3600n * SECOND),
+      endTime: formatRfc3339Ns(now),
+      _pagedResultsCookie: String(first.body.pagedResultsCookie),
+    });
+    expect(bounded.status).toBe(400);
+  });
   it.each([
     ['payload/eventName eq "x"'],
     ['payload/transactionId sw "keep"'],

@@ -2560,8 +2560,10 @@ rate}`; now is `virtual_origin + (real now - real_origin) * rate`, read once at
   actually served (`min(endTime, now)` at the first page), the highest record
   sequence that existed then, and the position after the last record returned.
   A retried cookie therefore returns the same page even if records have since
-  arrived inside the window; a fresh query sees them. A cookie presented with a
-  different query is a 400.
+  arrived inside the window; a fresh query sees them. It also carries the window
+  the first page resolved, so with bounds omitted a continuation pages that same
+  last hour after the clock moves. A cookie presented with a different query (other
+  sources, filter, or explicit bounds) is a 400.
 - **Sources.** Comma-separated; `am-everything` / `idm-everything` expand to every
   `am-*` / `idm-*` stream (the doc does not say what the aggregates cover beyond
   "catch-all roll-ups", so all of them, `*-core` included). Each record keeps its

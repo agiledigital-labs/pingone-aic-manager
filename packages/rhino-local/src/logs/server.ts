@@ -86,7 +86,7 @@ function encodeCookie(query: CookieQuery, snapshot: Snapshot): string {
   if (snapshot.after === null) throw new Error("a cookie names a position");
   return Buffer.from(
     JSON.stringify({
-      v: 1,
+      v: 2,
       q: query,
       e: snapshot.effectiveEndNs.toString(),
       h: snapshot.highSeq.toString(),
@@ -96,8 +96,16 @@ function encodeCookie(query: CookieQuery, snapshot: Snapshot): string {
   ).toString("base64url");
 }
 
+/**
+ * What a cookie belongs to. `beginGiven`/`endGiven` are the caller's explicit bounds (null when
+ * omitted), which a continuation must repeat; `begin`/`end` are the window the first page resolved,
+ * which a continuation reuses rather than re-resolving, so implicit bounds do not move with the
+ * clock between pages (the emulator's own snapshot paging contract; tenant behaviour unmeasured).
+ */
 type CookieQuery = {
   sources: string;
+  beginGiven: string | null;
+  endGiven: string | null;
   begin: string;
   end: string;
   tx: string | null;
@@ -161,7 +169,10 @@ function filteredTransaction(filter: string, sources: readonly string[]): string
   return id;
 }
 
-function decodeCookie(cookie: string, expected: CookieQuery): Snapshot {
+function decodeCookie(
+  cookie: string,
+  expected: Omit<CookieQuery, "begin" | "end">,
+): { snapshot: Snapshot; beginNs: bigint; endNs: bigint } {
   const bad = new HttpError(400, "Invalid _pagedResultsCookie");
   let value: unknown;
   try {
@@ -173,11 +184,11 @@ function decodeCookie(cookie: string, expected: CookieQuery): Snapshot {
   const v = value as Record<string, unknown>;
   const q = v["q"] as Partial<CookieQuery> | undefined;
   if (
-    v["v"] !== 1 ||
+    v["v"] !== 2 ||
     q === undefined ||
     q.sources !== expected.sources ||
-    q.begin !== expected.begin ||
-    q.end !== expected.end ||
+    q.beginGiven !== expected.beginGiven ||
+    q.endGiven !== expected.endGiven ||
     q.tx !== expected.tx ||
     (q.eq ?? null) !== expected.eq
   ) {
@@ -185,9 +196,13 @@ function decodeCookie(cookie: string, expected: CookieQuery): Snapshot {
   }
   try {
     return {
-      effectiveEndNs: BigInt(v["e"] as string),
-      highSeq: BigInt(v["h"] as string),
-      after: { ts: BigInt(v["t"] as string), seq: BigInt(v["s"] as string) },
+      snapshot: {
+        effectiveEndNs: BigInt(v["e"] as string),
+        highSeq: BigInt(v["h"] as string),
+        after: { ts: BigInt(v["t"] as string), seq: BigInt(v["s"] as string) },
+      },
+      beginNs: BigInt(q.begin as string),
+      endNs: BigInt(q.end as string),
     };
   } catch {
     throw bad;
@@ -318,9 +333,11 @@ export async function startLogsServer(options: LogsServerOptions): Promise<LogsS
         throw new HttpError(400, `${name} must be an RFC 3339 timestamp`);
       }
     };
+    const endGiven = endText === undefined ? null : parse("endTime", endText);
+    const beginGiven = beginText === undefined ? null : parse("beginTime", beginText);
     // Unrecorded on the tenant: with neither bound, serve the last hour up to now.
-    const endNs = endText === undefined ? clock.nowNs() : parse("endTime", endText);
-    const beginNs = beginText === undefined ? endNs - 3600n * 1_000_000_000n : parse("beginTime", beginText);
+    let endNs = endGiven ?? clock.nowNs();
+    let beginNs = beginGiven ?? endNs - 3600n * 1_000_000_000n;
     if (endNs - beginNs > DAY_NS) {
       const days = (Number(endNs - beginNs) / Number(DAY_NS)).toFixed(2);
       throw new HttpError(
@@ -336,14 +353,19 @@ export async function startLogsServer(options: LogsServerOptions): Promise<LogsS
       throw new HttpError(501, "Not modelled by the emulator: transactionId together with _queryFilter");
     }
     const equals = filterText === undefined ? undefined : filteredTransaction(filterText, requested);
-    const cookieQuery: CookieQuery = {
+    const asked = {
       sources: [...sources].sort().join(","),
-      begin: beginNs.toString(),
-      end: endNs.toString(),
+      beginGiven: beginGiven === null ? null : beginGiven.toString(),
+      endGiven: endGiven === null ? null : endGiven.toString(),
       tx: transactionId ?? null,
       eq: equals ?? null,
     };
-    const snapshot = cookie === null ? undefined : decodeCookie(cookie, cookieQuery);
+    let snapshot: Snapshot | undefined;
+    if (cookie !== null) {
+      // A continuation pages the window its first page resolved, whatever the clock says now.
+      ({ snapshot, beginNs, endNs } = decodeCookie(cookie, asked));
+    }
+    const cookieQuery: CookieQuery = { ...asked, begin: beginNs.toString(), end: endNs.toString() };
     const page = store.page({
       sources,
       beginNs,

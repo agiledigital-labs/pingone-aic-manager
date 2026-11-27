@@ -22,7 +22,7 @@ function make(input: JourneyConfigInput) {
     new JourneyConfig(input),
     runner,
     new IdmEmulator(new IdmConfig({ sync: { mappings: [] }, managed: { objects: [] } }), runner),
-    {},
+    { now: () => BigInt(EPOCH_S) * 1_000_000_000n },
   );
 }
 const run = (emu: JourneyEmulator, tree: string, body: JsonValue = {}) =>
@@ -115,7 +115,10 @@ const dumps = {
   dT: { nodeType: "ScriptedDecisionNode", connections: { true: SUCCESS } },
   dF: { nodeType: "ScriptedDecisionNode", connections: { true: SUCCESS } },
 };
-const SEED = `nodeState.putShared('oneTimePassword','123456');nodeState.putShared('oneTimePasswordTimestamp',Math.floor(new Date().getTime()/1000));action.goTo('true');`;
+// Review round 10 P2-2: a fixed epoch second, with the same instant as the emulator's clock. Read
+// from each JVM's wall clock, the seed differed across the paired lanes on a second boundary.
+const EPOCH_S = 1_795_000_000;
+const SEED = `nodeState.putShared('oneTimePassword','123456');nodeState.putShared('oneTimePasswordTimestamp',${EPOCH_S});action.goTo('true');`;
 const SCRIPTS = { seed: SEED, dA: dumpOf("alpha"), dB: dumpOf("beta"), dG: dumpOf("gamma"), dT: dumpOf("T"), dF: dumpOf("F"), outer: OUTER, inner: INNER, check: CHECK, mid: MID };
 
 describe("a Page inside an inner tree (doc 25, 2026-11-25)", () => {

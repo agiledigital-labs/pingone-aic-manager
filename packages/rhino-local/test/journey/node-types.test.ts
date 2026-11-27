@@ -933,12 +933,15 @@ it("ValidatedUsernameNode with validation is missing unless its outcome is decla
   expect(dump((await request(declared)).body).branch).toBe("outcome");
 });
 
-// OneTimePasswordCollectorDecisionNode.
+// OneTimePasswordCollectorDecisionNode. The seed's timestamp is a fixed epoch second and the
+// emulator's clock (OTP_NOW) the same instant, so the paired JVM lanes seed identical state.
+const OTP_EPOCH_S = 1_795_000_000;
+const OTP_NOW = { now: () => BigInt(OTP_EPOCH_S) * 1_000_000_000n };
 const otpSeed = (otp: string | null, agoSeconds: number | null) =>
   (otp === null ? "" : `nodeState.putShared('oneTimePassword','${otp}');`) +
   (agoSeconds === null
     ? ""
-    : `nodeState.putShared('oneTimePasswordTimestamp',Math.floor(new Date().getTime()/1000)-${agoSeconds});`);
+    : `nodeState.putShared('oneTimePasswordTimestamp',${OTP_EPOCH_S - agoSeconds});`);
 it.each([
   ["the right password", "123456", 10, "123456", "true"],
   ["a wrong password", "123456", 10, "654321", "false"],
@@ -954,6 +957,7 @@ it.each([
       "true",
       "false",
     ]),
+    OTP_NOW,
   );
   const first = await request(emu);
   expect(wire(first.body)).toEqual([
@@ -972,6 +976,7 @@ it("OneTimePasswordCollectorDecisionNode re-sends on an empty answer and honours
       "true",
       "false",
     ]),
+    OTP_NOW,
   );
   const first = await request(emu);
   const empty = await request(emu, answerWith(first.body, ""));
