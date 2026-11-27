@@ -213,8 +213,8 @@ deleted, deletion confirmed by a `GET`). Outer tree: script, then `InnerTreeEval
 | Empty answers in an inner page | The whole page is sent again with its `header`/`description`; a later answer continues | — |
 | The inner tree ends by its failure node after the page | The outer evaluator takes `false` (the `false` dump ran) | — |
 | Two deep (outer, middle evaluator, innermost page) | The page's callbacks are the first response; its answer resumes in the innermost tree; its shared writes are visible to the middle tree's script and the outer dump | — |
-| `stage` | A page's non-empty `stage` is a top-level string beside `callbacks`, repeated when the page is re-sent; `stage: ""` and no `stage` send none (outer pages, same run) | Three pages differing only in `stage` |
-| Callback `_id` and `pageNodeCallbacks` | Every callback the journey sends carries a top-level numeric `_id`, counting up across the whole journey (`0`, `1`, then `2`, `3` on a re-send; `0` then `1` on a revisit). Shared `pageNodeCallbacks` is a **map of callback `_id` to child index** (`{ "0": 0, "1": 1 }`) that **accumulates** one entry per callback of every visit to a page, a re-sent or revisited one included (`{ "0": 0, "1": 1, "2": 0, "3": 1 }` after a re-send). The emulator models both: `_id` counts across the journey, and a `pageNodeCallbacks` that is not a map is `missing` | — |
+| `stage` | A page's non-empty `stage` is a top-level string beside `callbacks`, repeated when the page is re-sent; `stage: ""` and no `stage` send none (outer pages, same run) | Three pages differing only in `stage`. **Unrecorded**: the committed probe sets `stage` only on the inner page of case A and the outer page of case B; the empty and absent controls came from an uncommitted run |
+| Callback `_id` and `pageNodeCallbacks` | **`_id` is unrecorded by the committed probe**: `scripts/experiment_journey_lib.py`'s callback view (`cbs`) drops it, so the numbering below came from an uncommitted run. The `pageNodeCallbacks` value is in the probe's dump, which every case runs and which prints it with `String()`. Every callback the journey sends carries a top-level numeric `_id`, counting up across the whole journey (`0`, `1`, then `2`, `3` on a re-send; `0` then `1` on a revisit). Shared `pageNodeCallbacks` is a **map of callback `_id` to child index** (`{ "0": 0, "1": 1 }`) that **accumulates** one entry per callback of every visit to a page, a re-sent or revisited one included (`{ "0": 0, "1": 1, "2": 0, "3": 1 }` after a re-send). The emulator models both: `_id` counts across the journey, and a `pageNodeCallbacks` that is not a map is `missing` | — |
 
 ## Identify Existing User
 
@@ -765,7 +765,9 @@ empty answer re-sends it. The right password within `passwordExpiryTime`
 minutes is `true`. A wrong one, one with leading zeros dropped, an expired one,
 a missing OTP or a missing timestamp are `false`. 290 s old in a 5 minute
 window is `true`, 400 s `false`, 90 s in a 1 minute window `false`, expiry 0
-`false`. The exact boundary and whether the OTP is consumed are unmeasured.
+`false`. The exact boundary is unmeasured; a `true` answer **removes** shared
+`oneTimePassword` and `oneTimePasswordTimestamp` (measured as a Page child, see
+"One Time Password Collector Decision and Choice Collector as Page children").
 
 ### Persistent Cookie Decision (2026-11-25)
 
@@ -925,7 +927,8 @@ one; the collectors' merge over keys an earlier node wrote is assumed.
 ## Nodes as Page children (2026-11-25)
 
 Measured on the sandbox with `scripts/experiment-journey-page-children.sh`, each node run standalone and as a
-`PageNode` child alone, after a `UsernameCollectorNode` and before one.
+`PageNode` child alone and after a `UsernameCollectorNode`. Before one, the probe only `PUT`s the page config
+(the page rule below); no journey runs through it.
 
 | Node | Callbacks as a child | Answer | State written |
 | ---- | -------------------- | ------ | ------------- |
@@ -947,8 +950,10 @@ Measured on the sandbox with `scripts/experiment-journey-page-children.sh`, each
   non-last.
 - Two `NameCallback` children: `username` is the later child's answer;
   `objectAttributes.userName` is written only by `ValidatedUsernameNode`.
-- A page whose only children are display nodes (`MessageNode`,
-  `GetAuthenticatorAppNode`) leaves no `pageNodeCallbacks` in shared state.
+- A page whose **only** child is a display node (`MessageNode` or
+  `GetAuthenticatorAppNode`) leaves no `pageNodeCallbacks` in shared state. A
+  page of several display children was not tried; the emulator applies the rule
+  to a lone child only.
 - Where `pageNodeCallbacks` exists the tenant's value is a map of callback `_id`
   to child index (`{ "0": 0, "1": 1 }`), and the emulator stores that map.
 - Not modelled, loud `missing`: `ValidatedUsernameNode` with `validateInput:
@@ -970,7 +975,9 @@ Measured with `scripts/experiment-journey-page-choice-otp.sh`, each node alone a
 
 Standalone and as a child the behaviour is the same. `pageNodeCallbacks` is the `{ "0": 0, "1": 1 }` map of
 callback to child as above when a username child sits beside them; a page whose **only** child is one of these two
-leaves no `pageNodeCallbacks` at all, as a lone display node does. Both types were previously refused as page
+leaves no `pageNodeCallbacks` at all, as a lone display node does. The probe stops at the first answer, so a lone
+child **re-sent** (an empty one-time password) is unmeasured; the emulator keeps omitting the map there and tags
+that assumed. Both types were previously refused as page
 children.
 
 ## DataStoreDecisionNode and accountStatus (2026-11-25)
@@ -1063,7 +1070,9 @@ reporting `typeof properties.<name>`:
 So the wrapper names the property's type (`$bool`, `$int`, `$string`) and a
 bare placeholder is only legal in a STRING property. The emulator reads all
 three wrappers in a custom node's properties and in the built-in nodes it
-emulates, from `JourneyOptions.esv`; a bare placeholder in a BOOLEAN or NUMBER
+emulates, from `JourneyOptions.esv`, with one exception: a One Time Password
+Generator `length` as `{"$int": "&{esv.…}"}` is refused when the config loads,
+as not modelled (whether the tenant accepts it is unmeasured); a bare placeholder in a BOOLEAN or NUMBER
 property, and a property holding another type than it declares, are `missing`.
 
 ## Not yet measured
@@ -1085,7 +1094,8 @@ None of these was exercised; do not build on them as measured:
   Conditions, Captcha, a one-time-password collector or a choice collector; an inner Page after a rejection by a non-collector child.
 - Replaying the `authId` of a step that led to **success** (whether a second
   session is minted).
-- Polling Wait, Email Suspend and other node types not named above or in
+- Polling Wait's runtime behaviour (its outcome vocabulary is in "Stub node
+  vocabularies"), Email Suspend and other node types not named above or in
   "Built-in node types" (Message and Choice are measured there).
 - Any of the nodes in "Built-in node types" inside a Page (except those in
   "Nodes as Page children"), inside an inner tree, or with a configuration
