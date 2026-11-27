@@ -634,7 +634,7 @@ fn script_search_refs(tree: &Value) -> Vec<(String, String)> {
                 .iter()
                 .filter_map(|(id, meta)| {
                     let node_type = meta.get("nodeType").and_then(Value::as_str)?;
-                    (node_type.contains("Script") || node_type == "PageNode")
+                    (may_reference_script(node_type) || node_type == "PageNode")
                         .then(|| (id.clone(), node_type.to_string()))
                 })
                 .collect()
@@ -657,7 +657,7 @@ where
     while let Some((node_id, node_type)) = queue.pop() {
         match read(node_type.clone(), node_id.clone()).await {
             Ok(config) => {
-                if node_config_references_script(&node_type, &config, script_id) {
+                if node_config_references_script(&config, script_id) {
                     return true;
                 }
                 // Lenient: a read-only search warns about each entry it
@@ -673,7 +673,7 @@ where
                             children
                                 .into_iter()
                                 .filter(|child| {
-                                    child.node_type.contains("Script")
+                                    may_reference_script(&child.node_type)
                                         && seen.insert(child.id.clone())
                                 })
                                 .map(|child| (child.id, child.node_type)),
@@ -692,14 +692,39 @@ where
     false
 }
 
-fn node_config_references_script(node_type: &str, config: &Value, script_id: &str) -> bool {
-    node_type.contains("Script")
-        && ["script", "scriptId"].iter().any(|field| {
-            config
-                .get(*field)
-                .and_then(Value::as_str)
-                .is_some_and(|candidate| candidate == script_id)
-        })
+/// The node types whose config is documented to hold a script id in
+/// `script`, so worth one read each when searching for a script:
+/// `ScriptedDecisionNode`, `DeviceMatchNode` (`script`, used when
+/// `useScript`; `docs/api/09-journeys.md`) and `ConfigProviderNode`
+/// (`docs/api/12-script-bindings-matrix.md`). The list is the filter, because
+/// reading every node of every journey to find out costs a read per node.
+const SCRIPT_NODE_TYPES: &[&str] = &[
+    "ScriptedDecisionNode",
+    "DeviceMatchNode",
+    "ConfigProviderNode",
+];
+
+/// Whether a node of `node_type` is read during a script search: a listed
+/// type, or any other type whose name says it is scripted (`*ScriptedNode`,
+/// `ClientScriptNode`, …) — a fallback for types the list does not know, kept
+/// so the list cannot narrow what the search found before it. Whether the
+/// node *uses* the script is decided by its config alone
+/// ([`node_config_references_script`]), never by its name.
+fn may_reference_script(node_type: &str) -> bool {
+    SCRIPT_NODE_TYPES.contains(&node_type) || node_type.contains("Script")
+}
+
+/// Whether a node config names `script_id` in a top-level `script` or
+/// `scriptId`, whatever the node's type. A `DeviceMatchNode` counts even with
+/// `useScript: false`: it still holds the reference, and the search exists to
+/// say what deleting the script could break.
+fn node_config_references_script(config: &Value, script_id: &str) -> bool {
+    ["script", "scriptId"].iter().any(|field| {
+        config
+            .get(*field)
+            .and_then(Value::as_str)
+            .is_some_and(|candidate| candidate == script_id)
+    })
 }
 
 pub async fn run(cmd: JourneyCommand) -> Result<()> {
@@ -1609,25 +1634,59 @@ mod tests {
     #[test]
     fn scripted_node_matcher_checks_script_fields() {
         assert!(node_config_references_script(
-            "ScriptedDecisionNode",
             &json!({"script": "script-a"}),
             "script-a"
         ));
         assert!(node_config_references_script(
-            "ScriptedDecisionNode",
             &json!({"scriptId": "script-a"}),
             "script-a"
         ));
         assert!(!node_config_references_script(
-            "ScriptedDecisionNode",
             &json!({"script": "script-b"}),
             "script-a"
         ));
-        assert!(!node_config_references_script(
-            "PageNode",
-            &json!({"script": "script-a"}),
-            "script-a"
-        ));
+        assert!(!node_config_references_script(&json!({}), "script-a"));
+    }
+
+    /// Regression (review round 5 P1-4): the search read only nodes whose
+    /// type name contains `Script`, so a `DeviceMatchNode` — documented to
+    /// hold its script in `script` — was never read and a journey using the
+    /// script through one was not found. The discriminating input is that
+    /// node, listed by the tree and, separately, by a page. The control is a
+    /// `SetSuccessUrlNode` that is never read.
+    #[tokio::test]
+    async fn a_device_match_node_using_the_script_is_found() {
+        for in_page in [false, true] {
+            let tree = if in_page {
+                json!({"nodes": {"page": {"nodeType": "PageNode"}, "plain": {"nodeType": "SetSuccessUrlNode"}}})
+            } else {
+                json!({"nodes": {"device": {"nodeType": "DeviceMatchNode"}, "plain": {"nodeType": "SetSuccessUrlNode"}}})
+            };
+            let reads = std::cell::RefCell::new(Vec::new());
+            let found = journey_uses_script_with(&tree, "used", |node_type, id| {
+                reads.borrow_mut().push(format!("{node_type}/{id}"));
+                async move {
+                    Ok(match id.as_str() {
+                        "page" => {
+                            json!({"nodes": [{"_id": "device", "nodeType": "DeviceMatchNode"}]})
+                        }
+                        "device" => json!({"useScript": true, "script": "used"}),
+                        _ => json!({}),
+                    })
+                }
+            })
+            .await;
+            assert!(found, "in_page={in_page}");
+            let reads = reads.into_inner();
+            assert!(
+                reads.contains(&"DeviceMatchNode/device".to_string()),
+                "{reads:?}"
+            );
+            assert!(
+                !reads.iter().any(|read| read.contains("plain")),
+                "{reads:?}"
+            );
+        }
     }
 
     /// `--force=reuse` alone overrides the reuse refusal; bare `--force`

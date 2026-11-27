@@ -164,7 +164,8 @@ pub fn reference_problems(copy: &Value) -> Vec<String> {
 }
 
 /// The parts that differ between two copies: the tree, then each node whose
-/// config differs or exists on one side only, in id order.
+/// config differs, whose type differs (a retype writes another endpoint even
+/// with the same config), or which exists on one side only, in id order.
 ///
 /// A node's **type** comes from the first of `left`, `right` that lists it —
 /// so the caller puts the side whose change is being described first: a
@@ -192,12 +193,24 @@ pub fn changed_parts(left: &Value, right: &Value, current: Option<&Value>) -> Ve
     };
     let (a, b) = (nodes(left), nodes(right));
     let named: Vec<NodeRef> = [left, right].into_iter().flat_map(refs).collect();
+    // Each side's type for an id: a retype changes the endpoint a node is
+    // written to even when its config is byte-identical, so it is a change.
+    let types = |copy: &Value| -> std::collections::HashMap<String, String> {
+        refs(copy)
+            .into_iter()
+            .map(|node| (node.id, node.node_type))
+            .collect()
+    };
+    let (left_types, right_types) = (types(left), types(right));
     let placed: Vec<NodeRef> = current.into_iter().flat_map(refs).collect();
     let ids: BTreeSet<&String> = a.keys().chain(b.keys()).collect();
     for id in ids {
         let same = match (a.get(id), b.get(id)) {
             (Some(x), Some(y)) => content_equal(x, y),
             _ => false,
+        } && match (left_types.get(id), right_types.get(id)) {
+            (Some(x), Some(y)) => x == y,
+            _ => true,
         };
         if !same {
             let of = |copies: &'_ [NodeRef]| {

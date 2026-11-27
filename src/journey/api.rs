@@ -129,7 +129,10 @@ pub async fn list_trees(tenant: &str, realm: &str) -> Result<Vec<String>> {
         .and_then(Value::as_array)
         .ok_or_else(|| Error::Api {
             status: 0,
-            body: format!("unexpected journey list shape: {body}"),
+            body: format!(
+                "unexpected journey list shape: `result` is {}",
+                shape(body.get("result"))
+            ),
         })?;
 
     let mut names: Vec<String> = result
@@ -143,7 +146,42 @@ pub async fn list_trees(tenant: &str, realm: &str) -> Result<Vec<String>> {
 
 pub async fn read_tree(tenant: &str, realm: &str, name: &str) -> Result<Value> {
     let path = format!("{}/trees/{name}", trees_path(realm));
-    crate::aic::api::get_versioned(tenant, &path, API_VERSION).await
+    crate::aic::api::get_versioned(tenant, &path, API_VERSION)
+        .await
+        .map_err(withheld)
+}
+
+/// What replaces an AIC error body in every journey diagnostic.
+const BODY_WITHHELD: &str = "(response body withheld: it can carry a node's config)";
+
+/// An AIC HTTP error with its response body withheld, status kept.
+///
+/// An error body can echo the config of the node it concerns, secrets
+/// included, and journey errors reach stderr, `status` problems and the
+/// partial-push report — none of which pass through `diff`'s masking. So a
+/// journey read surfaces the status and the endpoint (its caller names that)
+/// and never the body. Status `0` is not HTTP: it is this module's own shape
+/// message, already free of values ([`shape`]), and is kept. Writes keep the
+/// raw error, because the measured-refusal match needs the body; they render
+/// it through [`withheld_message`].
+pub(crate) fn withheld(error: Error) -> Error {
+    match error {
+        Error::Api { status, .. } if status != 0 => Error::Api {
+            status,
+            body: BODY_WITHHELD.into(),
+        },
+        other => other,
+    }
+}
+
+/// [`withheld`], for rendering an error that is kept raw.
+fn withheld_message(error: &Error) -> String {
+    match error {
+        Error::Api { status, .. } if *status != 0 => {
+            format!("AIC API error: {status} {BODY_WITHHELD}")
+        }
+        other => other.to_string(),
+    }
 }
 
 pub async fn upsert_tree(
@@ -163,7 +201,9 @@ pub async fn upsert_tree(
 pub async fn read_node(tenant: &str, realm: &str, node_type: &str, node_id: &str) -> Result<Value> {
     validate_node_type(node_type)?;
     let path = format!("{}/{node_type}/{node_id}", nodes_path(realm));
-    crate::aic::api::get_versioned(tenant, &path, API_VERSION).await
+    crate::aic::api::get_versioned(tenant, &path, API_VERSION)
+        .await
+        .map_err(withheld)
 }
 
 pub async fn upsert_node(
@@ -203,7 +243,10 @@ pub async fn list_node_types(tenant: &str, realm: &str) -> Result<Vec<NodeType>>
         .and_then(Value::as_array)
         .ok_or_else(|| Error::Api {
             status: 0,
-            body: format!("unexpected journey node type list shape: {body}"),
+            body: format!(
+                "unexpected journey node type list shape: `result` is {}",
+                shape(body.get("result"))
+            ),
         })?;
     Ok(parse_node_types(result))
 }
@@ -228,7 +271,10 @@ pub async fn list_custom_node_types(tenant: &str) -> Result<Vec<Value>> {
         .and_then(Value::as_array)
         .ok_or_else(|| Error::Api {
             status: 0,
-            body: format!("unexpected custom journey node type list shape: {body}"),
+            body: format!(
+                "unexpected custom journey node type list shape: `result` is {}",
+                shape(body.get("result"))
+            ),
         })?;
     Ok(result.clone())
 }
@@ -773,7 +819,12 @@ impl std::fmt::Display for PushError {
                 "may have landed: whether it was applied is unknown, so do not assume it was not"
             }
         };
-        write!(f, "{} {outcome}: {}", self.stopped_at, self.source)?;
+        write!(
+            f,
+            "{} {outcome}: {}",
+            self.stopped_at,
+            withheld_message(&self.source)
+        )?;
         let list = |writes: &[String]| {
             if writes.is_empty() {
                 "none".to_string()
@@ -1436,6 +1487,11 @@ mod tests {
             message.contains("reads what the tenant's current tree and pages reference; run it"),
             "{message}"
         );
+        // Round 5 P2-1: neither discredited prediction about what status
+        // will show may come back, even appended to the right advice.
+        for wrong in ["will not show", "does not show"] {
+            assert!(!message.contains(wrong), "{wrong}: {message}");
+        }
     }
 
     /// Regression (review round 2 P2-1): an id the tree and a page both list

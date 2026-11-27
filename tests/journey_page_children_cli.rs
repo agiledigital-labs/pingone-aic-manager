@@ -54,8 +54,10 @@ impl Project {
         .unwrap();
     }
 
-    /// The snapshot's and the export's bytes, so an assertion that they are
-    /// untouched cannot be satisfied by a rewrite of the same JSON.
+    /// The snapshot's and the export's bytes. Comparing them proves the
+    /// contents are unchanged byte for byte — a reformatted or reordered
+    /// rewrite fails — but not that the files were never rewritten: writing
+    /// back the identical bytes passes.
     fn files(&self) -> (Vec<u8>, Vec<u8>) {
         let read = |path: PathBuf| std::fs::read(path).unwrap();
         (
@@ -120,6 +122,8 @@ struct Tenant {
     fail_put: Option<(&'static str, Value, bool)>,
     /// Other journeys' trees, by name, for the realm listing.
     others: Map<String, Value>,
+    /// A node id whose GET answers with this agent reply instead.
+    fail_get: Option<(&'static str, Value)>,
     calls: Vec<(String, String)>,
 }
 
@@ -129,6 +133,7 @@ impl Tenant {
             state,
             fail_put: None,
             others: Map::new(),
+            fail_get: None,
             calls: Vec::new(),
         }
     }
@@ -150,7 +155,10 @@ impl Tenant {
             }
             ("GET", ["", "trees", "Login"]) => found(Some(&self.state["tree"])),
             ("GET", ["", "trees", name]) => found(self.others.get(*name)),
-            ("GET", ["", "nodes", _, id]) => found(self.state["nodes"].get(*id)),
+            ("GET", ["", "nodes", _, id]) => match &self.fail_get {
+                Some((failing, reply)) if failing == id => reply.clone(),
+                _ => found(self.state["nodes"].get(*id)),
+            },
             ("PUT", ["", kind @ ("nodes" | "trees"), .., id]) => {
                 let failure = self.fail_put.clone().filter(|(failing, ..)| failing == id);
                 if let Some((_, reply, false)) = failure {
@@ -473,6 +481,9 @@ fn journey_push_with_a_lost_tree_reply_reports_every_node_acknowledged() {
     ] {
         assert!(stderr.contains(expected), "{expected}: {stderr}");
     }
+    for wrong in ["will not show", "does not show"] {
+        assert!(!stderr.contains(wrong), "{wrong}: {stderr}");
+    }
     assert_eq!(tenant.state["tree"]["description"], "v2", "the tree landed");
     assert_eq!(project.files(), before);
 
@@ -648,4 +659,91 @@ fn journey_status_names_a_local_retype_by_the_local_type() {
         .clone();
     assert_eq!(user["node_type"], "PasswordCollectorNode", "{user}");
     assert_eq!(user["page"], "page", "{user}");
+}
+
+/// Regression (review round 5 P1-1): an AIC error body can echo the config of
+/// the node it concerns, and journey printed it whole — in `status`
+/// problems, on `diff` stderr and in the partial-push report — past `diff`'s
+/// masking. The discriminating input is a synthetic secret inside the error
+/// body of a child's GET (status, diff) and of a child's PUT (push). Each run
+/// must still name the status and the endpoint.
+#[test]
+fn journey_diagnostics_never_print_an_error_body() {
+    const SECRET: &str = "SYNTHETIC-ERROR-SECRET-91c2";
+    let error = json!({
+        "type": "api_error",
+        "status": 500,
+        "body": format!(r#"{{"detail":{{"config":{{"secretKey":"{SECRET}"}}}}}}"#),
+    });
+    let cases: [(&str, &[&str], bool); 3] = [
+        ("status", &["status", "Login", "--json"], false),
+        (
+            "diff",
+            &["diff", "Login", "--snapshot-vs-remote", "--json"],
+            false,
+        ),
+        ("push", &["push", "Login", "--yes"], true),
+    ];
+    for (case, args, put) in cases {
+        let project = Project::new();
+        project.write_snapshot(&journey());
+        let mut local = journey();
+        local["nodes"]["user"]["validateInput"] = json!(true);
+        project.write_export(&local);
+        let mut tenant = Tenant::new(journey());
+        if put {
+            tenant.fail_put = Some(("user", error.clone(), false));
+        } else {
+            tenant.fail_get = Some(("user", error.clone()));
+        }
+        let (output, _) = project.journey(tenant, args);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(!stdout.contains(SECRET), "{case} stdout: {stdout}");
+        assert!(!stderr.contains(SECRET), "{case} stderr: {stderr}");
+        let both = format!("{stdout}{stderr}");
+        assert!(
+            both.contains("UsernameCollectorNode/user") && both.contains("500"),
+            "{case}: status and endpoint are still named: {both}"
+        );
+    }
+}
+
+/// Regression (review round 5 P1-3): a retype with a byte-identical config
+/// produced no node part, because a part was only made for a config that
+/// differs — yet the push writes a different endpoint. Locally the page's
+/// `user` is relisted as a `PasswordCollectorNode` with its config
+/// untouched; `status` and `diff` must both list `user` under the new type.
+#[test]
+fn journey_status_and_diff_list_a_type_only_retype() {
+    let project = Project::new();
+    project.write_snapshot(&journey());
+    let mut local = journey();
+    local["nodes"]["page"]["nodes"][0]["nodeType"] = json!("PasswordCollectorNode");
+    project.write_export(&local);
+    let user_part = |parts: &Value| {
+        parts
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|part| part["id"] == "user")
+            .cloned()
+            .unwrap_or_else(|| panic!("no user part: {parts}"))
+    };
+
+    let (output, tenant) = project.journey(Tenant::new(journey()), &["status", "Login", "--json"]);
+    let stdout: Value = serde_json::from_slice(&output.stdout)
+        .unwrap_or_else(|error| panic!("{error}: {}", String::from_utf8_lossy(&output.stderr)));
+    let user = user_part(&stdout["journeys"][0]["local_changes"]);
+    assert_eq!(user["node_type"], "PasswordCollectorNode", "{user}");
+
+    let (output, _) = project.journey(tenant, &["diff", "Login", "--local-vs-snapshot", "--json"]);
+    let stdout: Value = serde_json::from_slice(&output.stdout)
+        .unwrap_or_else(|error| panic!("{error}: {}", String::from_utf8_lossy(&output.stderr)));
+    let parts = stdout
+        .get("parts")
+        .or_else(|| stdout.get("changes"))
+        .unwrap_or_else(|| panic!("{stdout}"));
+    let user = user_part(parts);
+    assert_eq!(user["node_type"], "PasswordCollectorNode", "{user}");
 }
