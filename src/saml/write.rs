@@ -93,6 +93,33 @@ pub struct MeasuredRefusal {
     pub message: &'static str,
 }
 
+impl MeasuredRefusal {
+    /// Whether an answer of `status` with `body` is this refusal.
+    ///
+    /// The diagnostic is read **only from the body's top-level `message`
+    /// field**, where AM and the ESV API put it, and must be the whole of it
+    /// or its head followed by `": "` (AM appends the offending value, as in
+    /// `Invalid config: Node does not exist: <id>`). Searching the whole body
+    /// would let a 400 that says something else, with the phrase in another
+    /// field, classify a write that may have landed as refused. A body that
+    /// is not a JSON object with a string `message` matches nothing.
+    pub fn matches(&self, status: u16, body: &str) -> bool {
+        if status != self.status {
+            return false;
+        }
+        let Ok(serde_json::Value::Object(fields)) = serde_json::from_str(body) else {
+            return false;
+        };
+        let Some(message) = fields.get("message").and_then(serde_json::Value::as_str) else {
+            return false;
+        };
+        message == self.message
+            || message
+                .strip_prefix(self.message)
+                .is_some_and(|rest| rest.starts_with(": "))
+    }
+}
+
 /// A failed tenant write and what is known about it ([`WriteStatus`]).
 ///
 /// There is deliberately no `From<Error>`: every `?` on a writer's path has
@@ -126,7 +153,7 @@ impl WriteFailure {
             Error::Api { status, body }
                 if measured
                     .iter()
-                    .any(|refusal| refusal.status == *status && body.contains(refusal.message)) =>
+                    .any(|refusal| refusal.matches(*status, body)) =>
             {
                 WriteStatus::Refused
             }
@@ -190,6 +217,86 @@ mod tests {
     use std::cell::Cell;
 
     use super::*;
+
+    /// Regression (Astra pre-release P1-2): the measured diagnostic was
+    /// searched for anywhere in the body, so a 400 whose `message` said
+    /// something else, with the phrase in another field, read as refused.
+    /// It counts only in `message`, whole or followed by `": "` and the value
+    /// AM appends — every ESV and page refusal, through this one matcher.
+    #[test]
+    fn a_measured_refusal_is_read_only_from_the_message_field() {
+        const PAGE: MeasuredRefusal = MeasuredRefusal {
+            status: 400,
+            message: "Invalid config: Node does not exist",
+        };
+        const LATEST: MeasuredRefusal = MeasuredRefusal {
+            status: 400,
+            message: "Cannot disable latest secret version",
+        };
+        for (refusal, status, body, matched) in [
+            (
+                PAGE,
+                400,
+                r#"{"code":400,"message":"Invalid config: Node does not exist: user"}"#,
+                true,
+            ),
+            (
+                PAGE,
+                400,
+                r#"{"code":400,"message":"Invalid config: Node does not exist"}"#,
+                true,
+            ),
+            (
+                LATEST,
+                400,
+                r#"{"code":400,"message":"Cannot disable latest secret version"}"#,
+                true,
+            ),
+            // The phrase outside `message`.
+            (
+                PAGE,
+                400,
+                r#"{"code":400,"message":"Invalid upstream response","detail":"Invalid config: Node does not exist: user"}"#,
+                false,
+            ),
+            (
+                LATEST,
+                400,
+                r#"{"message":"Bad gateway","cause":"Cannot disable latest secret version"}"#,
+                false,
+            ),
+            // Inside `message`, but not at its head or not as a whole word run.
+            (
+                PAGE,
+                400,
+                r#"{"message":"Invalid upstream response: Invalid config: Node does not exist: user"}"#,
+                false,
+            ),
+            (
+                LATEST,
+                400,
+                r#"{"message":"Cannot disable latest secret versions"}"#,
+                false,
+            ),
+            // Not a JSON object with a string message.
+            (LATEST, 400, "Cannot disable latest secret version", false),
+            (
+                LATEST,
+                400,
+                r#"{"message":["Cannot disable latest secret version"]}"#,
+                false,
+            ),
+            // The right message at the wrong status.
+            (
+                LATEST,
+                409,
+                r#"{"message":"Cannot disable latest secret version"}"#,
+                false,
+            ),
+        ] {
+            assert_eq!(refusal.matches(status, body), matched, "{status} {body}");
+        }
+    }
 
     /// A permission needs a test that it is honoured, and one that its
     /// absence is: every combination, with whether the prompt was shown.

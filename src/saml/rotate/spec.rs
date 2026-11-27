@@ -4841,7 +4841,7 @@ mod tests {
         let refused = WriteFailure::from_send(
             Error::Api {
                 status: 400,
-                body: "Cannot disable latest secret version".into(),
+                body: r#"{"code":400,"message":"Cannot disable latest secret version"}"#.into(),
             },
             &[CANNOT_DISABLE_LATEST],
         );

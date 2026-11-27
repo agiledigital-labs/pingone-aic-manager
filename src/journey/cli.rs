@@ -685,8 +685,9 @@ where
     for problem in &unread {
         eprintln!("warning: skipped {problem}");
     }
-    let mut seen: std::collections::HashSet<String> =
-        queue.iter().map(|(id, _)| id.clone()).collect();
+    // Keyed by endpoint, (type, id), not by id: one id can name two nodes
+    // of different types, and each is a separate config to search.
+    let mut seen: std::collections::HashSet<(String, String)> = queue.iter().cloned().collect();
     while let Some((node_id, node_type)) = queue.pop() {
         match read(node_type.clone(), node_id.clone()).await {
             // A config this search cannot look inside — `null` (an empty
@@ -721,7 +722,7 @@ where
                                 .into_iter()
                                 .filter(|child| {
                                     may_reference_script(&child.node_type)
-                                        && seen.insert(child.id.clone())
+                                        && seen.insert((child.id.clone(), child.node_type.clone()))
                                 })
                                 .map(|child| (child.id, child.node_type)),
                         )

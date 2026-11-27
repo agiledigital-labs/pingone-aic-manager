@@ -1430,6 +1430,11 @@ a poll begun just before it can finish after it), then prints what has arrived.
 A failed read carries no
 lookup, because the agent picks a read's ids (a fresh one per retry) and the
 CLI cannot know them.
+A node read that succeeds with a body that is not a JSON object — an empty
+body reads as `null` — counts as unread, like a failed one: `pull`, `status`,
+`diff` and `push`'s reads stop rather than export it, so no export or snapshot
+ever holds such a config, and `push` refuses a local export holding one before
+writing anything.
 `using-script` exits non-zero when some journey's answer is unknown: a read
 failed, or a successful reply could not be used — a listing row with no
 `_id`, a tree or page whose node list is not readable, an entry with no
@@ -1448,8 +1453,9 @@ the error sorts the writes into three groups: those the tenant acknowledged
 failed write is **refused and not applied** in two cases only: the agent
 refused it before dispatch (an explicit locked reply, or the daemon's
 production gate), or AM answered a page `PUT` with one of its two measured
-refusals (`400 Node does not exist` / `Illegal child node type`). Otherwise it
-**may have landed**, since a lost reply says nothing about the write. The
+refusals (`400 Invalid config: Node does not exist` / `Illegal child node
+type`), read from the body's `message` field only — the same phrase in any
+other field proves nothing. Otherwise it **may have landed**, since a lost reply says nothing about the write. The
 snapshot is not updated. `status` reads what the tenant's current tree and
 pages reference; run it, and check the listed writes, before pushing again.
 
@@ -3043,7 +3049,8 @@ because "it failed" is two different claims:
   gate, a locked agent), or answered with a refusal **measured** for that
   endpoint: `400 "Failed to create secret, the secret already exists"` for the
   secret create, `400 "Cannot disable latest secret version"` for the disable
-  (`docs/api/03-esvs.md`). No status class earns this on its own — a `408` or a
+  (`docs/api/03-esvs.md`), matched in the body's `message` field only. No
+  status class earns this on its own — a `408` or a
   `409` is **unknown**, and the client follows redirects, so the status seen
   need not answer the write that was sent. `init` treats the role as untouched
   only when **no step completed at all**. After any completed step — even
