@@ -3,12 +3,13 @@
 
 use std::collections::{HashSet, VecDeque};
 use std::future::Future;
-use std::path::is_separator;
+use std::path::{Path, PathBuf, is_separator};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
 use crate::aic::api::ApiCall;
+use crate::cli::shell_quote;
 use crate::saml::write::{MeasuredRefusal, WriteFailure, WriteStatus};
 use crate::{Error, Result};
 
@@ -185,7 +186,8 @@ const BODY_WITHHELD: &str = "(response body withheld: it can carry a node's conf
 /// never the server's body. The transport's own transaction-id lookup on a
 /// gateway error is NOT kept: nothing in a body string says who wrote it, so
 /// a lookalike in a server's text would pass for it. A write's lookup is
-/// rendered from the transaction id the push chose and sent ([`PushError`]).
+/// rendered from the transaction id the push assigned to the attempt, which
+/// may or may not have been dispatched ([`PushError`]).
 /// A read has none: the agent takes no caller id on a `GET` and gives each
 /// retry a fresh one, so the CLI cannot know what was sent. Status `0` is not
 /// HTTP: it is this module's own shape message, already free of values
@@ -856,6 +858,25 @@ struct Lookup {
     /// The tenant the push wrote to, which the lookup must search: the
     /// logs command otherwise resolves its own default.
     tenant: String,
+    /// The project, when the push chose it with `--project`: run from the
+    /// operator's directory, the lookup would otherwise read another
+    /// project's config and log keys — possibly for a tenant of the same
+    /// name. Absolute, so it resolves from anywhere.
+    project: Option<PathBuf>,
+}
+
+impl Lookup {
+    /// The `aic logs tx` command, each argument quoted to survive a paste.
+    fn command(&self) -> String {
+        let project = self.project.as_ref().map_or(String::new(), |project| {
+            format!(" --project {}", shell_quote(&project.to_string_lossy()))
+        });
+        format!(
+            "aic logs tx {} --tenant {}{project}",
+            shell_quote(&self.transaction),
+            shell_quote(&self.tenant)
+        )
+    }
 }
 
 impl PushError {
@@ -897,9 +918,12 @@ impl std::fmt::Display for PushError {
         if self.status != WriteStatus::Refused {
             write!(
                 f,
-                "\n  this write was assigned transaction id {0}; if the request reached the \
-                 tenant, `aic logs tx {0} --tenant {1}` finds it",
-                self.lookup.transaction, self.lookup.tenant
+                "\n  this write was assigned transaction id {}; if the request reached the \
+                 tenant, `{}` searches the tenant's logs for that id. Events take a while to \
+                 reach the logs, so an empty answer does not mean the write did not land; \
+                 `--wait` polls until the request's completion event arrives",
+                self.lookup.transaction,
+                self.lookup.command()
             )?;
         }
         let list = |writes: &[String]| {
@@ -942,6 +966,7 @@ impl From<PushError> for Error {
 /// senders are injected so a test drives this loop and not a copy of it.
 async fn push_with<N, NF, T, TF>(
     tenant: &str,
+    project: Option<&Path>,
     export: &JourneyExport,
     writes: Vec<NodeRef>,
     mut send_node: N,
@@ -971,6 +996,7 @@ where
             lookup: Box::new(Lookup {
                 transaction,
                 tenant: tenant.to_owned(),
+                project: project.map(Path::to_path_buf),
             }),
         }
     };
@@ -1014,6 +1040,7 @@ pub async fn push(
     }
     let pushed = push_with(
         tenant,
+        crate::config::project_flag_root(),
         export,
         writes,
         |node, body, transaction| async move {
@@ -1412,6 +1439,7 @@ mod tests {
         let (writes, _) = push_plan(&export).unwrap();
         let pushed = push_with(
             "stub",
+            None,
             &export,
             writes,
             |node, _, _| {
@@ -1452,6 +1480,7 @@ mod tests {
         };
         push_with(
             "stub",
+            None,
             &export,
             writes,
             |node, _, _| outcome(node.label()),
@@ -1459,6 +1488,38 @@ mod tests {
         )
         .await
         .expect_err("a write fails")
+    }
+
+    /// Regression (review round 9 P1-1, P1-2): the printed lookup left the
+    /// tenant unquoted — a tenant alias with a space pasted as two arguments
+    /// — and dropped the project a `--project` push ran in, so pasting it from
+    /// the operator's directory read another project's config. The
+    /// discriminating input is both at once: a spaced alias and a spaced
+    /// project path, each of which must come back as one quoted word.
+    #[tokio::test]
+    async fn the_lookup_quotes_the_tenant_and_carries_the_project() {
+        let export = whole_export();
+        let (writes, _) = push_plan(&export).unwrap();
+        let error = push_with(
+            "other tenant",
+            Some(Path::new("/srv/a b/project")),
+            &export,
+            writes,
+            |_, _, _| async { Err(Error::Transport("connection reset".into())) },
+            |_, _| async { Ok(json!({})) },
+        )
+        .await
+        .expect_err("the first write fails");
+        let message = error.to_string();
+        assert!(
+            message.contains("--tenant 'other tenant' --project '/srv/a b/project'`"),
+            "{message}"
+        );
+        assert!(
+            message.contains("searches the tenant's logs for that id"),
+            "{message}"
+        );
+        assert!(message.contains("`--wait`"), "{message}");
     }
 
     /// Regression (review round 7 P2-2): a listing row with no string `_id`
@@ -1489,6 +1550,7 @@ mod tests {
         let sent = std::cell::RefCell::new(None);
         let error = push_with(
             "stub",
+            None,
             &export,
             writes,
             |_, _, transaction| {

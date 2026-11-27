@@ -762,6 +762,22 @@ fn resolve_project_root(
 /// `workspace/<tenant>/<realm>/` path, install its absolute paths as the
 /// process default, then chdir to the root for relative user arguments and the
 /// workspace.
+/// Quote a value for a command line we are telling someone to run.
+///
+/// Tenant names are not restricted to a safe character set — `tenant_file_name`
+/// maps the unsafe ones for paths rather than rejecting them — so a name with a
+/// space produces a suggestion that runs as two arguments when pasted.
+pub(crate) fn shell_quote(value: &str) -> String {
+    if !value.is_empty()
+        && value
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '/'))
+    {
+        return value.to_string();
+    }
+    format!("'{}'", value.replace('\'', r"'\''"))
+}
+
 /// Pull `--project <DIR>` (or `--project=<DIR>`) out of raw argv.
 ///
 /// It cannot be read off the parsed [`Cli`], even though it is declared there:
@@ -851,6 +867,9 @@ pub fn bootstrap_project_root() -> Result<()> {
     config::set_user_base(start.clone());
     config::set_workspace_context(choose_workspace_context(&root, &start, &cwd, explicit));
     config::set_project_root(root.clone())?;
+    if explicit == Some("--project") {
+        config::set_project_flag_root(root.clone());
+    }
     // Still load-bearing for relative user arguments and `workspace/` paths.
     std::env::set_current_dir(&root)
         .map_err(|e| Error::Config(format!("could not enter project {}: {e}", root.display())))?;

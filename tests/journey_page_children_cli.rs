@@ -1110,7 +1110,7 @@ fn every_unusable_successful_reply_makes_the_script_search_incomplete() {
 /// call the id assigned, make the lookup conditional, and the id it names
 /// must be one no request carried.
 #[test]
-fn a_write_that_was_never_dispatched_is_not_called_sent() {
+fn journey_push_never_calls_an_undispatched_write_sent() {
     let project = Project::new();
     project.write_snapshot(&journey());
     let mut local = journey();
@@ -1148,7 +1148,7 @@ fn a_write_that_was_never_dispatched_is_not_called_sent() {
 /// fixture's usual tenant, so a lookup naming the default, or any fixed
 /// tenant, is caught.
 #[test]
-fn the_lookup_names_the_tenant_the_push_wrote_to() {
+fn journey_push_lookup_names_the_tenant_it_wrote_to() {
     let project = Project::new();
     std::fs::write(
         project.0.join(".aic/config.toml"),
@@ -1183,6 +1183,53 @@ fn the_lookup_names_the_tenant_the_push_wrote_to() {
         .unwrap_or_else(|| panic!("no PUT: {stderr}"));
     assert!(
         stderr.contains(&format!("`aic logs tx {sent} --tenant other`")),
+        "{stderr}"
+    );
+}
+
+/// Regression (review round 9 P1-2): a push run with `--project` from
+/// another directory printed a lookup without it, so pasting the lookup
+/// where the operator stands read a different project's config and log keys.
+/// The discriminating input is that invocation; the lookup must carry the
+/// project's absolute root. The same push from inside the project (every
+/// other test) prints no `--project`.
+#[test]
+fn journey_push_lookup_carries_the_project_it_was_given() {
+    let project = Project::new();
+    project.write_snapshot(&journey());
+    let mut local = journey();
+    local["nodes"]["user"]["validateInput"] = json!(true);
+    project.write_export(&local);
+    let elsewhere = std::env::temp_dir().join(format!("aic-elsewhere-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    let mut tenant = Tenant::new(journey());
+    tenant.fail_put = Some((
+        "user",
+        json!({"type": "transport", "message": "fixture: reset"}),
+        true,
+    ));
+    let mut command = Command::new(env!("CARGO_BIN_EXE_aic"));
+    command
+        .current_dir(&elsewhere)
+        .env_remove("AIC_PROJECT")
+        .env("XDG_DATA_HOME", project.0.join("data"))
+        .env("XDG_STATE_HOME", project.0.join("state"))
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .arg("--project")
+        .arg(&project.0)
+        .args(["--no-prompt", "journey", "push", "Login", "--yes"]);
+    let (output, tenant) = run(&project, command, tenant);
+    let _ = std::fs::remove_dir_all(&elsewhere);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(1), "{stderr}");
+    let (_, sent) = tenant.sent_ids.last().unwrap_or_else(|| panic!("{stderr}"));
+    assert!(
+        stderr.contains(&format!(
+            "`aic logs tx {sent} --tenant stub --project {}`",
+            project.0.display()
+        )),
         "{stderr}"
     );
 }
