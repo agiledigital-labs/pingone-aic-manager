@@ -27,7 +27,16 @@ export class JourneyConfig {
     if (typeof input.realm !== "string" || !/^[a-zA-Z0-9_-]+$/.test(input.realm))
       throw new TypeError("Invalid journey configuration: realm must be a simple realm name");
     for (const key of ["trees", "nodes", "scripts"] as const) record(input[key], key);
-    if (input.customNodeTypes !== undefined) record(input.customNodeTypes, "customNodeTypes");
+    if (input.customNodeTypes !== undefined) {
+      record(input.customNodeTypes, "customNodeTypes");
+      // The script is the type: a type without one has nothing to run, so it is refused here rather
+      // than failing inside the engine. What the tenant does with such a type is unmeasured.
+      for (const [name, def] of Object.entries(input.customNodeTypes)) {
+        record(def, `customNodeTypes/${name}`);
+        if (typeof def.script !== "string")
+          throw new TypeError(`Invalid journey configuration: customNodeTypes/${name}/script must be a string`);
+      }
+    }
     for (const [name, tree] of Object.entries(input.trees)) {
       record(tree, `trees/${name}`);
       record(tree.nodes, `trees/${name}/nodes`);

@@ -24,6 +24,7 @@ import { DEFAULT_ORIGIN, JourneyLogs, SCRIPT_LOG_LEVELS, type JourneyLogOptions,
 import {
   EXTRA_OUTCOMES,
   STUB_TYPES,
+  ESV_PLACEHOLDER,
   SCRIPT_ERROR_OUTCOME,
   customNodeProperties,
   customOutcomes,
@@ -187,7 +188,7 @@ function libraryBodies(config: JourneyConfig): Record<string, string> {
   }
   return out;
 }
-const PLACEHOLDER = /&\{esv\.([^}|]+)(?:\|[^}]*)?\}/g;
+const PLACEHOLDER = new RegExp(ESV_PLACEHOLDER.source, "g");
 /**
  * A node's configuration with its ESV placeholders resolved from the configured ESVs. The tenant
  * wraps some fields as `{"$string": "&{esv.x}"}` / `{"$int": ...}` / `{"$bool": ...}` (docs/api/09-journeys.md): the

@@ -101,6 +101,9 @@ const APPLE_LINK = "https://apps.apple.com/app/pingid/id891247102";
 const GOOGLE_LINK = "https://play.google.com/store/apps/details?id=prod.com.pingidentity.pingid";
 const COOKIE_SOURCE = "docs/api/25-journey-runtime.md (Persistent cookie value, 2026-11-25)";
 
+/** An ESV placeholder, `&{esv.<name>}` or `&{esv.<name>|<default>}`: a name before any pipe. */
+export const ESV_PLACEHOLDER = /&\{esv\.([^}|]+)(?:\|[^}]*)?\}/;
+
 /** A node configuration the tenant refuses at write time; the emulator refuses it when the config loads. */
 export function validateExtraNode(type: string, node: NodeDocument): void {
   // UNMEASURED: whether the tenant accepts an ESV-backed length (`{"$int": "&{esv.…}"}`, as it
@@ -110,7 +113,7 @@ export function validateExtraNode(type: string, node: NodeDocument): void {
     if (
       isDocument(node.length) &&
       typeof node.length.$int === "string" &&
-      /&\{esv\.[^}]+\}/.test(node.length.$int)
+      ESV_PLACEHOLDER.test(node.length.$int)
     )
       throw new RangeError(
         "Not modelled by the emulator: OneTimePasswordGeneratorNode length as an ESV placeholder (whether the tenant accepts one is unmeasured)",

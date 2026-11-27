@@ -313,6 +313,17 @@ describe("P2-3 custom nodes reach only the measured bindings", () => {
     expectEmulationFailure(name);
     refused(await req(custom(`${prefix} logger.info('x'); outcome = 'ok';`)), name);
   });
+  // Review round 3 P2-6: a type without a script is refused when the configuration loads, by name,
+  // not as a TypeError from inside the engine on first use.
+  it("refuses a custom type with no script at load", () => {
+    const load = (def: Record<string, unknown>) => () =>
+      new JourneyConfig({ realm: "alpha", trees: {}, nodes: {}, scripts: {}, customNodeTypes: { [SN]: def } } as never);
+    expect(load({ outcomes: ["ok"], errorOutcome: true })).toThrow(
+      `Invalid journey configuration: customNodeTypes/${SN}/script must be a string`,
+    );
+    // Control: the same type with a script loads.
+    expect(load({ outcomes: ["ok"], errorOutcome: true, script: "outcome = 'ok';" })).not.toThrow();
+  });
   // Review round 3: the script runs unmodified in its own top-level scope (java/CustomNodeScope.java).
   it.each([
     // P1-1: no wrapper temporary for a script to clobber.
@@ -599,5 +610,7 @@ describe("review round 1 P3-3: an ESV-backed OTP length is refused as unmodelled
   // Review round 2 P3-1: only a real placeholder is the ESV form; a literal $int keeps its old path.
   it("keeps the number refusal for a literal {$int: \"7\"}", () => {
     expect(build({ $int: "7" })).toThrow("400 Data validation failed for the attribute, One Time Password Length");
+    // Review round 3 P3-1: an empty name before the pipe is not a placeholder to the resolver either.
+    expect(build({ $int: "&{esv.|7}" })).toThrow("400 Data validation failed for the attribute, One Time Password Length");
   });
 });
