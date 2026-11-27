@@ -1414,13 +1414,18 @@ it, including text shaped like the transport's `aic logs tx` lookup. A push
 that stops on a write whose outcome is unknown names the transaction id `aic`
 assigned to that write's attempt and, since the attempt may have failed before
 the request went out, says only that if the request reached the tenant
-`aic logs tx <id> --tenant <tenant>` searches that tenant's logs for the id —
+`aic logs tx <id> --tenant=<tenant>` searches that tenant's logs for the id —
 naming the tenant the push wrote to, not whatever `aic logs` would default to,
-and adding `--project <dir>` with the absolute project root when the push was
-given `--project`. Both are shell-quoted, so the line pastes as printed. Events
-take a while to reach the logs, so an empty answer does not mean the write did
-not land; `--wait` polls until the request's completion event arrives. A
-failed read carries no
+and adding `--project=<dir>` with the absolute project root when the push chose
+its project with `--project` or `AIC_PROJECT` (neither is in effect for the
+next command typed). Values are shell-quoted and attached to their option, so
+the line pastes as printed and a tenant alias starting with `-` is not read as
+a flag. A project root that is not valid UTF-8 cannot be printed, so the
+lookup leaves `--project` out and says to run it from the project directory.
+Events take a while to reach the logs, so an empty answer does not mean the
+write did not land; `--wait` polls for the request's completion event for up
+to 60 seconds (`--timeout <SECS>` changes that), then prints what has arrived.
+A failed read carries no
 lookup, because the agent picks a read's ids (a fresh one per retry) and the
 CLI cannot know them.
 `using-script` exits non-zero when some journey's answer is unknown: a read
