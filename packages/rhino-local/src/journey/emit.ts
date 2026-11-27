@@ -62,6 +62,9 @@ const REASONS: Readonly<Record<number, string>> = {
   500: "Internal Server Error",
 };
 
+/** The script logger's levels; any other is an emulator fault, refused rather than dropped. */
+export const SCRIPT_LOG_LEVELS: readonly string[] = ["trace", "debug", "info", "warn", "error"];
+
 /** What the engine knows about a script that threw. */
 export type ScriptThrow = {
   readonly scriptName: string;
@@ -236,8 +239,10 @@ export class RequestLog {
   ): void {
     this.scripts += 1;
     for (const line of lines) {
+      if (!SCRIPT_LOG_LEVELS.includes(line.level))
+        throw new Error(`script logger level not modelled: ${JSON.stringify(line.level)}`);
+      if (line.level === "trace") continue;
       const level = line.level.toUpperCase();
-      if (line.level === "trace" || !["DEBUG", "INFO", "WARN", "ERROR"].includes(level)) continue;
       this.core(
         level,
         `scripts.AUTHENTICATION_TREE_DECISION_NODE.${scriptId}.(${scriptName})`,

@@ -20,7 +20,7 @@ import { JourneyNodes, EMULATED, type NodeResult } from "./nodes.ts";
 import { JourneyConfig } from "./config.ts";
 import { journeyPreamble } from "./script.ts";
 import { SYSTEM_SESSION_PROPERTIES, localizedText } from "./shared.ts";
-import { JourneyLogs, type JourneyLogOptions, type RequestLog } from "./emit.ts";
+import { JourneyLogs, SCRIPT_LOG_LEVELS, type JourneyLogOptions, type RequestLog } from "./emit.ts";
 import {
   EXTRA_OUTCOMES,
   STUB_TYPES,
@@ -641,6 +641,10 @@ export class JourneyEmulator {
         this.evidence.assumed(
           "basic callback wire envelopes reuse binding effect fields; input defaults use empty strings except HiddenValue id and TextInput defaultText",
         );
+        if (result.audit !== undefined)
+          this.evidence.assumed(
+            "an auditEntryDetail assigned by a script that queues callbacks is dropped, the node not having completed; unmeasured",
+          );
         const callbacks = toWire(result.callbacks, (name) => this.missing(name));
         this.numberCallbacks(state, callbacks, result.pageChildren);
         state.pending = callbacks;
@@ -791,6 +795,9 @@ export class JourneyEmulator {
     if (fatal) throw new EmulationFailure(fatal);
     if (response.outcome === "compile_error") this.missing("journey script compilation failure");
     const scriptName = script.name ?? config.script ?? "script";
+    for (const line of response.logs ?? [])
+      if (!SCRIPT_LOG_LEVELS.includes(line.level))
+        this.missing(`script logger level: ${line.level}`);
     log?.scriptLines(response.logs ?? [], String(config.script ?? "script"), scriptName);
     if (response.outcome !== "ok") {
       if (inner) this.missing("inner tree script exception");
@@ -826,6 +833,9 @@ export class JourneyEmulator {
     // record for it (measured 2026-11-25, docs/api/25-journey-runtime.md).
     if (result.auditEntryDetail?.invalid) {
       this.measured("an auditEntryDetail that is not a string or a map fails the tree with 401");
+      this.evidence.assumed(
+        "an auditEntryDetail that is a number, a boolean or a Java Map is classified like the measured array (a number or boolean fails the tree, a Java Map is invalid); only a top-level array was measured",
+      );
       if (inner) this.missing("inner tree script exception");
       if (log)
         log.treeFailed(
@@ -1061,6 +1071,10 @@ export class JourneyEmulator {
       if (!previous && state.errorMessage !== message)
         this.missing("action.withErrorMessage in a PageNode discovery run");
       if (previous && result.callbacks.length) rejected = true;
+      if (result.audit !== undefined)
+        this.evidence.assumed(
+          "a Page child's auditEntryDetail is dropped (no node record for the child); assignment inside a Page child is unmeasured",
+        );
       counts.push(result.callbacks.length);
       collected.push(...result.callbacks);
       outcome = result.outcome;

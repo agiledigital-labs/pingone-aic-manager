@@ -254,3 +254,82 @@ describe("P2-3 custom nodes reach only the measured bindings", () => {
     refused(await req(custom(body)), name);
   });
 });
+
+describe("P3-1 a blank answer is refused, not read as index 0", () => {
+  it("MessageNode", async () => {
+    const e = emu({ MessageNode: { node: { message: { en: "Go?" } } } }, "MessageNode", "", [
+      "true",
+      "false",
+    ]);
+    const first = await req(e);
+    const name = 'MessageNode answer: ""';
+    expectEmulationFailure(name);
+    refused(await req(e, fill(first.body, { 1: "" })), name);
+  });
+  it("ChoiceCollectorNode", async () => {
+    const e = emu(
+      { ChoiceCollectorNode: { node: { choices: ["a", "b"], prompt: "Pick" } } },
+      "ChoiceCollectorNode",
+      "",
+      ["a", "b"],
+    );
+    const first = await req(e);
+    const name = 'ChoiceCollectorNode answer: " "';
+    expectEmulationFailure(name);
+    refused(await req(e, fill(first.body, { 0: " " })), name);
+  });
+  it("a numeric string still answers (the discriminating case)", async () => {
+    const e = emu(
+      { ChoiceCollectorNode: { node: { choices: ["a", "b"], prompt: "Pick" } } },
+      "ChoiceCollectorNode",
+      "",
+      ["a", "b"],
+    );
+    const first = await req(e);
+    const done = await req(e, fill(first.body, { 0: "1" }));
+    expect(done.status).toBe(200);
+  });
+});
+
+describe("P3-2 a persistent cookie needs a user to name", () => {
+  const KEY = Buffer.from("invented-persistent-key-0123456789").toString("base64");
+  const COOKIE = { persistentCookieName: "inventedCookie", hmacSigningKey: KEY, maxLife: 3 };
+  it("refuses to mint with no shared username", async () => {
+    const name = "SetPersistentCookieNode with no shared username";
+    expectEmulationFailure(name);
+    refused(
+      await req(emu({ SetPersistentCookieNode: { node: COOKIE } }, "SetPersistentCookieNode")),
+      name,
+    );
+  });
+  it("mints with one, tagging the unconfigured defaults as assumed", async () => {
+    const e = emu(
+      { SetPersistentCookieNode: { node: { hmacSigningKey: KEY } } },
+      "SetPersistentCookieNode",
+      "nodeState.putShared('username','neo')",
+    );
+    const done = await req(e);
+    expect(done.status).toBe(200);
+    const assumed = (done.provenance ?? [])
+      .filter((entry) => entry.kind === "assumed")
+      .map((entry) => entry.behavior)
+      .join("\n");
+    expect(assumed).toContain('uses "session-jwt"');
+    expect(assumed).toContain("uses 5 hours");
+    expect(assumed).toContain("no Domain attribute");
+  });
+});
+
+describe("P3-8 an unknown script logger level is refused, not dropped", () => {
+  it("JourneyLogs refuses it", async () => {
+    const { JourneyLogs } = await import("../../src/journey/emit.ts");
+    const records: unknown[] = [];
+    const logs = new JourneyLogs({ sink: { emit: (r: unknown) => records.push(r) } as never });
+    const log = logs.begin({ method: "POST", path: "authenticate" } as never, "alpha");
+    log.scriptLines([{ level: "info", message: "kept" }], "id", "name");
+    expect(records.length).toBe(1);
+    expect(() => log.scriptLines([{ level: "fatal", message: "x" }], "id", "name")).toThrow(
+      'script logger level not modelled: "fatal"',
+    );
+  });
+});

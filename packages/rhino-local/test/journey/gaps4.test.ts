@@ -373,8 +373,9 @@ describe("one-time password and choice nodes as Page children", () => {
     expect((first.body as Wire).callbacks[1]?.input[0]?.name).toBe("IDToken2");
     const done = dump((await run(emu, "page", answer(first.body, { 0: "kdemo-user", 1: "123456" }))).body);
     expect(done).toMatchObject({ branch: "T", username: "kdemo-user" });
-    // Present with a collector beside it (its value is the emulator's wire array, the tenant's a map: assumed).
-    expect(done.pageNodeCallbacks).not.toBeNull();
+    // Present with a collector beside it. This dump String()s it: the measured map reads as one
+    // "[object Object]" (the wire array it once was read as two); prereview.test.ts checks content.
+    expect(done.pageNodeCallbacks).toBe("[object Object]");
   });
 
   it("an empty one-time password re-sends the whole page", async () => {
@@ -404,8 +405,9 @@ describe("one-time password and choice nodes as Page children", () => {
     expect((first.body as Wire).callbacks[1]?.input[0]?.name).toBe("IDToken2");
     const done = dump((await run(emu, "page", answer(first.body, { 0: "kdemo-user", 1: 2 }))).body);
     expect(done).toMatchObject({ branch: "gamma", username: "kdemo-user" });
-    // Present with a collector beside it (its value is the emulator's wire array, the tenant's a map: assumed).
-    expect(done.pageNodeCallbacks).not.toBeNull();
+    // Present with a collector beside it. This dump String()s it: the measured map reads as one
+    // "[object Object]" (the wire array it once was read as two); prereview.test.ts checks content.
+    expect(done.pageNodeCallbacks).toBe("[object Object]");
   });
 });
 

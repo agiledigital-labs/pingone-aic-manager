@@ -8,6 +8,7 @@ import { randomInt } from "node:crypto";
 import { mergeSharedAttributes } from "./attributes.ts";
 import {
   SYSTEM_SESSION_PROPERTIES,
+  answerIndex,
   localizedText,
   loginFailure,
   lookupIdentities,
@@ -102,6 +103,8 @@ const COOKIE_SOURCE = "docs/api/25-journey-runtime.md (Persistent cookie value, 
 
 /** A node configuration the tenant refuses at write time; the emulator refuses it when the config loads. */
 export function validateExtraNode(type: string, node: NodeDocument): void {
+  // UNMEASURED: whether the tenant accepts an ESV-backed length (`{"$int": "&{esv.…}"}`, as it
+  // does for retryLimit) was never tried; the emulator refuses it with the measured number refusal.
   if (type === "OneTimePasswordGeneratorNode" && node.length !== undefined) {
     if (typeof node.length !== "number" || !Number.isInteger(node.length) || node.length < 6)
       throw new RangeError(
@@ -241,10 +244,22 @@ export class ExtraNodes {
     return { outcome: "outcome", callbacks: [], session: delta };
   }
 
+  /** The configured persistent cookie name, else the node's documented default (assumed). */
+  private cookieName(config: NodeDocument, type: string): string {
+    if (typeof config.persistentCookieName === "string") return config.persistentCookieName;
+    this.ctx.evidence.assumed(
+      `${type} with no persistentCookieName configured uses "session-jwt" (the node's documented default)`,
+    );
+    return "session-jwt";
+  }
+
   private persistentCookie(config: NodeDocument, shared: Document): NodeResult {
     const { evidence } = this.ctx;
-    const name =
-      typeof config.persistentCookieName === "string" ? config.persistentCookieName : "session-jwt";
+    const name = this.cookieName(config, "SetPersistentCookieNode");
+    if (typeof config.maxLife !== "number")
+      evidence.assumed(
+        "SetPersistentCookieNode with no maxLife configured uses 5 hours (the node's documented default)",
+      );
     const maxLife = typeof config.maxLife === "number" ? config.maxLife : 5;
     const sameSite = typeof config.sameSite === "string" ? config.sameSite.toLowerCase() : "lax";
     if (!["lax", "strict", "none"].includes(sameSite))
@@ -266,10 +281,16 @@ export class ExtraNodes {
         abort: { status: 500, body: null, rawBody: "" },
       };
     }
+    // A cookie minted with no user names nobody; what the tenant does then is unmeasured.
+    if (typeof shared.username !== "string" || shared.username === "")
+      this.ctx.missing("SetPersistentCookieNode with no shared username");
+    evidence.assumed(
+      "SetPersistentCookieNode sets no Domain attribute (host-only cookie); the tenant's Domain is unmeasured",
+    );
     const now = this.ctx.now();
     const value = mintCookie(
       {
-        sub: typeof shared.username === "string" ? shared.username : null,
+        sub: shared.username,
         iat: Math.floor(now / 1000),
         exp: Math.floor(now / 1000) + Math.round(maxLife * 3600),
       },
@@ -551,7 +572,7 @@ export class ExtraNodes {
     const answer = submitted.length === 2 ? submitted[1] : undefined;
     if (answer?.type !== "ConfirmationCallback")
       this.ctx.missing("MessageNode callback submission");
-    const index = typeof answer.value === "string" ? Number(answer.value) : answer.value;
+    const index = answerIndex(answer.value, "MessageNode", this.ctx.missing);
     if (typeof index !== "number" || !Number.isInteger(index))
       this.ctx.missing(`MessageNode answer: ${JSON.stringify(answer.value)}`);
     return { outcome: index === 0 ? "true" : "false", callbacks: [] };
@@ -642,7 +663,7 @@ export class ExtraNodes {
     const answer = submitted.length === 1 ? submitted[0] : undefined;
     if (answer?.type !== "ChoiceCallback")
       this.ctx.missing("ChoiceCollectorNode callback submission");
-    const index = typeof answer.value === "string" ? Number(answer.value) : answer.value;
+    const index = answerIndex(answer.value, "ChoiceCollectorNode", this.ctx.missing);
     if (typeof index !== "number" || !Number.isInteger(index) || index < 0 || index >= list.length)
       return { outcome: null, callbacks: [], abort: loginFailure() };
     return { outcome: list[index] ?? null, callbacks: [] };
@@ -749,8 +770,7 @@ export class ExtraNodes {
     const { evidence } = this.ctx;
     if (config.enforceClientIp === true)
       this.ctx.missing("PersistentCookieDecisionNode enforceClientIp: true");
-    const name =
-      typeof config.persistentCookieName === "string" ? config.persistentCookieName : "session-jwt";
+    const name = this.cookieName(config, "PersistentCookieDecisionNode");
     const key =
       typeof config.hmacSigningKey === "string" && config.hmacSigningKey !== ""
         ? config.hmacSigningKey

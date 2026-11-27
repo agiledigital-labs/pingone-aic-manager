@@ -319,6 +319,10 @@ export class JourneyNodes {
       const answer = submitted[0].value;
       // Measured 2026-11-25: an empty answer re-sends the callback (alone or in a Page),
       // writing nothing; a whitespace-only answer is accepted. ValidatedPasswordNode is unmeasured.
+      if (answer === "" && type === "ValidatedPasswordNode")
+        this.evidence.assumed(
+          "ValidatedPasswordNode with validateInput false accepts an empty answer; its empty-answer behaviour is unmeasured",
+        );
       if (answer === "" && type !== "ValidatedPasswordNode") {
         this.evidence.measured(
           "UsernameCollectorNode and PasswordCollectorNode re-send their callback on an empty answer and write nothing",
@@ -418,7 +422,7 @@ export class JourneyNodes {
           );
         if (path.length > 1 && !isBoolean)
           this.evidence.assumed(
-            "AttributeCollectorNode treats a slash-path string attribute like a flat one; the path walk and nested storage were measured with a boolean property",
+            "AttributeCollectorNode stores a slash-path string attribute nested, as it does a boolean one; the path walk and nested storage were measured with a boolean property only",
           );
         const cb = submitted[index];
         const wireType = isBoolean
@@ -489,13 +493,15 @@ export class JourneyNodes {
                 policy.requirements.includes("REQUIRED")
               )
                 failedPolicies.push('{ "policyRequirement": "REQUIRED" }');
-            } else if (
-              policy.requirements.includes("VALID_EMAIL_ADDRESS_FORMAT") &&
-              !looksLikeEmail(String(answer))
-            )
-              failedPolicies.push(
-                '{ "policyRequirement": "VALID_EMAIL_ADDRESS_FORMAT" }',
+            } else if (policy.requirements.includes("VALID_EMAIL_ADDRESS_FORMAT")) {
+              this.evidence.assumed(
+                "AttributeCollectorNode's VALID_EMAIL_ADDRESS_FORMAT test is a guess (local@domain.tld); only \"not-an-email\" failing and an ordinary address passing were measured",
               );
+              if (!looksLikeEmail(String(answer)))
+                failedPolicies.push(
+                  '{ "policyRequirement": "VALID_EMAIL_ADDRESS_FORMAT" }',
+                );
+            }
           }
           if (cb?.validateOnly === true && !failedPolicies.length)
             this.missing(
@@ -655,6 +661,10 @@ export class JourneyNodes {
         this.missing(`${type} conflicting identity sources`);
       if (objectValue === null || username === null)
         this.missing(`${type} null identity source`);
+      if (username !== undefined && Object.hasOwn(transient, "username"))
+        this.evidence.assumed(
+          "PatchObjectNode reads a transient username before the shared one; only Identify Existing User's source was measured",
+        );
       lookup = objectValue ?? username;
     }
     if (lookup === undefined) {

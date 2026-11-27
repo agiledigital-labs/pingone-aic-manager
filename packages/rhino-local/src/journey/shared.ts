@@ -103,3 +103,17 @@ export function localizedText(
   if (typeof value !== "string") missing(`${what} value`);
   return value;
 }
+
+/**
+ * A submitted callback index. A string is read as a number, but a blank one is refused rather
+ * than read as 0 (Number("") is 0): what AM does with an empty answer is unmeasured.
+ */
+export function answerIndex(
+  value: unknown,
+  what: string,
+  missing: (name: string) => never,
+): unknown {
+  if (typeof value !== "string") return value;
+  if (value.trim() === "") missing(`${what} answer: ${JSON.stringify(value)}`);
+  return Number(value);
+}
