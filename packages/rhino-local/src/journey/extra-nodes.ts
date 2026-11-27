@@ -916,7 +916,7 @@ export function customOutcomes(def: CustomNodeType): readonly string[] {
  * The `properties` a custom node's script sees, from the instance. Absent properties follow the measured
  * shape: a multivalued one is an empty array, any other is undefined. A missing required property is
  * `{ abort: true }`, the caller's 401. The script itself runs unmodified in its own scope
- * (java/CustomNodeScope.java), and its `outcome` is routed by `customRoute`.
+ * (java/CustomNodeScope.java), and its `outcome` is routed in the runner (CustomNodeScope.route).
  */
 export function customNodeProperties(
   def: CustomNodeType,
@@ -946,13 +946,4 @@ export function customNodeProperties(
     properties[name] = value as JsonValue;
   }
   return { properties };
-}
-/**
- * Where a custom node's script `outcome` routes: a listed outcome is itself; anything else (unset,
- * not a string, not listed) takes Script Error when the type has an error outcome, else fails the
- * journey (null).
- */
-export function customRoute(def: CustomNodeType, outcome: string | null): string | null {
-  if (outcome !== null && def.outcomes.includes(outcome)) return outcome;
-  return def.errorOutcome === true ? SCRIPT_ERROR_OUTCOME : null;
 }

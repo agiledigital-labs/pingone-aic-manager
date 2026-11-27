@@ -53,6 +53,16 @@ final class CustomNodeScope {
   }
 
   /**
+   * The one route decision for a custom node, after it returned or threw: a listed {@code outcome}
+   * is itself; anything else, and every throw ({@code outcome} null), takes {@code errorRoute}
+   * (Script Error, absent when the type has none), else null -- no route, and the journey fails.
+   */
+  static String route(String outcome, List<String> listed, String errorRoute) {
+    if (outcome != null && listed.contains(outcome)) return outcome;
+    return errorRoute;
+  }
+
+  /**
    * {@code outcome} as the script left it: a string, or null for anything else or nothing. A
    * computed string ({@code 'o' + suffix}) is a Rhino ConsString, which this scope hands back
    * wrapped as a Java object (its read goes through {@code Context.javaToJS}); it is unwrapped

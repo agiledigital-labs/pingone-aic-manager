@@ -1059,16 +1059,16 @@ final class AmHostBridge extends BaseFunction {
   }
 
   /**
-   * A custom node's harvest: the same effects, plus {@code customOutcome}, the script's
-   * {@code outcome} as {@link CustomNodeScope#outcome} read it, which the engine routes. No
+   * A custom node's harvest: the same effects, plus {@code customRoute}, the route
+   * {@link CustomNodeScope#route} decided, which the engine takes. No
    * {@code auditEntryDetail} is read: AM's audit rule was measured for Scripted Decision only, and
    * the custom script's variables live in a scope this bridge never sees.
    */
-  String harvestCustom(Context cx, String customOutcome) {
-    return harvest(cx, true, customOutcome);
+  String harvestCustom(Context cx, String route) {
+    return harvest(cx, true, route);
   }
 
-  private String harvest(Context cx, boolean custom, String customOutcome) {
+  private String harvest(Context cx, boolean custom, String customRoute) {
     if (top == null) throw protocol("journey bridge used before install");
     Object queued = ScriptableObject.getProperty(runtime, "callbacks");
     if (!(queued instanceof NativeArray)) throw missing("journey callbacks container");
@@ -1120,8 +1120,7 @@ final class AmHostBridge extends BaseFunction {
     // 2026-11-25, docs/api/25-journey-runtime.md). Absent, undefined and null mean no entry; a
     // string or a map is kept; anything else (an array, a number, a boolean) fails the tree.
     if (custom) {
-      out.append(",\"customOutcome\":")
-          .append(customOutcome == null ? "null" : Json.quote(customOutcome));
+      out.append(",\"customRoute\":").append(Json.quote(customRoute));
       return out.append('}').toString();
     }
     Object audit = ScriptableObject.getProperty(top, "auditEntryDetail");

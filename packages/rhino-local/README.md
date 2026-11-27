@@ -3017,8 +3017,14 @@ the script declares or assigns at its own top level (`var logger = …`) is its
 own and is never refused, and declarations hoist as in any script; a helper's
 locals and declaration-like text in a string or comment leave the refusal in
 place. Top-level `const` and `let` behave as in a Scripted Decision script (doc
-12). `outcome` routes by its string value, computed (`'o' + suffix`) or literal;
-a `new String('ok')` object is not a string and is treated as unlisted. A throw or
+12). `outcome` routes by the string value the host reads when the script ends,
+computed (`'o' + suffix`) or literal; a `new String('ok')` object is not a
+string and is treated as unlisted. That is the host's read, not the script's: a
+script that reads back a top-level `outcome = 'o' + suffix` sees
+`typeof outcome === 'object'`, and `outcome === 'ok'` is false, while a
+`join` reads back as a primitive. Doc 12 measures the same top-level coercion
+in a Scripted Decision scope; a custom node's read-back and the routing of a
+boxed string are unmeasured. A throw or
 unlisted outcome takes `Script Error` when `errorOutcome` is set; without it the
 journey fails with `401` at the top level, and in an inner tree, which is
 unmeasured, it is `missing` (`inner tree script exception`). Not modelled:

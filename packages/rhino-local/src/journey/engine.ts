@@ -28,7 +28,6 @@ import {
   SCRIPT_ERROR_OUTCOME,
   customNodeProperties,
   customOutcomes,
-  customRoute,
   type CustomNodeType,
   extraOutcomes,
 } from "./extra-nodes.ts";
@@ -821,7 +820,8 @@ export class JourneyEmulator {
           ? {
               customProperties: JSON.stringify(custom.properties),
               customBlocked: customBlocked(),
-              customErrorOutcome: custom.def.errorOutcome === true,
+              customOutcomes: [...custom.def.outcomes],
+              ...(custom.def.errorOutcome === true ? { customErrorRoute: SCRIPT_ERROR_OUTCOME } : {}),
             }
           : {}),
         classAllowList: decisionNodeClassAllowList(),
@@ -866,16 +866,14 @@ export class JourneyEmulator {
       if (!SCRIPT_LOG_LEVELS.includes(line.level))
         this.missing(`script logger level: ${line.level}`);
     log?.scriptLines(response.logs ?? [], String(config.script ?? "script"), scriptName);
-    // A custom node whose script throws takes Script Error when its type has one, keeping what it
-    // wrote before the throw (doc 25); the runner harvests its effects for exactly this.
-    if (
-      custom &&
-      response.outcome === "runtime_error" &&
-      custom.def.errorOutcome === true &&
-      typeof response.value === "string"
-    ) {
-      this.applyEffects(JSON.parse(response.value) as Harvest, state, frame);
-      return { outcome: SCRIPT_ERROR_OUTCOME, callbacks: [] };
+    // A custom node's route is decided in the runner before it harvests (CustomNodeScope.route): a
+    // throw carries a harvest only when its type routes it (Script Error), keeping what the script
+    // wrote before the throw (doc 25).
+    if (custom && response.outcome === "runtime_error" && typeof response.value === "string") {
+      const result = JSON.parse(response.value) as Harvest;
+      if (typeof result.customRoute !== "string") this.missing("custom node thrown harvest without a route");
+      this.applyEffects(result, state, frame);
+      return { outcome: result.customRoute, callbacks: [] };
     }
     if (response.outcome !== "ok") {
       if (inner) this.missing("inner tree script exception");
@@ -897,9 +895,11 @@ export class JourneyEmulator {
     if (typeof response.value !== "string") this.missing("journey harvest serialization");
     const result = JSON.parse(response.value) as Harvest;
     if (custom) {
-      this.applyEffects(result, state, frame);
-      const routed = customRoute(custom.def, result.customOutcome ?? null);
-      if (routed !== null) return { outcome: routed, callbacks: [] };
+      // With a route the runner harvested; without one it serialized nothing, and nothing applies.
+      if (typeof result.customRoute === "string") {
+        this.applyEffects(result, state, frame);
+        return { outcome: result.customRoute, callbacks: [] };
+      }
       // An outcome the type does not list, with no error outcome: fails like a throw (assumed above).
       if (inner) this.missing("inner tree script exception");
       if (log)
@@ -1456,8 +1456,8 @@ type Harvest = {
   };
   errorMessage: string | null;
   auditEntryDetail?: { value?: JsonValue; invalid?: "array" | "other" };
-  /** A custom node's script `outcome`: a string, else null. */
-  customOutcome?: string | null;
+  /** A custom node's route as the runner decided it (CustomNodeScope.route); null for none. */
+  customRoute?: string | null;
 };
 /**
  * Rhino's own text for a throw, `<thrown value> (<script>#<line>)`: the tenant's ScriptException

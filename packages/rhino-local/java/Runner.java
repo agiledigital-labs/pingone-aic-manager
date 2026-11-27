@@ -384,13 +384,19 @@ public final class Runner {
     // A Node Designer script: run in its own scope (CustomNodeScope), not the decision scope.
     final String customProperties;
     final List<String> customBlocked;
-    final boolean customErrorOutcome;
+    final List<String> customOutcomes;
+    final String customErrorRoute;
     try {
       customProperties = Json.optionalString(job, "customProperties");
       customBlocked = Json.optionalStringList(job, "customBlocked");
-      customErrorOutcome = Json.optionalBoolean(job, "customErrorOutcome", false);
-      if ((customProperties == null) != (customBlocked == null) || (customProperties != null && bridge == null)) {
-        throw new IllegalArgumentException("customProperties and customBlocked go together, on a journey job");
+      customOutcomes = Json.optionalStringList(job, "customOutcomes");
+      customErrorRoute = Json.optionalString(job, "customErrorRoute");
+      if ((customProperties == null) != (customBlocked == null)
+          || (customProperties == null) != (customOutcomes == null)
+          || (customProperties == null && customErrorRoute != null)
+          || (customProperties != null && bridge == null)) {
+        throw new IllegalArgumentException(
+            "customProperties, customBlocked and customOutcomes go together, on a journey job");
       }
     } catch (RuntimeException e) {
       return errorResponse(id, "protocol_error", e, sourceName, -1, -1, null);
@@ -550,13 +556,14 @@ public final class Runner {
       } catch (RhinoException e) {
         if (HarnessFaults.isStackOverflow(e)) return stackOverflowResponse(id, e, faults, sourceName);
         final Map<String, Object> thrown = errorFromRhino(id, "runtime_error", e);
-        // A custom node that throws keeps what it wrote before the throw (doc 25), and the engine
-        // takes its effects from this harvest -- only when the type routes a throw to Script Error.
-        // Otherwise the journey fails and nothing written survives, so nothing is serialized: a
-        // write the harvest cannot serialize must not turn that failure into an emulation one.
-        if (custom != null && customErrorOutcome) {
-          thrown.put("valueKind", "string");
-          thrown.put("value", bridge.harvestCustom(cx, null));
+        // A custom node that throws keeps what it wrote before the throw (doc 25) when its type
+        // routes a throw somewhere: the same decision as a return, made before any harvest.
+        if (custom != null) {
+          final String route = CustomNodeScope.route(null, customOutcomes, customErrorRoute);
+          if (route != null) {
+            thrown.put("valueKind", "string");
+            thrown.put("value", customHarvest(cx, bridge, route));
+          }
         }
         return thrown;
       } catch (Error e) {
@@ -582,7 +589,10 @@ public final class Runner {
               "ok",
               JsValues.of(
                   custom != null
-                      ? bridge.harvestCustom(cx, CustomNodeScope.outcome(custom))
+                      ? customHarvest(
+                          cx,
+                          bridge,
+                          CustomNodeScope.route(CustomNodeScope.outcome(custom), customOutcomes, customErrorRoute))
                       : bridge.harvest(cx)),
               null);
         }
@@ -657,6 +667,16 @@ public final class Runner {
    * open the caller attaches it with any other fault from this job; otherwise
    * the emulation goes on the response here.
    */
+  /**
+   * A custom node's response value once {@link CustomNodeScope#route} has decided its route: the
+   * harvest when the route has a consumer, else only the absent route. With no route the journey
+   * fails and keeps nothing the script wrote, so nothing is serialized -- a value the harvest
+   * cannot serialize must not turn that failure into an emulation failure.
+   */
+  private static String customHarvest(Context cx, AmHostBridge bridge, String route) {
+    return route != null ? bridge.harvestCustom(cx, route) : "{\"customRoute\":null}";
+  }
+
   private static Map<String, Object> stackOverflowResponse(
       String id, Throwable error, HarnessFaults faults, String sourceName) {
     Map<String, Object> response = error instanceof RhinoException

@@ -113,8 +113,13 @@ export interface JobRequest {
    */
   customProperties?: string;
   customBlocked?: string[];
-  /** The custom type routes a throw to Script Error, so a runtime error carries the harvest. */
-  customErrorOutcome?: boolean;
+  /**
+   * The custom type's listed outcomes, and `customErrorRoute` the route a throw or any other
+   * outcome takes (Script Error), absent when the type has none. The runner decides the route from
+   * these before it harvests, and harvests only for a route (java/CustomNodeScope.java, route).
+   */
+  customOutcomes?: string[];
+  customErrorRoute?: string;
 }
 
 export interface JobError {

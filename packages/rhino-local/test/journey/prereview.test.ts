@@ -332,6 +332,19 @@ describe("P2-3 custom nodes reach only the measured bindings", () => {
     const done = await req(custom("nodeState.putShared('username', typeof httpClient); outcome = 'ok';"));
     expect(dumped(done.body).username).toBe("undefined");
   });
+  // Review round 5 P2-3: outside the named refusals a custom script gets ordinary JavaScript errors,
+  // which it can catch. Discriminating: a named refusal for these would be an uncatchable 501.
+  it.each([
+    ["nodeState.getShared", "nodeState.getShared('realm');", "TypeError"],
+    ["nodeState.getTransient", "nodeState.getTransient('realm');", "TypeError"],
+    ["an unknown global", "notABinding.read();", "ReferenceError"],
+  ])("%s throws an ordinary catchable error", async (_, call, name) => {
+    const done = await req(
+      custom(`var n; try { ${call} n = 'none'; } catch (e) { n = e.name; } nodeState.putShared('username', n); outcome = 'ok';`),
+    );
+    expect(done.status).toBe(200);
+    expect(dumped(done.body).username).toBe(name);
+  });
   // Review round 4 P1-1: with no Script Error route a throw fails the journey and nothing it wrote
   // survives, so a write the harvest could not serialize must not become an emulation failure.
   it("a throw with no error outcome is 401 even after an unserializable write", async () => {
@@ -348,6 +361,26 @@ describe("P2-3 custom nodes reach only the measured bindings", () => {
   ])("routes %s by its value", async (_, body, status) => {
     const done = await req(custom(`nodeState.putShared('username', 'u'); ${body}`, true, runner, { errorTo: FAILURE }));
     expect(done.status).toBe(status);
+  });
+  // Review round 5 P1: the route is decided before anything is serialized, on every path. With no
+  // route (no error outcome, and an unlisted or unset outcome) the journey fails and keeps nothing,
+  // so a write the harvest could not serialize is never read: 401 at the top level, the named gap
+  // in an inner tree. A throw was round 4's case.
+  it.each([
+    ["an unlisted outcome", "outcome = 'wrong';"],
+    ["an unset outcome", ""],
+    ["a throw", "throw 'boom';"],
+  ])("%s with no route is 401 after an unserializable write", async (_, tail) => {
+    const done = await req(custom(`nodeState.putShared('bad', {u: undefined}); ${tail}`, false));
+    expect(done.status).toBe(401);
+  });
+  it.each([
+    ["an unlisted outcome", "outcome = 'wrong';"],
+    ["an unset outcome", ""],
+  ])("%s with no route after an unserializable write stays the named gap in an inner tree", async (_, tail) => {
+    const name = "inner tree script exception";
+    expectEmulationFailure(name);
+    refused(await req(custom(`nodeState.putShared('bad', {u: undefined}); ${tail}`, false, runner, { inner: true })), name);
   });
   // Review round 4 P2-2: in an inner tree, a throw or an unlisted outcome with no error outcome is
   // unmeasured, so it stays the named gap rather than the root's 401.

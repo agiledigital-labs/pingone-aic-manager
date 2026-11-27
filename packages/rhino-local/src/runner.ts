@@ -982,7 +982,8 @@ export class RhinoRunner {
     if (job.completionHarvest !== undefined) payload.completionHarvest = job.completionHarvest;
     if (job.customProperties !== undefined) payload.customProperties = job.customProperties;
     if (job.customBlocked !== undefined) payload.customBlocked = job.customBlocked;
-    if (job.customErrorOutcome !== undefined) payload.customErrorOutcome = job.customErrorOutcome;
+    if (job.customOutcomes !== undefined) payload.customOutcomes = job.customOutcomes;
+    if (job.customErrorRoute !== undefined) payload.customErrorRoute = job.customErrorRoute;
     const transcript: Array<{ call: HostCall; reply: HostReply | undefined }> = [];
     let transcriptFrozen = false;
     const primaryCall = bindEmulationOwner((call: HostCall): Promise<HostReply> => this.#failures.run(

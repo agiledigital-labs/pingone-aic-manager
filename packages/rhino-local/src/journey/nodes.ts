@@ -388,7 +388,8 @@ export class JourneyNodes {
       if (!schema) this.missing(`AttributeCollectorNode schema: ${resource}`);
       const attrs: Document = {},
         callbacks: CallbackEffect[] = [];
-      let invalid = false;
+      let invalid = false,
+        blankRetry = false;
       if (
         submitted.length &&
         submitted.length !== config.attributesToCollect.length
@@ -510,8 +511,10 @@ export class JourneyNodes {
           if (failedPolicies.length) invalid = true;
         }
         setNested(attrs, path, answer);
-        if (config.required === true && answer === "") invalid = true;
-        else if (cb && answer === "")
+        if (config.required === true && answer === "") {
+          invalid = true;
+          if (cb) blankRetry = true;
+        } else if (cb && answer === "")
           this.evidence.measured(
             "AttributeCollectorNode writes a blank non-required answer as the empty string",
             "docs/api/25-journey-runtime.md (Attribute Collector, a non-required attribute left blank, 2026-11-04)",
@@ -532,10 +535,13 @@ export class JourneyNodes {
           "AttributeCollectorNode validateInputs true sends the attribute's policies, retries a failing page with the answers kept and failedPolicies as JSON text, and a validate-only submission is sent again with validateOnly true",
           VALIDATE_SOURCE,
         );
-      this.evidence.measured(
-        "AttributeCollectorNode callback fields, shared objectAttributes and required-empty retry with empty failedPolicies",
-        SOURCE,
-      );
+      this.evidence.measured("AttributeCollectorNode callback fields and shared objectAttributes", SOURCE);
+      // Only a submitted blank required answer is the measured blank retry; a policy failure is not.
+      if (blankRetry)
+        this.evidence.measured(
+          "AttributeCollectorNode required-empty retry with empty failedPolicies",
+          SOURCE,
+        );
       if (!submitted.length || invalid) return { outcome: null, callbacks };
       // Measured: the collected keys come out in alphabetical order whatever the collection order.
       const ordered: Document = {};

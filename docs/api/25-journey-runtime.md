@@ -816,6 +816,11 @@ refused only when its value is a configured session's.
 
 ### Custom (Node Designer) node types (2026-11-25)
 
+**No committed probe for the type, instance, binding, throw and route rows
+below**: they come from an uncommitted run on 2026-11-25. The committed
+`scripts/experiment-journey-esv-placeholders.sh` covers custom node
+properties and their ESV placeholders only.
+
 The sandbox allows creating them. A type is stored at
 `/am/json/node-designer/node-type/<serviceName>-1` (header
 `Accept-API-Version: protocol=2.0,resource=1.0`; `PUT` 201, `DELETE` 200) with

@@ -406,6 +406,9 @@ describe("one-time password and choice nodes as Page children", () => {
     expect(kinds("measured")).not.toContain("failedPolicies");
     expect(kinds("measured")).toContain("an empty one-time password answer sends the same page again");
     expect(kinds("assumed")).toContain("leaves no pageNodeCallbacks");
+    // Review round 5 P2-2: the section, not only the date.
+    const tag = (resent.provenance ?? []).find((e) => e.behavior.includes("an empty one-time password answer"));
+    expect(tag?.source).toContain("(One Time Password Collector Decision and Choice Collector as Page children, 2026-11-25)");
   });
 
   // Review round 3 P2-3: beside a username child, the page is re-sent for the one-time password child
@@ -422,7 +425,7 @@ describe("one-time password and choice nodes as Page children", () => {
     expect(kinds("assumed")).toContain("echoes an accepted sibling's submitted values");
     // Review round 4 P2-1: the tag cites the Nov 25 measurement it comes from.
     const tag = (resent.provenance ?? []).find((e) => e.behavior.includes("an empty one-time password answer"));
-    expect(tag?.source).toContain("2026-11-25");
+    expect(tag?.source).toContain("(One Time Password Collector Decision and Choice Collector as Page children, 2026-11-25)");
   });
 
   it("after a username collector the one-time password input is IDToken2, and the page records both callbacks", async () => {
