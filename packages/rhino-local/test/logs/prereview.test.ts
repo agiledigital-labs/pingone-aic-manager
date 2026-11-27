@@ -115,3 +115,41 @@ describe("P2-4 _queryFilter and unknown parameters", () => {
     expect(res.status).toBe(501);
   });
 });
+
+describe("review round 1: repeated parameters and the measured am-core 500s", () => {
+  async function seeded() {
+    const r = await rig();
+    r.store.emit(record("am-access", T0 + SECOND, { transactionId: "keep" }));
+    r.store.emit(record("am-access", T0 + 2n * SECOND, { transactionId: "drop" }));
+    return r;
+  }
+  async function raw(r: Rig, query: [string, string][]) {
+    const url = new URL("/monitoring/logs", r.server.url);
+    for (const [k, v] of query) url.searchParams.append(k, v);
+    const res = await fetch(url, { headers: { "x-api-key": KEY.id, "x-api-secret": KEY.secret } });
+    return { status: res.status, body: (await res.json()) as Record<string, unknown> };
+  }
+  // P1-2. Discriminating: URLSearchParams.get reads only the first, which alone is a valid filter.
+  it.each([
+    ["_queryFilter", 'payload/transactionId eq "keep"', 'payload/logger eq "x"'],
+    ["transactionId", "keep", "drop"],
+    ["source", "am-access", "am-core"],
+  ])("refuses %s given twice with a 501 naming it", async (name, first, second) => {
+    const query = Object.entries(window()).filter(([k]) => k !== name);
+    const res = await raw(await seeded(), [...query, [name, first], [name, second]]);
+    expect(res.status).toBe(501);
+    expect(String(res.body["message"])).toContain(name);
+  });
+  // P2-2: doc 08 measured these two on am-core as the tenant's 500.
+  it.each([['payload/logger eq "x"'], ['payload/message co "x"']])(
+    "answers %s on am-core with the measured 500",
+    async (filter) => {
+      const res = await get(await seeded(), window({ source: "am-core", _queryFilter: filter }));
+      expect(res.status).toBe(500);
+    },
+  );
+  it("keeps the 501 for the same filter on a source it was not measured on", async () => {
+    const res = await get(await seeded(), window({ source: "am-access", _queryFilter: 'payload/logger eq "x"' }));
+    expect(res.status).toBe(501);
+  });
+});

@@ -2568,11 +2568,18 @@ rate}`; now is `virtual_origin + (real now - real_origin) * rate`, read once at
   own stream in `source`. Other sources the tenant lists (`ctsstore`,
   `userstore*`) are accepted and empty; anything else is a 400.
 - **`transactionId`** is a prefix match on `payload.transactionId`, as measured.
-- **`_queryFilter`** serves exactly one form, `payload/transactionId eq "<id>"`,
-  an exact match (docs/api/08-logs.md). Any other filter, the filter combined with
-  `transactionId`, and any query parameter the server does not know is a `501`
-  naming it, the emulator's own refusal, rather than a page that silently ignores
-  it. The paging cookie is bound to the filter like the rest of the query.
+- **`_queryFilter`** serves one form, `payload/transactionId eq "<id>"`
+  (docs/api/08-logs.md records it working). The emulator matches it **exactly**,
+  as CREST `eq` reads; the doc has no exact-versus-prefix control for this filter
+  (the `transactionId` parameter is the measured prefix match), so treat exactness
+  as the emulator's choice. The two filters doc 08 measured failing on `am-core`,
+  `payload/logger eq "…"` and `payload/message co "…"`, answer the tenant's `500`
+  there (status measured, body not). Every other filter, those two on any other
+  source, the filter combined with `transactionId`, any parameter given more than
+  once, and any parameter the server does not know is a `501` naming it: the
+  emulator's own refusal for what was never measured, rather than a page that
+  silently ignores it. The paging cookie is bound to the filter like the rest of
+  the query.
 - **Publication.** A record is visible once virtual now >= its timestamp (zero
   lag, which meets "published within two virtual minutes"). A record stamped in
   the future stays hidden until the clock reaches it.
@@ -2591,7 +2598,7 @@ rate}`; now is `virtual_origin + (real now - real_origin) * rate`, read once at
   answer instead of the real reply. It runs after auth and the quota, so an
   injected 5xx still spends quota, as a real one does.
 
-Not served: `/monitoring/logs/sources`, `/monitoring/logs/tail`, and any `_queryFilter` but the one above.
+Not served: `/monitoring/logs/sources`, `/monitoring/logs/tail`, and any `_queryFilter` but the ones above.
 
 ## Artefacts
 

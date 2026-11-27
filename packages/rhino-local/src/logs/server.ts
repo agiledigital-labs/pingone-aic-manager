@@ -116,12 +116,23 @@ const KNOWN_PARAMS = [
 /** The one `_queryFilter` the tenant was seen to honour. */
 const TX_FILTER = /^payload\/transactionId eq ("(?:[^"\\]|\\.)*")$/;
 /**
+ * The filters doc 08 measured failing (2026-08-12, `am-core`, 20 s and 6 h windows alike):
+ * `payload/logger eq "…"` and `payload/message co "…"` answer `500 Internal server error`. Only
+ * the status is recorded; the body here is the emulator's CREST-style one.
+ */
+const MEASURED_500 = [
+  /^payload\/logger eq "(?:[^"\\]|\\.)*"$/,
+  /^payload\/message co "(?:[^"\\]|\\.)*"$/,
+];
+/**
  * The id a `_queryFilter` selects. doc 08 records `payload/transactionId eq "…"` working and most
  * other payload fields failing 500; which do not is unrecorded, so every other filter is refused
  * as the emulator's own 501, never answered unfiltered. Exact match is CREST `eq`; that the tenant
  * does not prefix-match here, as it does for the `transactionId` parameter, is unmeasured.
  */
-function filteredTransaction(filter: string): string {
+function filteredTransaction(filter: string, sources: readonly string[]): string {
+  if (sources.length === 1 && sources[0] === "am-core" && MEASURED_500.some((r) => r.test(filter)))
+    throw new HttpError(500, "Internal server error");
   const match = TX_FILTER.exec(filter);
   let id: unknown;
   try {
@@ -236,6 +247,14 @@ export async function startLogsServer(options: LogsServerOptions): Promise<LogsS
     if (unknownParams.length > 0) {
       throw new HttpError(501, `Not modelled by the emulator: query parameter ${unknownParams.join(", ")}`);
     }
+    // What the tenant does with a parameter given twice is unmeasured, and reading only the first
+    // would answer a query nobody asked: refuse.
+    const repeated = [...new Set(url.searchParams.keys())].filter(
+      (name) => url.searchParams.getAll(name).length > 1,
+    );
+    if (repeated.length > 0) {
+      throw new HttpError(501, `Not modelled by the emulator: query parameter given more than once: ${repeated.join(", ")}`);
+    }
 
     const sourceParam = param("source");
     if (sourceParam === undefined || sourceParam === "") {
@@ -299,7 +318,7 @@ export async function startLogsServer(options: LogsServerOptions): Promise<LogsS
 
     const transactionId = param("transactionId");
     const filterText = param("_queryFilter");
-    const equals = filterText === undefined ? undefined : filteredTransaction(filterText);
+    const equals = filterText === undefined ? undefined : filteredTransaction(filterText, requested);
     if (equals !== undefined && transactionId !== undefined) {
       throw new HttpError(501, "Not modelled by the emulator: transactionId together with _queryFilter");
     }
