@@ -326,6 +326,23 @@ describe("a Page's stage (doc 25, 2026-11-25)", () => {
       expect((resent.body as Wire).stage).toBe(expected);
     }
   });
+  // Review round 2 P2-4: the committed probe answered its stage pages first time, and re-sent only
+  // a page with header and description, so the stage's repetition is the emulator's assumption.
+  it("measures the stage's presence and assumes its repetition", async () => {
+    const emu = tree("S1");
+    const first = await run(emu, "page");
+    const resent = await run(emu, "page", answer(first.body, { 0: "", 1: "" }));
+    const of = (r: typeof first, kind: string) =>
+      (r.provenance ?? []).filter((e) => e.kind === kind).map((e) => e.behavior).join("\n");
+    expect(of(first, "measured")).toContain("sends its non-empty stage");
+    expect(of(first, "measured")).not.toContain("repeats it");
+    expect(of(resent, "assumed")).toContain("a re-sent page repeats its stage");
+  });
+  it("says the callback _id numbering came from an uncommitted run", async () => {
+    const first = await run(tree("S1"), "page");
+    const id = (first.provenance ?? []).find((e) => e.behavior.includes("top-level numeric _id"));
+    expect(id?.behavior).toContain("uncommitted");
+  });
 });
 
 // E42: OneTimePasswordCollectorDecisionNode and ChoiceCollectorNode as Page children (doc 25, 2026-11-25).
@@ -374,6 +391,19 @@ describe("one-time password and choice nodes as Page children", () => {
     expect(types(resent.body)).toEqual(["PasswordCallback"]);
     const done = dump((await run(emu, "page", answer(resent.body, { 0: "123456" }))).body);
     expect(done).toMatchObject({ branch: "T", pageNodeCallbacks: null });
+  });
+
+  // Review round 2 P2-3: the re-send is measured for this node (doc 25's table); the Attribute
+  // Collector's echo-and-failedPolicies measurement is another node's wire shape and must not ride it.
+  it("a lone one-time password re-send carries its own evidence, not the attribute collector's", async () => {
+    const emu = otp(["o"]);
+    const first = await run(emu, "page");
+    const resent = await run(emu, "page", answer(first.body, { 0: "" }));
+    const kinds = (kind: string) =>
+      (resent.provenance ?? []).filter((e) => e.kind === kind).map((e) => e.behavior).join("\n");
+    expect(kinds("measured")).not.toContain("failedPolicies");
+    expect(kinds("measured")).toContain("an empty one-time password answer sends the same page again");
+    expect(kinds("assumed")).toContain("leaves no pageNodeCallbacks");
   });
 
   it("after a username collector the one-time password input is IDToken2, and the page records both callbacks", async () => {

@@ -204,7 +204,7 @@ deleted, deletion confirmed by a `GET`). Outer tree: script, then `InnerTreeEval
 
 | Question | Observed | Control |
 | --- | --- | --- |
-| Callbacks and properties the client sees | The inner page's callbacks, in page order, with its own `header`, `description` and `stage` (`IN-H`, `IN-D`, `IN-S`) beside `callbacks` | The same page as an outer page sends the same shape |
+| Callbacks and properties the client sees | The inner page's callbacks, in page order, with its own `header`, `description` and `stage` (`IN-H`, `IN-D`, `IN-S`) beside `callbacks` | An outer page sends the same shape (case B's outer page, a different page from case A's inner one) |
 | An outer page's properties | **Do not leak**: an outer page with `OUT-H`/`OUT-D`/`OUT-S` was answered, and the inner page (configured with none) came back with no `header`, `description` or `stage` | The outer page's own response carried all three |
 | Resuming | The submission resumes **inside the inner tree**: the inner script after the page ran (it saw the answers) and the inner tree's success routed the outer evaluator to `true` | — |
 | Shared state across the boundary | Outer shared written before the inner tree is read inside it (`os`); inner shared written after the page is read by the outer dump (`is`); the page's `username` is shared and read at every level | — |
@@ -213,7 +213,7 @@ deleted, deletion confirmed by a `GET`). Outer tree: script, then `InnerTreeEval
 | Empty answers in an inner page | The whole page is sent again with its `header`/`description`; a later answer continues | — |
 | The inner tree ends by its failure node after the page | The outer evaluator takes `false` (the `false` dump ran) | — |
 | Two deep (outer, middle evaluator, innermost page) | The page's callbacks are the first response; its answer resumes in the innermost tree; its shared writes are visible to the middle tree's script and the outer dump | — |
-| `stage` | A page's non-empty `stage` is a top-level string beside `callbacks`, repeated when the page is re-sent; `stage: ""` and no `stage` send none (outer pages, same run) | Three pages differing only in `stage`. **Unrecorded**: the committed probe sets `stage` only on the inner page of case A and the outer page of case B; the empty and absent controls came from an uncommitted run |
+| `stage` | A page's non-empty `stage` is a top-level string beside `callbacks`; `stage: ""` and no `stage` send none (outer pages, same run). **Unrecorded**: that a re-sent page repeats its `stage`. Every committed page with a `stage` was answered first time, and the committed re-send (case E) is of a page with `header` and `description` only; the emulator repeats it and tags that assumed | Three pages differing only in `stage`. **Unrecorded**: the committed probe sets `stage` only on the inner page of case A and the outer page of case B; the empty and absent controls came from an uncommitted run |
 | Callback `_id` and `pageNodeCallbacks` | **`_id` is unrecorded by the committed probe**: `scripts/experiment_journey_lib.py`'s callback view (`cbs`) drops it, so the numbering below came from an uncommitted run. The `pageNodeCallbacks` value is in the probe's dump, which every case runs and which prints it with `String()`. Every callback the journey sends carries a top-level numeric `_id`, counting up across the whole journey (`0`, `1`, then `2`, `3` on a re-send; `0` then `1` on a revisit). Shared `pageNodeCallbacks` is a **map of callback `_id` to child index** (`{ "0": 0, "1": 1 }`) that **accumulates** one entry per callback of every visit to a page, a re-sent or revisited one included (`{ "0": 0, "1": 1, "2": 0, "3": 1 }` after a re-send). The emulator models both: `_id` counts across the journey, and a `pageNodeCallbacks` that is not a map is `missing` | — |
 
 ## Identify Existing User
@@ -663,7 +663,7 @@ effect of `idleTimeout`, and signing through a secret label.
 | Question | Observed | Control |
 | --- | --- | --- |
 | State written | **Shared** `oneTimePassword` (a string of digits, **leading zeros kept**, `00241136`) and `oneTimePasswordTimestamp` (a **number**, epoch **seconds**). Both survived the callback round trip | `maxAuthenticationSessionDuration` (transient) did not |
-| Length | 6, 7 and 8 gave that many digits; a different password every run. A `length` of **9, 10, 11, 12 or 20 passes the node `PUT` but fails the journey with 401 `Login failure`** | A `length` of 0, 3, 4 or 5 is refused at `PUT`: `400 Data validation failed for the attribute, One Time Password Length`. No `length` is accepted, and ran as 8. **Unmeasured**: an ESV-backed `{"$int": "&{esv.…}"}` length; the emulator refuses it with the number refusal above, though Retry Limit's `retryLimit` accepts that form |
+| Length | 6, 7 and 8 gave that many digits; a different password every run. A `length` of **9, 10, 11, 12 or 20 passes the node `PUT` but fails the journey with 401 `Login failure`** | A `length` of 0, 3, 4 or 5 is refused at `PUT`: `400 Data validation failed for the attribute, One Time Password Length`. No `length` is accepted, and ran as 8. **Unmeasured**: an ESV-backed `{"$int": "&{esv.…}"}` length; the emulator refuses it when the config loads as not modelled, though Retry Limit's `retryLimit` accepts that form. A literal `{"$int": "7"}` is not a number and keeps the number refusal |
 
 ### Retry Limit Decision (`listOutcomes`: `["Retry","Reject"]`)
 
@@ -975,9 +975,9 @@ Measured with `scripts/experiment-journey-page-choice-otp.sh`, each node alone a
 
 Standalone and as a child the behaviour is the same. `pageNodeCallbacks` is the `{ "0": 0, "1": 1 }` map of
 callback to child as above when a username child sits beside them; a page whose **only** child is one of these two
-leaves no `pageNodeCallbacks` at all, as a lone display node does. The probe stops at the first answer, so a lone
-child **re-sent** (an empty one-time password) is unmeasured; the emulator keeps omitting the map there and tags
-that assumed. Both types were previously refused as page
+leaves no `pageNodeCallbacks` at all, as a lone display node does. That a lone one-time password child is re-sent
+on an empty answer is the table's `empty` row; the probe stops at the first answer, so what `pageNodeCallbacks`
+holds **after** that re-send is unmeasured. The emulator keeps omitting the map there and tags that assumed. Both types were previously refused as page
 children.
 
 ## DataStoreDecisionNode and accountStatus (2026-11-25)

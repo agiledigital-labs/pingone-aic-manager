@@ -104,9 +104,14 @@ const COOKIE_SOURCE = "docs/api/25-journey-runtime.md (Persistent cookie value, 
 /** A node configuration the tenant refuses at write time; the emulator refuses it when the config loads. */
 export function validateExtraNode(type: string, node: NodeDocument): void {
   // UNMEASURED: whether the tenant accepts an ESV-backed length (`{"$int": "&{esv.…}"}`, as it
-  // does for retryLimit) was never tried; the emulator refuses it with the measured number refusal.
+  // does for retryLimit) was never tried; the emulator refuses it as not modelled. Only a real
+  // placeholder is that form: a literal `{"$int": "7"}` is not a number, and keeps the number refusal.
   if (type === "OneTimePasswordGeneratorNode" && node.length !== undefined) {
-    if (isDocument(node.length) && typeof node.length.$int === "string")
+    if (
+      isDocument(node.length) &&
+      typeof node.length.$int === "string" &&
+      /&\{esv\.[^}]+\}/.test(node.length.$int)
+    )
       throw new RangeError(
         "Not modelled by the emulator: OneTimePasswordGeneratorNode length as an ESV placeholder (whether the tenant accepts one is unmeasured)",
       );

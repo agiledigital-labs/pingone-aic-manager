@@ -542,4 +542,8 @@ describe("review round 1 P3-3: an ESV-backed OTP length is refused as unmodelled
   it("still gives the measured refusal for a number below 6", () => {
     expect(build(5)).toThrow("400 Data validation failed for the attribute, One Time Password Length");
   });
+  // Review round 2 P3-1: only a real placeholder is the ESV form; a literal $int keeps its old path.
+  it("keeps the number refusal for a literal {$int: \"7\"}", () => {
+    expect(build({ $int: "7" })).toThrow("400 Data validation failed for the attribute, One Time Password Length");
+  });
 });

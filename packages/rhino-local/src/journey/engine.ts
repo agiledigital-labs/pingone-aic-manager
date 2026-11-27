@@ -1027,7 +1027,7 @@ export class JourneyEmulator {
     const stage = config.stage;
     if (stage === undefined || stage === "") return {};
     if (typeof stage !== "string") this.missing("PageNode stage shape");
-    this.measured("a PageNode sends its non-empty stage as a top-level stage beside callbacks; a re-sent page repeats it");
+    this.measured("a PageNode sends its non-empty stage as a top-level stage beside callbacks");
     return { stage };
   }
   private async page(
@@ -1173,17 +1173,26 @@ export class JourneyEmulator {
           "a re-sent Page repeats an accepted sibling's callbacks as first sent; measured for PasswordCallback only",
         );
       state.page = previous;
-      this.measured(
-        "required empty attribute re-sends the whole page with echoed values and empty failedPolicies",
-      );
-      // A re-sent lone child (a one-time password collector after an empty answer) keeps the
-      // first send's rule: the probe stopped at the first answer, so this is assumed.
-      if (lonePageChild(config.nodes)) {
+      // Doc 25's inner-page probe re-sent only a page with a header and description; every page it
+      // gave a stage was answered first time.
+      if (texts.stage !== undefined)
         this.evidence.assumed(
-          "a Page whose only child is re-sent leaves no pageNodeCallbacks, as on its first send; the re-send is unmeasured",
+          "a re-sent page repeats its stage, as it does its header and description; the stage's repetition is unmeasured",
+        );
+      // A re-sent lone child (a one-time password collector after an empty answer): doc 25's table
+      // measured the re-send itself, but the probe stopped at the first answer, so what the shared
+      // map holds after it is assumed to keep the first send's rule.
+      if (lonePageChild(config.nodes)) {
+        if (config.nodes.some((c) => isDocument(c) && c.nodeType === "OneTimePasswordCollectorDecisionNode"))
+          this.measured("an empty one-time password answer sends the same page again, with no outcome");
+        this.evidence.assumed(
+          "a Page whose only child is re-sent leaves no pageNodeCallbacks, as on its first send; the map after a re-send is unmeasured",
         );
         return { outcome: null, callbacks: retry, ...texts };
       }
+      this.measured(
+        "required empty attribute re-sends the whole page with echoed values and empty failedPolicies",
+      );
       return { outcome: null, callbacks: retry, ...texts, pageChildren: children };
     }
     return { outcome, callbacks: [] };
@@ -1202,7 +1211,7 @@ export class JourneyEmulator {
     for (const [index, callback] of callbacks.entries()) callback._id = first + index;
     state.nextCallbackId = first + callbacks.length;
     this.measured(
-      "every callback a journey sends carries a top-level numeric _id counting up across the whole journey",
+      "every callback a journey sends carries a top-level numeric _id counting up across the whole journey (an uncommitted run: the committed probe's callback view drops _id)",
     );
     if (!pageChildren) return;
     if (pageChildren.length !== callbacks.length) throw new Error("page callback invariant");
