@@ -82,8 +82,9 @@ pub enum WriteStatus {
 /// the message, both required, because neither alone identifies it.
 ///
 /// This is the only way a post-send error is classified as not applied, so
-/// an entry needs the evidence a `docs/api/` row needs. The two that exist
-/// are `rotate::spec`'s ESV refusals, both in `docs/api/03-esvs.md`;
+/// an entry needs the evidence a `docs/api/` row needs. The ones that exist
+/// are `rotate::spec`'s two ESV refusals (`docs/api/03-esvs.md`) and
+/// `journey::api`'s two `PageNode` `PUT` refusals (`docs/api/09-journeys.md`);
 /// `importEntity` has none, since every failure measured there is the same
 /// opaque 500.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

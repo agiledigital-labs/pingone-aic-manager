@@ -182,7 +182,10 @@ impl Tenant {
 }
 
 fn run(project: &Project, mut command: Command, mut tenant: Tenant) -> (Output, Tenant) {
-    let listener = UnixListener::bind(project.0.join(".aic/agent.sock")).unwrap();
+    // A second run in one project rebinds the socket the first left behind.
+    let socket = project.0.join(".aic/agent.sock");
+    let _ = std::fs::remove_file(&socket);
+    let listener = UnixListener::bind(socket).unwrap();
     listener.set_nonblocking(true).unwrap();
     let mut child = command.spawn().unwrap();
     let deadline = std::time::Instant::now() + Duration::from_secs(15);
@@ -433,16 +436,24 @@ fn journey_push_stopped_by_a_locked_agent_says_nothing_landed() {
     }
 }
 
-/// Regression (review round 3 P1-3): with the tree applied and its reply
-/// lost, every node was already attached by the page and tree on the tenant,
-/// yet the advice said a newly attached node "will not show" in status. The
-/// advice now says what status reads instead of predicting what it misses.
+/// Regression (review round 3 P1-3, round 4 P2-1): the tree `PUT` is
+/// applied and its reply lost. The push attaches a new child `fresh` to the
+/// page and changes the tree itself, so the tree landing is observable: the
+/// tenant must hold the new tree body, the error must call the tree's
+/// outcome unknown rather than failed, and the next `status` must show both
+/// `fresh` and the tree as changed on the tenant. With the fixture's
+/// apply-before-reply flag off, the tree assertion fails.
 #[test]
 fn journey_push_with_a_lost_tree_reply_reports_every_node_acknowledged() {
     let project = Project::new();
     project.write_snapshot(&journey());
     let mut local = journey();
-    local["nodes"]["user"]["validateInput"] = json!(true);
+    local["tree"]["description"] = json!("v2");
+    local["nodes"]["page"]["nodes"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"_id": "fresh", "nodeType": "MessageNode"}));
+    local["nodes"]["fresh"] = json!({"_id": "fresh", "message": {"en": "hi"}});
     project.write_export(&local);
     let before = project.files();
     let mut tenant = Tenant::new(journey());
@@ -452,19 +463,27 @@ fn journey_push_with_a_lost_tree_reply_reports_every_node_acknowledged() {
         true,
     ));
 
-    let (output, tenant) = project.push(tenant, &[]);
+    let (output, mut tenant) = project.push(tenant, &[]);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert_eq!(output.status.code(), Some(1), "{stderr}");
     for expected in [
         "tree may have landed",
-        "acknowledged by the tenant (4)",
-        "reads only the nodes the tenant's current tree and pages reference",
+        "acknowledged by the tenant (5)",
+        "reads what the tenant's current tree and pages reference; run it",
     ] {
         assert!(stderr.contains(expected), "{expected}: {stderr}");
     }
-    assert!(!stderr.contains("will not show"), "{stderr}");
-    assert_eq!(tenant.state["nodes"]["user"]["validateInput"], true);
+    assert_eq!(tenant.state["tree"]["description"], "v2", "the tree landed");
     assert_eq!(project.files(), before);
+
+    tenant.fail_put = None;
+    let (output, _) = project.journey(tenant, &["status", "Login", "--json"]);
+    let stdout: Value = serde_json::from_slice(&output.stdout)
+        .unwrap_or_else(|error| panic!("{error}: {}", String::from_utf8_lossy(&output.stderr)));
+    let remote = &stdout["journeys"][0]["remote_changes"];
+    let parts: Vec<&Value> = remote.as_array().unwrap().iter().collect();
+    assert!(parts.iter().any(|part| part["id"] == "fresh"), "{remote}");
+    assert!(parts.iter().any(|part| part["part"] == "tree"), "{remote}");
 }
 
 /// Regression (review round 3 P2-3, round 2 P1-4) at the CLI: Login's

@@ -166,11 +166,14 @@ pub fn reference_problems(copy: &Value) -> Vec<String> {
 /// The parts that differ between two copies: the tree, then each node whose
 /// config differs or exists on one side only, in id order.
 ///
-/// A node's type, page and display name come from the first copy that lists
-/// it, trying `current` first: the tenant's copy where one was read, since a
-/// child may have moved between pages since the snapshot, and its page is
-/// what `shared_with` reads sharing from. The display name falls through to
-/// a later copy when the first has none.
+/// A node's **type** comes from the first of `left`, `right` that lists it —
+/// so the caller puts the side whose change is being described first: a
+/// local retype is described by the local export's endpoint, the one a push
+/// writes. Its **page** comes from `current` first (the tenant's copy where
+/// one was read), since a child may have moved between pages since the
+/// snapshot, and its page is what `shared_with` reads sharing from. The
+/// display name falls through `left`, `right`, `current` to the first that
+/// has one.
 pub fn changed_parts(left: &Value, right: &Value, current: Option<&Value>) -> Vec<Part> {
     let mut out = Vec::new();
     let tree_equal = match (left.get("tree"), right.get("tree")) {
@@ -188,11 +191,8 @@ pub fn changed_parts(left: &Value, right: &Value, current: Option<&Value>) -> Ve
             .unwrap_or_default()
     };
     let (a, b) = (nodes(left), nodes(right));
-    let listed: Vec<NodeRef> = current
-        .into_iter()
-        .chain([left, right])
-        .flat_map(refs)
-        .collect();
+    let named: Vec<NodeRef> = [left, right].into_iter().flat_map(refs).collect();
+    let placed: Vec<NodeRef> = current.into_iter().flat_map(refs).collect();
     let ids: BTreeSet<&String> = a.keys().chain(b.keys()).collect();
     for id in ids {
         let same = match (a.get(id), b.get(id)) {
@@ -200,16 +200,23 @@ pub fn changed_parts(left: &Value, right: &Value, current: Option<&Value>) -> Ve
             _ => false,
         };
         if !same {
-            let mut found = listed.iter().filter(|node| node.id == *id);
-            let first = found.next();
+            let of = |copies: &'_ [NodeRef]| {
+                copies
+                    .iter()
+                    .filter(|node| node.id == *id)
+                    .cloned()
+                    .collect::<Vec<_>>()
+            };
+            let (named, placed) = (of(&named), of(&placed));
+            let first = named.first();
             out.push(Part::Node {
                 id: id.clone(),
-                node_type: first.map(|node| node.node_type.clone()),
-                display_name: first
-                    .into_iter()
-                    .chain(found)
+                node_type: first.or(placed.first()).map(|node| node.node_type.clone()),
+                display_name: named
+                    .iter()
+                    .chain(&placed)
                     .find_map(|node| node.display_name.clone()),
-                page: first.and_then(|node| node.page.clone()),
+                page: placed.first().or(first).and_then(|node| node.page.clone()),
             });
         }
     }

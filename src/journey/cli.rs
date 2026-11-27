@@ -660,15 +660,25 @@ where
                 if node_config_references_script(&node_type, &config, script_id) {
                     return true;
                 }
-                match api::page_children(&node_id, &node_type, &config) {
-                    Ok(children) => queue.extend(
-                        children
-                            .into_iter()
-                            .filter(|child| {
-                                child.node_type.contains("Script") && seen.insert(child.id.clone())
-                            })
-                            .map(|child| (child.id, child.node_type)),
-                    ),
+                // Lenient: a read-only search warns about each entry it
+                // cannot address and keeps searching the page's others.
+                match api::page_listing(&node_id, &node_type, &config) {
+                    Ok((children, problems)) => {
+                        for problem in problems {
+                            eprintln!(
+                                "warning: skipped a child of {node_type}/{node_id}: {problem}"
+                            );
+                        }
+                        queue.extend(
+                            children
+                                .into_iter()
+                                .filter(|child| {
+                                    child.node_type.contains("Script")
+                                        && seen.insert(child.id.clone())
+                                })
+                                .map(|child| (child.id, child.node_type)),
+                        )
+                    }
                     Err(error) => eprintln!(
                         "warning: could not list children of {node_type}/{node_id}: {error}"
                     ),
@@ -886,7 +896,10 @@ pub async fn run(cmd: JourneyCommand) -> Result<()> {
                     continue;
                 }
                 let state = drift::state(local.as_ref(), snapshot.as_ref(), remote.as_ref());
-                let parts = |a: Option<&Value>, b: Option<&Value>| match (a, b) {
+                // The first copy names a changed node's type: the side that
+                // changed (local for local changes, the tenant's for remote
+                // ones). The tenant's copy places it in a page either way.
+                let parts = |changed: Option<&Value>, base: Option<&Value>| match (changed, base) {
                     (Some(a), Some(b)) => drift::changed_parts(a, b, remote.as_ref()),
                     _ => Vec::new(),
                 };
@@ -894,7 +907,7 @@ pub async fn run(cmd: JourneyCommand) -> Result<()> {
                     name: name.clone(),
                     state: Some(state),
                     local: parts(local.as_ref(), snapshot.as_ref()),
-                    remote: parts(snapshot.as_ref(), remote.as_ref()),
+                    remote: parts(remote.as_ref(), snapshot.as_ref()),
                     problems,
                     notes,
                 });
@@ -1060,7 +1073,13 @@ pub async fn run(cmd: JourneyCommand) -> Result<()> {
             // The right side is the tenant's copy unless only local and
             // snapshot are compared.
             let current = (!local_vs_snapshot).then_some(&right);
-            let parts = drift::changed_parts(&left, &right, current);
+            // Name a node by the newer side: the tenant's in a
+            // snapshot-vs-remote diff, otherwise the left (local) copy.
+            let parts = if snapshot_vs_remote {
+                drift::changed_parts(&right, &left, current)
+            } else {
+                drift::changed_parts(&left, &right, current)
+            };
             let shown = drift::shown_changes(&left, &right);
             if json {
                 print_json(&serde_json::json!({

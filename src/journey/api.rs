@@ -233,13 +233,40 @@ pub async fn list_custom_node_types(tenant: &str) -> Result<Vec<Value>> {
     Ok(result.clone())
 }
 
+/// What a malformed value is, for a diagnostic: its JSON kind and, for an
+/// object, its field **names**. Never the value itself — a node config can
+/// hold a secret, and these messages reach stderr, status notes and errors,
+/// none of which pass through `diff`'s masking.
+fn shape(value: Option<&Value>) -> String {
+    match value {
+        None => "absent".into(),
+        Some(Value::Null) => "null".into(),
+        Some(Value::Bool(_)) => "a boolean".into(),
+        Some(Value::Number(_)) => "a number".into(),
+        Some(Value::String(_)) => "a string".into(),
+        Some(Value::Array(items)) => format!("an array of {}", items.len()),
+        Some(Value::Object(fields)) if fields.is_empty() => "an empty object".into(),
+        Some(Value::Object(fields)) => format!(
+            "an object with fields {}",
+            fields
+                .keys()
+                .map(|key| format!("`{key}`"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    }
+}
+
 fn node_refs(tree: &Value) -> Result<Vec<(String, String)>> {
     let nodes = tree
         .get("nodes")
         .and_then(Value::as_object)
         .ok_or_else(|| Error::Api {
             status: 0,
-            body: format!("journey tree has no `nodes` object: {tree}"),
+            body: format!(
+                "journey tree has no `nodes` object ({})",
+                shape(tree.get("nodes"))
+            ),
         })?;
 
     nodes
@@ -250,7 +277,10 @@ fn node_refs(tree: &Value) -> Result<Vec<(String, String)>> {
                 .and_then(Value::as_str)
                 .ok_or_else(|| Error::Api {
                     status: 0,
-                    body: format!("journey node {id:?} has no string `nodeType`: {meta}"),
+                    body: format!(
+                        "journey node {id:?} has no string `nodeType` ({})",
+                        shape(Some(meta))
+                    ),
                 })?;
             Ok((id.clone(), node_type.to_owned()))
         })
@@ -306,7 +336,7 @@ pub(crate) fn page_children(
 /// cannot be addressed, which come back as problems. Only a listing that is
 /// not there at all (no `nodes`, or not an array) is an error: then no child
 /// is known.
-fn page_listing(
+pub(crate) fn page_listing(
     page_id: &str,
     node_type: &str,
     config: &Value,
@@ -321,12 +351,15 @@ fn page_listing(
     let children = config
         .get("nodes")
         .ok_or_else(|| shape_error("config has no `nodes`, so its children are unknown".into()))?;
-    let children = children
-        .as_array()
-        .ok_or_else(|| shape_error(format!("`nodes` is not an array: {children}")))?;
+    let children = children.as_array().ok_or_else(|| {
+        shape_error(format!(
+            "`nodes` is not an array ({})",
+            shape(Some(children))
+        ))
+    })?;
     let mut refs = Vec::new();
     let mut problems = Vec::new();
-    for child in children {
+    for (index, child) in children.iter().enumerate() {
         let field = |key| child.get(key).and_then(Value::as_str).map(str::to_owned);
         match (field("_id"), field("nodeType")) {
             (Some(id), Some(node_type)) => refs.push(NodeRef {
@@ -336,7 +369,9 @@ fn page_listing(
                 page: Some(page_id.to_owned()),
             }),
             _ => problems.push(format!(
-                "page node {page_id}: child needs a string `_id` and `nodeType`: {child}"
+                "page node {page_id}: child {} needs a string `_id` and `nodeType` ({})",
+                field("_id").map_or_else(|| format!("at index {index}"), |id| format!("{id:?}")),
+                shape(Some(child))
             )),
         }
     }
@@ -428,7 +463,8 @@ pub(crate) fn walk_refs(tree: &Value, nodes: &Map<String, Value>) -> (Vec<NodeRe
                 let field = |key| meta.get(key).and_then(Value::as_str).map(str::to_owned);
                 let Some(node_type) = field("nodeType") else {
                     walk.problems.push(format!(
-                        "journey node {id:?} has no string `nodeType`: {meta}"
+                        "journey node {id:?} has no string `nodeType` ({})",
+                        shape(Some(meta))
                     ));
                     continue;
                 };
@@ -440,9 +476,10 @@ pub(crate) fn walk_refs(tree: &Value, nodes: &Map<String, Value>) -> (Vec<NodeRe
                 });
             }
         }
-        None => walk
-            .problems
-            .push(format!("journey tree has no `nodes` object: {tree}")),
+        None => walk.problems.push(format!(
+            "journey tree has no `nodes` object ({})",
+            shape(tree.get("nodes"))
+        )),
     }
     let Walk {
         mut refs,
@@ -543,10 +580,10 @@ pub async fn pull(tenant: &str, realm: &str, name: &str) -> Result<JourneyExport
 pub struct PushPreflight {
     /// The tenant's copy, or `None` when the tree is a 404.
     pub remote: Option<JourneyExport>,
-    /// Nodes the local export carries and references that the tenant's copy
-    /// does not reference, which already exist on the tenant with different
-    /// content. Pushing overwrites them, and nothing in this journey's
-    /// snapshot is a baseline for them — another journey may be using them.
+    /// Endpoints (`<type>/<id>`) the local export carries a body for and
+    /// references that the tenant's current copy does not reference, which
+    /// already exist with different content. Pushing overwrites them, and the
+    /// drift check cannot vouch for them — another journey may be using them.
     pub reused: Vec<NodeRef>,
 }
 
@@ -554,9 +591,11 @@ pub struct PushPreflight {
 /// every node the local export would newly attach — top level or page child.
 ///
 /// The drift check compares the tenant's copy with the snapshot, and so can
-/// only see nodes the journey already references. An existing realm node the
-/// export starts to reference is outside both, so it is read here, through
-/// the same node reader: a 404 is a fresh id, equal content (ignoring `_rev`,
+/// only vouch for endpoints the tenant's current journey references. Any
+/// other endpoint the export writes is read here — one the export starts to
+/// reference, a child relisted under another type, or one an older snapshot
+/// held that the current tree no longer reaches — through the same node
+/// reader: a 404 is a fresh id, equal content (ignoring `_rev`,
 /// as everywhere) is harmless reuse, and anything else is in
 /// [`PushPreflight::reused`] for the caller to refuse. Any other read error
 /// fails the preflight, as an unread node does in [`assemble_export_with`].
@@ -751,9 +790,8 @@ impl std::fmt::Display for PushError {
         )?;
         write!(
             f,
-            "\n  the snapshot was not updated. `aic journey status` reads only the nodes the \
-             tenant's current tree and pages reference, so a node written above that no \
-             landed write attached does not show there — check the writes above before \
+            "\n  the snapshot was not updated. `aic journey status` reads what the tenant's \
+             current tree and pages reference; run it, and check the writes above, before \
              pushing again"
         )
     }
@@ -1394,7 +1432,7 @@ mod tests {
         );
         assert!(message.contains("not attempted (4)"), "{message}");
         assert!(
-            message.contains("reads only the nodes the tenant's current tree and pages reference"),
+            message.contains("reads what the tenant's current tree and pages reference; run it"),
             "{message}"
         );
     }
