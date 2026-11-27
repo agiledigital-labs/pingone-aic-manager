@@ -62,10 +62,21 @@ def run(tag, node_type, config, shared, transient):
 
 
 def idm_user_by_name(name):
+    """Rows whose userName is `name`; raises on an error, so a failure never reads as no match."""
     q = urllib.parse.quote(f'userName eq "{name}"')
     st, b, _ = call("GET", f"{USERS}?_queryFilter={q}&_fields=_id,userName,sn,givenName,mail",
                     api="resource=1.0")
-    return b.get("result", []) if isinstance(b, dict) else []
+    if st != 200 or not isinstance(b, dict) or not isinstance(b.get("result"), list):
+        raise RuntimeError(f"user query {name} -> {st}: {json.dumps(b)[:200]}")
+    return b["result"]
+
+
+def own(rows):
+    """Register users this run created, each once."""
+    for r in rows:
+        path = f"{USERS}/{r['_id']}"
+        if ("user", path) not in fx.created:
+            fx.track("user", path)
 
 
 try:
@@ -94,6 +105,7 @@ try:
         run(tag, "CreateObjectNode", co, shared, transient)
     for n in ("c1", "c2", "c3"):
         rows = idm_user_by_name(fx.name(n))
+        own(rows)  # registered as soon as read; the cleanup lookup covers an interrupted run
         log(f"--- IDM after create, userName={fx.name(n)}: {len(rows)} row(s)",
             json.dumps([{k: r.get(k) for k in ('sn',)} for r in rows]))
 
@@ -110,15 +122,14 @@ try:
         log(f"--- IDM sn after {tag}: {b.get('sn') if isinstance(b, dict) else b}")
 finally:
     log("--- cleanup")
-    # Users the CreateObjectNode cases made carry this run's names. Found here rather than after
-    # the cases, so a case that raises still leaves none behind; a failed lookup must not stop
-    # the AM cleanup below.
-    try:
-        for n in ("c1", "c2", "c3"):
-            for r in idm_user_by_name(fx.name(n)):
-                fx.track("user", f"{USERS}/{r['_id']}")
-    except Exception as e:  # still delete the AM objects
-        log("    created-user lookup failed:", e)
+    # Users the CreateObjectNode cases made carry this run's names. Looked up again here, so a
+    # case that raises still leaves none behind. Each name on its own: one failed lookup must not
+    # skip the others or the AM cleanup below.
+    for n in ("c1", "c2", "c3"):
+        try:
+            own(idm_user_by_name(fx.name(n)))
+        except Exception as e:  # still look up the rest and delete the AM objects
+            log(f"    created-user lookup for {fx.name(n)} failed:", e)
     for line in fx.cleanup():
         log("   ", line)
 PY
