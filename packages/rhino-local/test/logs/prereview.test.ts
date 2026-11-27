@@ -119,6 +119,28 @@ describe("P2-4 _queryFilter and unknown parameters", () => {
     });
     expect(bounded.status).toBe(400);
   });
+  // Review round 11 P2: retention applies on reads, not only when a record is emitted. Discriminating:
+  // with no emit after the clock passes retention, a store pruning only on emit still served both.
+  it("an idle source past retention serves nothing to a cookie or a fresh query", async () => {
+    const r = await rig();
+    const now = r.clock.now;
+    r.store.emit(record("am-access", now - 20n * SECOND, { transactionId: "match" }));
+    r.store.emit(record("am-access", now - 10n * SECOND, { transactionId: "match" }));
+    const first = await get(r, { source: "am-access", _pageSize: "1" });
+    expect(first.body.result).toHaveLength(1);
+    r.clock.now += 31n * 86_400n * SECOND;
+    const replay = await get(r, { source: "am-access", _pageSize: "1", _pagedResultsCookie: String(first.body.pagedResultsCookie) });
+    expect(replay.status).toBe(200);
+    expect(replay.body.result).toEqual([]);
+    expect(replay.body.pagedResultsCookie).toBeNull();
+    const fresh = await get(r, {
+      source: "am-access",
+      beginTime: formatRfc3339Ns(now - 3600n * SECOND),
+      endTime: formatRfc3339Ns(now),
+    });
+    expect(fresh.status).toBe(200);
+    expect(fresh.body.result).toEqual([]);
+  });
   it.each([
     ['payload/eventName eq "x"'],
     ['payload/transactionId sw "keep"'],

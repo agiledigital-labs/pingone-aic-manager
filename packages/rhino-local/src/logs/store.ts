@@ -159,6 +159,9 @@ export class LogStore implements LogSink {
     const heads = query.sources.flatMap((source) => {
       const entries = this.#bySource.get(source);
       if (entries === undefined) return [];
+      // Retention is lazy, so a source nobody writes to is pruned here too: otherwise an idle
+      // source serves records past retention to fresh queries and cookie continuations alike.
+      this.#prune(entries);
       const from =
         snapshot.after === null
           ? upperBoundTs(entries, query.beginNs)

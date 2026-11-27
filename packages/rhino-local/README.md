@@ -2587,7 +2587,8 @@ rate}`; now is `virtual_origin + (real now - real_origin) * rate`, read once at
   lag, which meets "published within two virtual minutes"). A record stamped in
   the future stays hidden until the clock reaches it.
 - **Retention.** 30 days of virtual time by default; expired records are dropped
-  lazily, so slightly older ones may linger, never younger ones lost.
+  lazily, on every write and every read of a source (an idle source included), so
+  slightly older ones may linger, never younger ones lost.
 - **Auth.** `x-api-key` / `x-api-secret`; anything else is `401` with a CREST-style
   body `{code, reason, message}` (the doc records the status, not the body).
 - **Rate limit.** 60 requests per real minute for the **whole environment**,
