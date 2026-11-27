@@ -364,16 +364,20 @@ aic journey using-script <script-uuid> --realm alpha
 
 It lists journeys with a node whose config holds the script UUID in a top-level
 `script` or `scriptId` field, deciding on the config alone, not the type name.
-Per journey it reads the tree, then each `PageNode` (to find the children the
-tree does not list), then the config of each node, in the tree or a page, of a
-type that can hold a script — `ScriptedDecisionNode`, `DeviceMatchNode`
-(counted by its `script` field whether or not `useScript` is set),
-`ConfigProviderNode`, and any other type whose name contains `Script`. It stops
-reading a journey at its first match, and a node two journeys share is read
-once for each. When any read fails the command still prints what it found but
-exits non-zero, and `--json` prints
+Each journey is searched on its own: its tree, every `PageNode` it reaches
+(the only way to find the children the tree does not list), and the config of
+every node, in the tree or a page, of a type that can hold a script —
+`ScriptedDecisionNode`, `DeviceMatchNode` (counted by its `script` field
+whether or not `useScript` is set), `ConfigProviderNode`, and any other type
+whose name contains `Script`. The order of those reads is not fixed. A journey's
+search stops at its first match, so some of its nodes may never be read, and
+a node two journeys share may be read again for the second. When a journey's
+answer is unknown — a read failed, or a reply (listing row, tree, page,
+config) could not be used — and no match settled it, the command still prints
+what it found but exits non-zero, and `--json` prints
 `{"journeys": [...], "incomplete": true, "unread": [...]}` instead of the plain
-array, because a missing journey is then not evidence the script is unused.
+array, because a missing journey is then not evidence the script is unused. A
+realm listing that fails outright is an error with no output.
 
 ## Object shape (real example from sandbox)
 

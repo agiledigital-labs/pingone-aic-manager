@@ -1412,11 +1412,17 @@ Every journey diagnostic names an AIC API error by its status and the endpoint
 by the response body, which can carry a node's config. A gateway error's
 `aic logs tx <id>` lookup is `aic`'s own text, not the server's, and is kept,
 retry ids included.
-`using-script` exits non-zero when any read failed (a journey's tree, a node,
-a page or a page entry it could not address): the journeys it did find are
-still printed, but a journey not listed may still use the script. With
-`--json` a complete search prints the usual array; an incomplete one prints
-`{"journeys": [...], "incomplete": true, "unread": ["<journey>: <what>", ...]}`.
+`using-script` exits non-zero when some journey's answer is unknown: a read
+failed, or a successful reply could not be used — a listing row with no
+`_id`, a tree or page whose node list is not readable, an entry with no
+`nodeType`, a config that is not a JSON object. The journeys it did find are
+still printed, but a journey not listed may still use the script. A journey
+that matched is settled even if another of its reads failed, so that alone
+does not make the search incomplete. With `--json` a complete search prints
+the usual array; an incomplete one prints
+`{"journeys": [...], "incomplete": true, "unread": ["<journey>: <what>", ...]}`
+(a listing row is named `journey list row <n>: …`). A realm listing that
+cannot be read at all is an ordinary error: non-zero, nothing on stdout.
 
 `push` writes each node, then the tree, as separate requests. When one fails,
 the error sorts the writes into three groups: those the tenant acknowledged
