@@ -390,6 +390,8 @@ it.each([6, 7, 8])(
     // A constant "password" would pass the shape checks.
     expect(seen.size).toBeGreaterThan(1);
   },
+  // 40 runs take about 4 s on the paired lane, against a 5 s default.
+  60_000,
 );
 it("OneTimePasswordGeneratorNode keeps leading zeros as a string", async () => {
   const emu = make(flow("OneTimePasswordGeneratorNode", { length: 6 }, ""));
