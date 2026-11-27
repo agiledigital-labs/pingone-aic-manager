@@ -8,7 +8,9 @@
 #
 # Method: each case is a tree whose outcomes lead to dump nodes that report the outcome and the
 # state keys; the page is driven with an empty POST, then answered. Objects are kdemo-g3-*,
-# deleted on exit, deletion confirmed by a GET.
+# deleted on exit, deletion confirmed by a GET. Every page id is a fresh UUID for its case, and a
+# page is registered for deletion only when this run's PUT created it (201): a 200 replaced a page
+# someone else owns, and deleting a page can delete its children (doc 09).
 
 set -uo pipefail
 export EXPERIMENT_PREFIX="${EXPERIMENT_PREFIX:-kdemo-g3}"
@@ -17,6 +19,7 @@ export EXPERIMENT_PREFIX="${EXPERIMENT_PREFIX:-kdemo-g3}"
 
 python3 - <<'PY' 2>&1 | "$REDACT" --redact
 import json
+import uuid
 from experiment_journey_lib import (Fixture, authenticate, show, fill, dump_source, log, SUCCESS,
                                     call, NODES, list_outcomes, cbs)
 
@@ -113,11 +116,13 @@ try:
         drive(f"{kind} after a username collector", t)
         kid = child(kind, cfg)
         u2 = child("UsernameCollectorNode", {})
-        st, b, _ = call("PUT", f"{NODES}/PageNode/00000000-0000-4000-8000-0000000000{kind[0].lower() == 'm' and '21' or '22'}",
-                        {"nodes": [kid, u2]})
+        page = f"{NODES}/PageNode/{uuid.uuid4()}"
+        st, b, _ = call("PUT", page, {"nodes": [kid, u2]})
         log(f"--- {kind} BEFORE a username collector: page PUT {st} {json.dumps(b)[:160]}")
-        if st in (200, 201):
-            fx.track("node", f"{NODES}/PageNode/00000000-0000-4000-8000-0000000000{kind[0].lower() == 'm' and '21' or '22'}")
+        if st == 201:
+            fx.track("node", page)
+        elif st == 200:
+            log(f"--- {kind}: page PUT replaced an existing page; not registering it for deletion")
     # Follow-ups: the whole GetAuthenticatorApp message text, the default configuration, the
     # callback index inside a page, which of two username writers wins, and out-of-range answers.
     def full(tag, tree, vals_fn=None):
