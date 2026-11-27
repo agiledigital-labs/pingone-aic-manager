@@ -381,6 +381,18 @@ public final class Runner {
     } catch (RuntimeException e) {
       return errorResponse(id, "protocol_error", e, sourceName, -1, -1, null);
     }
+    // A Node Designer script: run in its own scope (CustomNodeScope), not the decision scope.
+    final String customProperties;
+    final List<String> customBlocked;
+    try {
+      customProperties = Json.optionalString(job, "customProperties");
+      customBlocked = Json.optionalStringList(job, "customBlocked");
+      if ((customProperties == null) != (customBlocked == null) || (customProperties != null && bridge == null)) {
+        throw new IllegalArgumentException("customProperties and customBlocked go together, on a journey job");
+      }
+    } catch (RuntimeException e) {
+      return errorResponse(id, "protocol_error", e, sourceName, -1, -1, null);
+    }
 
     final String preludeHash;
     final String preambleData;
@@ -521,6 +533,10 @@ public final class Runner {
         Timing.add("subjectCompile", phase);
       }
 
+      final Scriptable custom =
+          customProperties == null
+              ? null
+              : CustomNodeScope.create(cx, scope, bridge, customBlocked, customProperties);
       final Object completion;
       phase = Timing.now();
       // The subject's own-time accounting runs only for a timed job; untimed,
@@ -528,10 +544,17 @@ public final class Runner {
       final boolean timed = Timing.active();
       final long bracketed = timed ? Timing.total("moduleBody") + Timing.total("harvest") : 0L;
       try {
-        completion = script.exec(cx, scope);
+        completion = script.exec(cx, custom != null ? custom : scope);
       } catch (RhinoException e) {
         if (HarnessFaults.isStackOverflow(e)) return stackOverflowResponse(id, e, faults, sourceName);
-        return errorFromRhino(id, "runtime_error", e);
+        final Map<String, Object> thrown = errorFromRhino(id, "runtime_error", e);
+        // A custom node that throws keeps what it wrote before the throw (doc 25): the engine
+        // takes its effects from this harvest when the type routes a throw to Script Error.
+        if (custom != null) {
+          thrown.put("valueKind", "string");
+          thrown.put("value", bridge.harvestCustom(cx, null));
+        }
+        return thrown;
       } catch (Error e) {
         if (isInterrupt(e)) {
           return timeoutResponse(id);
@@ -549,7 +572,16 @@ public final class Runner {
       // Harvest outside the author try: its failures are emulation failures, not script errors.
       if (bridge != null) {
         phase = Timing.now();
-        try { return response(id, "ok", JsValues.of(bridge.harvest(cx)), null); }
+        try {
+          return response(
+              id,
+              "ok",
+              JsValues.of(
+                  custom != null
+                      ? bridge.harvestCustom(cx, CustomNodeScope.outcome(custom))
+                      : bridge.harvest(cx)),
+              null);
+        }
         finally { Timing.add("harvest", phase); }
       }
       // A context whose result is the script's completion value (OIDC claims:

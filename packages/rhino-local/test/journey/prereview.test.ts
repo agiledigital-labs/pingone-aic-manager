@@ -201,7 +201,7 @@ describe("P2-2 callback _id and pageNodeCallbacks", () => {
 
 describe("P2-3 custom nodes reach only the measured bindings", () => {
   const SN = "designer-0123456789abcdef0123456789abcdef";
-  function custom(body: string, errorOutcome = true) {
+  function custom(body: string, errorOutcome = true, using: RhinoRunner = runner) {
     return new JourneyEmulator(
       new JourneyConfig({
         realm: "alpha",
@@ -228,7 +228,7 @@ describe("P2-3 custom nodes reach only the measured bindings", () => {
         },
         scripts: { dump: script(DUMP) },
       } as never),
-      runner,
+      using,
       idm(),
       {},
     );
@@ -313,12 +313,66 @@ describe("P2-3 custom nodes reach only the measured bindings", () => {
     expectEmulationFailure(name);
     refused(await req(custom(`${prefix} logger.info('x'); outcome = 'ok';`)), name);
   });
+  // Review round 3: the script runs unmodified in its own top-level scope (java/CustomNodeScope.java).
+  it.each([
+    // P1-1: no wrapper temporary for a script to clobber.
+    ["a var named like the old route temporary", "var __rhinoLocalCustomRoute = 'local'; nodeState.putShared('username', 'local'); outcome = 'ok';", "local"],
+    // P1-2: top-level function declarations hoist.
+    ["a function called above its declaration", "f(); outcome = 'ok'; function f() { nodeState.putShared('username', 'hoisted'); }", "hoisted"],
+    // P2-1: a destructured declaration is the script's from the start.
+    ["a destructured declaration read before it", "var before = typeof logger; var [logger] = ['local']; nodeState.putShared('username', before + '/' + logger); outcome = 'ok';", "undefined/local"],
+    // P2-2: a custom script's auditEntryDetail is its own variable, not the Scripted Decision audit.
+    ["a var auditEntryDetail", "var auditEntryDetail = 42; nodeState.putShared('username', 'local'); outcome = 'ok';", "local"],
+    // Doc 12 (decision scripts): top-level const parses and reads back undefined.
+    ["a top-level const", "const c = 'x'; nodeState.putShared('username', String(c)); outcome = 'ok';", "undefined"],
+    // Doc 25: a throw takes Script Error and keeps what was written before it.
+    ["a throw after a write", "nodeState.putShared('username', 'before'); throw 'x';", "before"],
+  ])("runs %s as a top-level script", async (_, body, expected) => {
+    const done = await req(custom(body));
+    expect(done.status).toBe(200);
+    expect(dumped(done.body).username).toBe(expected);
+  });
+  it("refuses a top-level let as a compilation failure, as doc 12 measured for decision scripts", async () => {
+    const name = "journey script compilation failure";
+    expectEmulationFailure(name);
+    refused(await req(custom("let x = 1; outcome = 'ok';")), name);
+  });
+  describe("reports the author's own line numbers", () => {
+    function capturing() {
+      const seen: Awaited<ReturnType<RhinoRunner["eval"]>>[] = [];
+      const shim = Object.create(runner) as RhinoRunner;
+      shim.eval = (async (...args: Parameters<RhinoRunner["eval"]>) => {
+        const response = await runner.eval(...args);
+        seen.push(response);
+        return response;
+      }) as RhinoRunner["eval"];
+      return { shim, seen };
+    }
+    it("for a runtime error", async () => {
+      const { shim, seen } = capturing();
+      const done = await req(custom("var a = 1;\nvar b = 2;\nnull.x;\noutcome = 'ok';", false, shim));
+      expect(done.status).toBe(401);
+      expect(seen[0]?.outcome).toBe("runtime_error");
+      expect(seen[0]?.error?.line).toBe(3);
+    });
+    it("for a syntax error", async () => {
+      const name = "journey script compilation failure";
+      expectEmulationFailure(name);
+      const { shim, seen } = capturing();
+      refused(await req(custom("var a = 1;\nvar b = 2;\nvar = ;\noutcome = 'ok';", true, shim)), name);
+      expect(seen[0]?.outcome).toBe("compile_error");
+      expect(seen[0]?.error?.line).toBe(3);
+    });
+  });
   // Discriminating: with an error outcome, a plain throw would quietly take Script Error.
   it.each([
     ["openidm", "openidm.read('managed/alpha_user/x'); outcome = 'ok';"],
     ["httpClient", "var t = typeof httpClient; outcome = 'ok';"],
     ["callbacksBuilder", "callbacksBuilder.textOutputCallback(0, 'x'); outcome = 'ok';"],
     ["action", "action.goTo('ok');"],
+    // Review round 3: a free read and a read through the global object both reach the refusal.
+    ["logger", "logger.info('x'); outcome = 'ok';"],
+    ["logger", "var l = this.logger; outcome = 'ok';"],
     ["nodeState.putTransient", "nodeState.putTransient('x', 'y'); outcome = 'ok';"],
   ])("refuses %s by name", async (binding, body) => {
     const name = `custom node binding: ${binding}`;

@@ -69,6 +69,15 @@ final class AmHostBridge extends BaseFunction {
     return state.fail(new EmulationFailure("protocol", message));
   }
 
+  EmulationFailure protocolFailure(String message) {
+    return protocol(message);
+  }
+
+  /** The refusal a {@code host('refusal', behavior)} function throws, for a Java-side binding. */
+  EmulationFailure refusal(String behavior) {
+    return missing(behavior, "not-mocked/" + behavior);
+  }
+
   private <T extends BaseFunction> T expose(T function) {
     function.setParentScope(top);
     function.setPrototype(ScriptableObject.getFunctionPrototype(top));
@@ -116,8 +125,6 @@ final class AmHostBridge extends BaseFunction {
         return expose(new LogPush());
       case "unsupported":
         return expose(new Unsupported());
-      case "declarations":
-        return expose(new Declarations());
       case "observe":
         if (!(arg(args, 1) instanceof Callable)) throw protocol("journey bridge observe arguments");
         if (args[1] instanceof Refusal) return args[1];
@@ -137,7 +144,7 @@ final class AmHostBridge extends BaseFunction {
 
     @Override
     public Object call(Context cx, Scriptable scope, Scriptable thisObj, Object[] args) {
-      throw missing(behavior, "not-mocked/" + behavior);
+      throw refusal(behavior);
     }
   }
 
@@ -157,24 +164,6 @@ final class AmHostBridge extends BaseFunction {
       throw missing(
           message.startsWith("rhino-local: ") ? message.substring(13) : message,
           id instanceof CharSequence ? id.toString() : null);
-    }
-  }
-
-  /**
-   * A custom node script's own top-level declarations, as an array of names
-   * ({@link CustomDeclarations}). A script the parser refuses ran through no inventory the
-   * emulator can stand behind, so it is missing behaviour rather than a guess.
-   */
-  private final class Declarations extends BaseFunction {
-    @Override
-    public Object call(Context cx, Scriptable scope, Scriptable thisObj, Object[] args) {
-      java.util.List<String> names;
-      try {
-        names = CustomDeclarations.of(cx, Context.toString(arg(args, 0)));
-      } catch (org.mozilla.javascript.EvaluatorException e) {
-        throw missing("custom node script the emulator cannot inventory: " + e.details());
-      }
-      return cx.newArray(top, names.toArray());
     }
   }
 
@@ -1066,6 +1055,20 @@ final class AmHostBridge extends BaseFunction {
    * script exceptions.
    */
   String harvest(Context cx) {
+    return harvest(cx, false, null);
+  }
+
+  /**
+   * A custom node's harvest: the same effects, plus {@code customOutcome}, the script's
+   * {@code outcome} as {@link CustomNodeScope#outcome} read it, which the engine routes. No
+   * {@code auditEntryDetail} is read: AM's audit rule was measured for Scripted Decision only, and
+   * the custom script's variables live in a scope this bridge never sees.
+   */
+  String harvestCustom(Context cx, String customOutcome) {
+    return harvest(cx, true, customOutcome);
+  }
+
+  private String harvest(Context cx, boolean custom, String customOutcome) {
     if (top == null) throw protocol("journey bridge used before install");
     Object queued = ScriptableObject.getProperty(runtime, "callbacks");
     if (!(queued instanceof NativeArray)) throw missing("journey callbacks container");
@@ -1116,6 +1119,11 @@ final class AmHostBridge extends BaseFunction {
     // AM reads the top-level variable `auditEntryDetail` after the node evaluates (measured
     // 2026-11-25, docs/api/25-journey-runtime.md). Absent, undefined and null mean no entry; a
     // string or a map is kept; anything else (an array, a number, a boolean) fails the tree.
+    if (custom) {
+      out.append(",\"customOutcome\":")
+          .append(customOutcome == null ? "null" : Json.quote(customOutcome));
+      return out.append('}').toString();
+    }
     Object audit = ScriptableObject.getProperty(top, "auditEntryDetail");
     if (audit == Scriptable.NOT_FOUND || audit == Undefined.instance || audit == null) {
       // no entry

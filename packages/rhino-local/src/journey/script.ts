@@ -68,7 +68,9 @@ const MEASURED_UTILS = [
  * The names a custom node's script must not reach: every next-gen decision binding but
  * `nodeState`, read from the binding list itself, plus the globals the harness adds beside them.
  */
-function customBlocked(): string[] {
+let blockedCache: string[] | undefined;
+export function customBlocked(): string[] {
+  if (blockedCache) return blockedCache;
   const list = JSON.parse(readFileSync(bindingsJsonPath, "utf8")) as {
     bindings: { name: string }[];
   };
@@ -76,40 +78,18 @@ function customBlocked(): string[] {
   for (const name of ["existingSession", "require", "sharedState", "transientState"])
     names.add(name);
   names.delete("nodeState");
-  return [...names].sort();
+  blockedCache = [...names].sort();
+  return blockedCache;
 }
 /** What a custom node's `nodeState` offers; doc 25 measured these two methods only. */
 const CUSTOM_NODE_STATE = ["get", "putShared"];
-const customGuard = (blocked: string[]) => `
-(function (host, blocked, allowed) {
-  // The wrapper customNodeSource builds runs the type's script inside \`with\` over this object, so
-  // each name here resolves to it first: a binding the tenant was not seen to give a custom node is a
-  // getter that refuses, uncatchably, naming the binding.
-  // A name the script itself assigns is the script's own from then on: the setter removes the
-  // guard's entry and stores the value where the script's top-level variables live. Names the
-  // script declares at its own top level are released before it runs (customNodeSource,
-  // \`__rhinoLocalCustomOwn\`); the inventory is Rhino's parse of the script alone, so a helper's
-  // locals and declaration-like text in a string or comment release nothing.
-  var guard = {}, global = this, declarations = host('declarations');
-  blocked.forEach(function (name) {
-    Object.defineProperty(guard, name, {
-      get: host('refusal', 'custom node binding: ' + name),
-      set: function (value) { delete guard[name]; global[name] = value; },
-      configurable: true,
-    });
-  });
-  __rhinoLocalCustomOwn = function (source) {
-    declarations(source).forEach(function (name) {
-      // Only a guard entry is reset: any other name (the wrapper's \`properties\`, \`outcome\`) is
-      // the same top-level variable the script redeclared, which a redundant var leaves alone.
-      if (!Object.prototype.hasOwnProperty.call(guard, name)) return;
-      delete guard[name];
-      // A declared name starts undefined: the tenant gives a custom node no such binding. A
-      // function too, because inside the wrapper's block Rhino defines it only when reached, and
-      // until then the global would still be the harness's own binding.
-      global[name] = undefined;
-    });
-  };
+/**
+ * A custom node's restricted `nodeState`, built in the decision scope where the bridge is reachable
+ * and handed to the custom node's own scope (java/CustomNodeScope.java). Every other method is a
+ * refusal naming it.
+ */
+const customNodeState = `
+(function (host, allowed) {
   var state = nodeState, view = {};
   Object.keys(state).forEach(function (key) {
     if (typeof state[key] === 'function' && allowed.indexOf(key) === -1)
@@ -117,9 +97,8 @@ const customGuard = (blocked: string[]) => `
   });
   view.get = function (key) { return state.get(key); };
   view.putShared = function (key, value) { state.putShared(key, value); return view; };
-  Object.defineProperty(guard, 'nodeState', { value: view });
-  __rhinoLocalCustomGuard = guard;
-})(__rhinoLocalJourneyHost, ${JSON.stringify(blocked)}, ${JSON.stringify(CUSTOM_NODE_STATE)});
+  __rhinoLocalCustomNodeState = view;
+})(__rhinoLocalJourneyHost, ${JSON.stringify(CUSTOM_NODE_STATE)});
 `;
 const overlay = (roots: string[], maps: { shared: boolean; transient: boolean }) => `
 (function (host, roots, measuredUtils, maps) {
@@ -242,6 +221,6 @@ export function journeyPreamble(state: ScriptState): CasePreamble {
     preamble:
       base.preamble +
       overlay(stubRoots(), state.javaMaps ?? { shared: false, transient: false }) +
-      (state.customNode ? customGuard(customBlocked()) : ""),
+      (state.customNode ? customNodeState : ""),
   };
 }

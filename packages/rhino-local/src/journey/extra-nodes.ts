@@ -910,18 +910,16 @@ export function customOutcomes(def: CustomNodeType): readonly string[] {
   return def.errorOutcome === true ? [...def.outcomes, SCRIPT_ERROR_OUTCOME] : def.outcomes;
 }
 /**
- * The decision script a custom node runs as: its script with `properties` bound from the instance and the
- * assigned `outcome` routed. Absent properties follow the measured shape: a multivalued one is an empty array,
- * any other is undefined. A missing required property is `undefined` here and is the caller's 401.
+ * The `properties` a custom node's script sees, from the instance. Absent properties follow the measured
+ * shape: a multivalued one is an empty array, any other is undefined. A missing required property is
+ * `{ abort: true }`, the caller's 401. The script itself runs unmodified in its own scope
+ * (java/CustomNodeScope.java), and its `outcome` is routed by `customRoute`.
  */
-/** A JS string literal: JSON, with the two line separators JSON leaves raw but ES5 forbids in one. */
-const jsString = (text: string): string =>
-  JSON.stringify(text).replace(/\u2028/g, "\\u2028").replace(/\u2029/g, "\\u2029");
-export function customNodeSource(
+export function customNodeProperties(
   def: CustomNodeType,
   node: NodeDocument,
   missing: (name: string) => never,
-): { source: string } | { abort: true } {
+): { properties: Record<string, JsonValue> } | { abort: true } {
   const inputs = def.inputs ?? [];
   if (inputs.some((name) => name !== "*"))
     missing(
@@ -944,33 +942,14 @@ export function customNodeSource(
       missing(`custom node property ${name} typed ${String(spec.type)} holding a ${given}`);
     properties[name] = value as JsonValue;
   }
-  const allowed = JSON.stringify(def.outcomes);
-  const failure =
-    def.errorOutcome === true ? `outcome = ${JSON.stringify(SCRIPT_ERROR_OUTCOME)};` : "throw e;";
-  const source = [
-    `var properties = ${JSON.stringify(properties)};`,
-    "var outcome;",
-    // Routing goes through the action captured here, so a script that declares or assigns its own
-    // \`action\` (the tenant gives a custom node none) cannot take the wrapper's away.
-    "var __rhinoLocalCustomRoute = action;",
-    "try {",
-    // The journey preamble defines the guard for a custom node: every binding but the measured
-    // ones refuses by name (src/journey/script.ts, customGuard). Names the script declares at its
-    // top level are its own, so they are released first, from Rhino's parse of the script; one it
-    // only assigns is released by the guard's setter.
-    `__rhinoLocalCustomOwn(${jsString(def.script)});`,
-    "with (__rhinoLocalCustomGuard) {",
-    def.script,
-    "}",
-    "} catch (e) {",
-    failure,
-    "}",
-    `if (${allowed}.indexOf(outcome) < 0 && outcome !== ${JSON.stringify(SCRIPT_ERROR_OUTCOME)}) {`,
-    def.errorOutcome === true
-      ? `  outcome = ${JSON.stringify(SCRIPT_ERROR_OUTCOME)};`
-      : '  throw "custom node outcome";',
-    "}",
-    "__rhinoLocalCustomRoute.goTo(outcome);",
-  ].join("\n");
-  return { source };
+  return { properties };
+}
+/**
+ * Where a custom node's script `outcome` routes: a listed outcome is itself; anything else (unset,
+ * not a string, not listed) takes Script Error when the type has an error outcome, else fails the
+ * journey (null).
+ */
+export function customRoute(def: CustomNodeType, outcome: string | null): string | null {
+  if (outcome !== null && def.outcomes.includes(outcome)) return outcome;
+  return def.errorOutcome === true ? SCRIPT_ERROR_OUTCOME : null;
 }

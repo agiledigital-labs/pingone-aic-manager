@@ -18,14 +18,17 @@ import { SUCCESS_NODE_ID, FAILURE_NODE_ID } from "../aic/constants.ts";
 import { fromWire, toWire, type WireCallback } from "./callbacks.ts";
 import { JourneyNodes, EMULATED, type NodeResult } from "./nodes.ts";
 import { JourneyConfig } from "./config.ts";
-import { journeyPreamble } from "./script.ts";
+import { customBlocked, journeyPreamble } from "./script.ts";
 import { SYSTEM_SESSION_PROPERTIES, localizedText } from "./shared.ts";
 import { DEFAULT_ORIGIN, JourneyLogs, SCRIPT_LOG_LEVELS, type JourneyLogOptions, type RequestLog } from "./emit.ts";
 import {
   EXTRA_OUTCOMES,
   STUB_TYPES,
-  customNodeSource,
+  SCRIPT_ERROR_OUTCOME,
+  customNodeProperties,
   customOutcomes,
+  customRoute,
+  type CustomNodeType,
   extraOutcomes,
 } from "./extra-nodes.ts";
 import type {
@@ -734,6 +737,7 @@ export class JourneyEmulator {
     request: AuthenticateRequest,
     log?: RequestLog,
     synthetic?: ScriptDocument,
+    custom?: { def: CustomNodeType; properties: Record<string, JsonValue> },
   ): Promise<NodeResult> {
     const currentTree = this.tree(frame.tree),
       inner = state.frames.length > 1;
@@ -784,6 +788,10 @@ export class JourneyEmulator {
         timeoutMs: this.options.timeoutMs ?? 10000,
         source: Buffer.from(script.script, "base64").toString("utf8"),
         sourceName: script.name ?? config.script ?? "script",
+        // A custom node's script runs unmodified in its own scope (java/CustomNodeScope.java).
+        ...(custom
+          ? { customProperties: JSON.stringify(custom.properties), customBlocked: customBlocked() }
+          : {}),
         classAllowList: decisionNodeClassAllowList(),
         ...journeyPreamble({
           shared: state.shared,
@@ -826,6 +834,17 @@ export class JourneyEmulator {
       if (!SCRIPT_LOG_LEVELS.includes(line.level))
         this.missing(`script logger level: ${line.level}`);
     log?.scriptLines(response.logs ?? [], String(config.script ?? "script"), scriptName);
+    // A custom node whose script throws takes Script Error when its type has one, keeping what it
+    // wrote before the throw (doc 25); the runner harvests its effects for exactly this.
+    if (
+      custom &&
+      response.outcome === "runtime_error" &&
+      custom.def.errorOutcome === true &&
+      typeof response.value === "string"
+    ) {
+      this.applyEffects(JSON.parse(response.value) as Harvest, state, frame);
+      return { outcome: SCRIPT_ERROR_OUTCOME, callbacks: [] };
+    }
     if (response.outcome !== "ok") {
       if (inner) this.missing("inner tree script exception");
       this.measured("thrown scripted decision error returns 401 Login failure");
@@ -844,18 +863,21 @@ export class JourneyEmulator {
     }
     // The runner's bridge serializes the harvest in Java and fails it as an emulation failure.
     if (typeof response.value !== "string") this.missing("journey harvest serialization");
-    const result = JSON.parse(response.value) as {
-      effects: {
-        sharedState: { final: Document };
-        transientState: { final: Document };
-        sessionProperties: Record<string, string>;
-        callbacks: CallbackEffect[];
-        outcome: string | null;
-        javaMapObjectAttributes: { shared: boolean; transient: boolean };
-      };
-      errorMessage: string | null;
-      auditEntryDetail?: { value?: JsonValue; invalid?: "array" | "other" };
-    };
+    const result = JSON.parse(response.value) as Harvest;
+    if (custom) {
+      this.applyEffects(result, state, frame);
+      const routed = customRoute(custom.def, result.customOutcome ?? null);
+      if (routed !== null) return { outcome: routed, callbacks: [] };
+      // An outcome the type does not list, with no error outcome: fails like a throw (assumed above).
+      if (inner) this.missing("inner tree script exception");
+      if (log)
+        log.treeFailed(
+          state.frames[0]?.tree ?? frame.tree,
+          state.shared.authLevel,
+          log.scriptThrew({ scriptName, thrown: "custom node outcome", line: 1, column: 0 }),
+        );
+      return { outcome: null, callbacks: [], abort: this.error(401, "Login failure") };
+    }
     // AM fails the tree on an `auditEntryDetail` that is not a string or a map, and writes no node
     // record for it (measured 2026-11-25, docs/api/25-journey-runtime.md).
     if (result.auditEntryDetail?.invalid) {
@@ -883,10 +905,7 @@ export class JourneyEmulator {
       if (inner) this.missing("inner tree script exception");
       return { outcome: null, callbacks: [], abort: sessionAbort };
     }
-    state.shared = result.effects.sharedState.final;
-    frame.transient = result.effects.transientState.final;
-    state.javaMap = result.effects.javaMapObjectAttributes.shared;
-    frame.javaMap = result.effects.javaMapObjectAttributes.transient;
+    this.applyEffects(result, state, frame);
     if (result.errorMessage !== null) state.errorMessage = result.errorMessage;
     return {
       outcome: result.effects.outcome,
@@ -895,6 +914,13 @@ export class JourneyEmulator {
         ? {}
         : { audit: result.auditEntryDetail.value }),
     };
+  }
+  /** A script's state effects: shared and transient state, and which objectAttributes are Java maps. */
+  private applyEffects(result: Harvest, state: State, frame: Frame): void {
+    state.shared = result.effects.sharedState.final;
+    frame.transient = result.effects.transientState.final;
+    state.javaMap = result.effects.javaMapObjectAttributes.shared;
+    frame.javaMap = result.effects.javaMapObjectAttributes.transient;
   }
   /**
    * What a script's `putSessionProperty` / `removeSessionProperty` leave on the session the
@@ -952,7 +978,7 @@ export class JourneyEmulator {
       const def = this.config.customNodeTypes[type];
       if (!def) this.missing(`custom node type: ${type}`);
       const resolved = resolveEsv(config, this.options.esv ?? {}, (name) => this.missing(name));
-      const built = customNodeSource(def, resolved, (name) => this.missing(name));
+      const built = customNodeProperties(def, resolved, (name) => this.missing(name));
       this.evidence.measured(
         "a custom node runs its type's script with the instance's properties bound; a throw, or an outcome the type does not list, takes Script Error when the type has an error outcome, else fails the journey with 401 Login failure; a missing required property fails it with 401",
         "docs/api/25-journey-runtime.md (custom node types, 2026-11-25)",
@@ -962,11 +988,20 @@ export class JourneyEmulator {
       );
       if ("abort" in built)
         return { outcome: null, callbacks: [], abort: this.error(401, "Login failure") };
-      return this.scripted({ script: type }, state, frame, submitted, request, log, {
-        script: Buffer.from(built.source).toString("base64"),
-        evaluatorVersion: "2.0",
-        name: typeof def.displayName === "string" ? def.displayName : type,
-      });
+      return this.scripted(
+        { script: type },
+        state,
+        frame,
+        submitted,
+        request,
+        log,
+        {
+          script: Buffer.from(def.script).toString("base64"),
+          evaluatorVersion: "2.0",
+          name: typeof def.displayName === "string" ? def.displayName : type,
+        },
+        { def, properties: built.properties },
+      );
     }
     if (EMULATED.includes(type)) {
       const resolved = resolveEsv(config, this.options.esv ?? {}, (name) => this.missing(name));
@@ -1354,6 +1389,21 @@ export class JourneyEmulator {
  * Rhino's own text for a throw, `<thrown value> (<script>#<line>)`: the tenant's ScriptException
  * message carries exactly that (`Error: boom (name#1)`; a thrown string reads `str (name#1)`).
  */
+/** What the runner's bridge harvests after a journey script (java/AmHostBridge.java, harvest). */
+type Harvest = {
+  effects: {
+    sharedState: { final: Document };
+    transientState: { final: Document };
+    sessionProperties: Record<string, string>;
+    callbacks: CallbackEffect[];
+    outcome: string | null;
+    javaMapObjectAttributes: { shared: boolean; transient: boolean };
+  };
+  errorMessage: string | null;
+  auditEntryDetail?: { value?: JsonValue; invalid?: "array" | "other" };
+  /** A custom node's script `outcome`: a string, else null. */
+  customOutcome?: string | null;
+};
 function thrownText(response: { error: { message: string | null } | null }): string {
   return response.error?.message ?? "unknown error";
 }

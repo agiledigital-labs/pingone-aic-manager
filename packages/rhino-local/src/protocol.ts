@@ -105,6 +105,14 @@ export interface JobRequest {
    * the script evaluates to (OIDC claims), so the source needs no suffix.
    */
   completionHarvest?: string;
+  /**
+   * A journey's Node Designer script: `source` runs unmodified in its own top-level scope
+   * (java/CustomNodeScope.java) holding `properties` (this JSON), the preamble's restricted
+   * `nodeState` and `outcome`, where a read of a `customBlocked` name is a named refusal. Both or
+   * neither, on a `hostCalls` job.
+   */
+  customProperties?: string;
+  customBlocked?: string[];
 }
 
 export interface JobError {
