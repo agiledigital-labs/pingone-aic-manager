@@ -116,10 +116,11 @@ export type RunOptions = {
   start?: bigint;
   concurrency?: number;
   scale?: number;
+  config?: JourneyConfig;
 };
 
 export async function runDriver(runner: RhinoRunner, o: RunOptions = {}): Promise<{ records: LogRecord[]; report: Report; start: bigint; end: bigint }> {
-  const cfg = config();
+  const cfg = o.config ?? config();
   const sink = new Recording();
   const start = o.start ?? T0;
   const end = start + (o.duration ?? HOUR);

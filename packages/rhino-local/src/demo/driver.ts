@@ -211,6 +211,8 @@ export type Report = {
     brokenByEndpoint: number;
     /** The engine answered 400, 500 or 501 (see `engineErrors`). */
     errored: number;
+    /** `errored` by HTTP status: a 501 is behaviour the emulator does not model. */
+    erroredByStatus: Record<string, number>;
   };
   journeysByTree: Record<string, number>;
   requests: number;
@@ -335,7 +337,7 @@ export class Driver {
       fromNs: from,
       toNs: from,
       realMs: 0,
-      journeys: { started: 0, succeeded: 0, failed: 0, abandoned: 0, brokenByEndpoint: 0, errored: 0 },
+      journeys: { started: 0, succeeded: 0, failed: 0, abandoned: 0, brokenByEndpoint: 0, errored: 0, erroredByStatus: {} },
       journeysByTree: {},
       requests: 0,
       answers: {},
@@ -609,6 +611,8 @@ export class Driver {
     else if (result.status === 401) this.#report.journeys.failed += 1;
     else {
       this.#report.journeys.errored += 1;
+      const byStatus = this.#report.journeys.erroredByStatus;
+      byStatus[String(result.status)] = (byStatus[String(result.status)] ?? 0) + 1;
       const message = String((result.body as { message?: unknown } | null)?.message ?? result.status).slice(0, 160);
       this.#report.engineErrors[message] = (this.#report.engineErrors[message] ?? 0) + 1;
     }

@@ -8,7 +8,8 @@
  *
  * Keys: API_KEY_ID and API_KEY_SECRET. Clock: KIKORI_CLOCK (a virtual-clock
  * file), else real time. See the README's "Demo driver" section for the file
- * formats. Runs until SIGINT or SIGTERM.
+ * formats. Runs until SIGINT or SIGTERM, then prints the run's report and exits 1 if any
+ * journey the engine answered 400 or 501 (behaviour the emulator does not model), else 0.
  */
 import { readFileSync } from "node:fs";
 import { parseArgs } from "node:util";
@@ -21,6 +22,7 @@ import { formatRfc3339Ns } from "../src/logs/time.ts";
 import { parseBreaks } from "../src/demo/breaks.ts";
 import { clockPacer, Driver } from "../src/demo/driver.ts";
 import { loadJourneys } from "../src/demo/load.ts";
+import { exitCode, finalReport, statusLine } from "../src/demo/summary.ts";
 import { parseMix } from "../src/demo/mix.ts";
 import { RhinoRunner } from "../src/runner.ts";
 
@@ -77,20 +79,18 @@ try {
   const started = clock.nowNs();
   console.error(`aic-emulator-demo listening on ${server.url}; traffic from ${formatRfc3339Ns(started)} (virtual)`);
   const status = setInterval(() => {
-    const r = driver.report();
-    console.error(
-      `${formatRfc3339Ns(clock.nowNs())} journeys ${r.journeys.started} (ok ${r.journeys.succeeded}, failed ${r.journeys.failed}, ` +
-        `abandoned ${r.journeys.abandoned}) records ${r.records.total} max lag ${Number(r.lag.overall.maxNs / 1_000_000n) / 1000} s`,
-    );
+    console.error(statusLine(driver.report(), clock.nowNs()));
   }, 30_000);
   const shutdown = (): void => stop.abort();
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
-  await driver.run({ signal: stop.signal });
+  const report = await driver.run({ signal: stop.signal });
   clearInterval(status);
   await server.close();
   await runner.close();
-  process.exit(0);
+  console.error(finalReport(report));
+  // A 400 or 501 from the engine means the demo did not run what it claims; say so in the status.
+  process.exit(exitCode(report));
 } catch (error) {
   console.error(error instanceof Error ? error.message : String(error));
   process.exit(1);
