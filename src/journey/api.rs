@@ -848,11 +848,11 @@ fn push_plan(export: &JourneyExport) -> Result<(Vec<NodeRef>, Vec<NodeRef>)> {
 const PAGE_REFUSALS: &[MeasuredRefusal] = &[
     MeasuredRefusal {
         status: 400,
-        message: "Node does not exist",
+        message: "Invalid config: Node does not exist",
     },
     MeasuredRefusal {
         status: 400,
-        message: "Illegal child node type",
+        message: "Invalid config: Illegal child node type",
     },
 ];
 
@@ -1692,7 +1692,7 @@ mod tests {
         fn absent_child() -> Error {
             Error::Api {
                 status: 400,
-                body: "Invalid config: Node does not exist: user".into(),
+                body: r#"{"code":400,"reason":"Bad Request","message":"Invalid config: Node does not exist: user"}"#.into(),
             }
         }
         const USER: &str = "UsernameCollectorNode/user";
