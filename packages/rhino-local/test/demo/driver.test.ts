@@ -1,12 +1,13 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { RhinoRunner } from "../../src/runner.ts";
 import { parseBreaks } from "../../src/demo/breaks.ts";
-import { Arrivals, Driver, manualPacer } from "../../src/demo/driver.ts";
+import { Arrivals, clockPacer, Driver, manualPacer } from "../../src/demo/driver.ts";
 import { Rng } from "../../src/demo/rng.ts";
 import { parseMix } from "../../src/demo/mix.ts";
 import { formatRfc3339Ns } from "../../src/logs/time.ts";
 import { canon, config, HOUR, makeEngineFor, MINUTE, mixJson, payload, Recording, runDriver, T0, ts } from "./rig.ts";
 import type { LogRecord } from "../../src/logs/record.ts";
+import type { Clock } from "../../src/logs/clock.ts";
 
 let runner: RhinoRunner;
 beforeAll(async () => {
@@ -85,6 +86,38 @@ describe("a stream with no end", () => {
     let n = 0;
     while (arrivals.next() !== undefined) n++;
     expect(n).toBe(24);
+  });
+  // Astra round 2 P2-2: the idle horizon counts only zero-rate hours, so a stream whose rate is
+  // positive in every hour never retires. Discriminating: this seed draws no arrival in its first
+  // 400 days at 0.00001 an hour, and a horizon counted from the start returned undefined here.
+  it("never retires while the rate is positive, however sparse", () => {
+    const arrivals = new Arrivals(Rng.derive("sparse"), () => 0.00001, 0n);
+    expect(arrivals.next()).toBeDefined();
+  });
+});
+
+// Astra round 2 P2-3: one wait subscribes to its wake promise once, however many times it polls.
+// Discriminating: a Promise.race per poll subscribed once per poll (26 for 25 polls).
+describe("clockPacer", () => {
+  it("subscribes to the wake promise once per wait, not once per poll", async () => {
+    let thens = 0;
+    class Counting<T> extends Promise<T> {
+      override then<A = T, B = never>(
+        onFulfilled?: ((value: T) => A | PromiseLike<A>) | null,
+        onRejected?: ((reason: unknown) => B | PromiseLike<B>) | null,
+      ): Promise<A | B> {
+        thens++;
+        return super.then(onFulfilled, onRejected);
+      }
+    }
+    // Never settles: the wait ends only by reaching its target.
+    const wake = new Counting<void>(() => {});
+    let polls = 0;
+    // One virtual nanosecond per read, so the wait polls until the 25th read.
+    const clock: Clock = { nowNs: () => BigInt(polls++) };
+    await clockPacer(clock, 1).waitUntil(25n, wake);
+    expect(polls).toBeGreaterThanOrEqual(25);
+    expect(thens).toBe(1);
   });
 });
 
