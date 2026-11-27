@@ -123,7 +123,9 @@ pub async fn list_trees(tenant: &str, realm: &str) -> Result<Vec<String>> {
         "{}/trees?_queryFilter=true&_pageSize=1000",
         trees_path(realm)
     );
-    let body = crate::aic::api::get_versioned(tenant, &path, API_VERSION).await?;
+    let body = crate::aic::api::get_versioned(tenant, &path, API_VERSION)
+        .await
+        .map_err(|error| withheld(error, "the journey list (`trees?_queryFilter=true`)"))?;
     let result = body
         .get("result")
         .and_then(Value::as_array)
@@ -148,37 +150,47 @@ pub async fn read_tree(tenant: &str, realm: &str, name: &str) -> Result<Value> {
     let path = format!("{}/trees/{name}", trees_path(realm));
     crate::aic::api::get_versioned(tenant, &path, API_VERSION)
         .await
-        .map_err(withheld)
+        .map_err(|error| withheld(error, &format!("journey `{name}`'s tree (`trees/{name}`)")))
 }
 
 /// What replaces an AIC error body in every journey diagnostic.
 const BODY_WITHHELD: &str = "(response body withheld: it can carry a node's config)";
 
-/// An AIC HTTP error with its response body withheld, status kept.
+/// An AIC HTTP error from `endpoint` with its response body withheld,
+/// status kept.
 ///
 /// An error body can echo the config of the node it concerns, secrets
 /// included, and journey errors reach stderr, `status` problems and the
-/// partial-push report — none of which pass through `diff`'s masking. So a
-/// journey read surfaces the status and the endpoint (its caller names that)
-/// and never the body. Status `0` is not HTTP: it is this module's own shape
-/// message, already free of values ([`shape`]), and is kept. Writes keep the
-/// raw error, because the measured-refusal match needs the body; they render
-/// it through [`withheld_message`].
-pub(crate) fn withheld(error: Error) -> Error {
+/// partial-push report — none of which pass through `diff`'s masking. So
+/// every journey wrapper surfaces the status and the endpoint it called and
+/// never the server's body. The transport's own transaction-id lookup on a
+/// gateway error is local text, not the server's, and is kept, because it is
+/// how the operator finds out whether an uncertain write landed
+/// ([`crate::aic::gateway_trace`]). Status `0` is not HTTP: it is this
+/// module's own shape message, already free of values ([`shape`]), and is
+/// kept. Writes keep the raw error, because the measured-refusal match needs
+/// the body; they render it through [`withheld_message`].
+pub(crate) fn withheld(error: Error, endpoint: &str) -> Error {
     match error {
-        Error::Api { status, .. } if status != 0 => Error::Api {
+        Error::Api { status, body } if status != 0 => Error::Api {
             status,
-            body: BODY_WITHHELD.into(),
+            body: withheld_body(&body, endpoint),
         },
         other => other,
     }
 }
 
-/// [`withheld`], for rendering an error that is kept raw.
-fn withheld_message(error: &Error) -> String {
+fn withheld_body(body: &str, endpoint: &str) -> String {
+    let trace =
+        crate::aic::gateway_trace(body).map_or(String::new(), |trace| format!(" — {trace}"));
+    format!("from {endpoint} {BODY_WITHHELD}{trace}")
+}
+
+/// [`withheld`], for rendering a write's error that is kept raw.
+fn withheld_message(error: &Error, endpoint: &str) -> String {
     match error {
-        Error::Api { status, .. } if *status != 0 => {
-            format!("AIC API error: {status} {BODY_WITHHELD}")
+        Error::Api { status, body } if *status != 0 => {
+            format!("AIC API error: {status} {}", withheld_body(body, endpoint))
         }
         other => other.to_string(),
     }
@@ -203,7 +215,7 @@ pub async fn read_node(tenant: &str, realm: &str, node_type: &str, node_id: &str
     let path = format!("{}/{node_type}/{node_id}", nodes_path(realm));
     crate::aic::api::get_versioned(tenant, &path, API_VERSION)
         .await
-        .map_err(withheld)
+        .map_err(|error| withheld(error, &format!("node `{node_type}/{node_id}`")))
 }
 
 pub async fn upsert_node(
@@ -231,13 +243,17 @@ pub async fn delete_tree(
     let path = format!("{}/trees/{name}", trees_path(realm));
     versioned_call(tenant, "DELETE", &path, None, confirmed_prod)
         .send()
-        .await?;
+        .await
+        .map_err(|error| withheld(error, &format!("journey `{name}`'s tree (`trees/{name}`)")))?;
     Ok(())
 }
 
 pub async fn list_node_types(tenant: &str, realm: &str) -> Result<Vec<NodeType>> {
     let path = format!("{}?_action=getAllTypes", nodes_path(realm));
-    let body = read_action_call(tenant, &path).send().await?;
+    let body = read_action_call(tenant, &path)
+        .send()
+        .await
+        .map_err(|error| withheld(error, "the node type list (`nodes?_action=getAllTypes`)"))?;
     let result = body
         .get("result")
         .and_then(Value::as_array)
@@ -254,18 +270,31 @@ pub async fn list_node_types(tenant: &str, realm: &str) -> Result<Vec<NodeType>>
 pub async fn node_schema(tenant: &str, realm: &str, node_type: &str) -> Result<Value> {
     validate_node_type(node_type)?;
     let path = format!("{}/{node_type}?_action=schema", nodes_path(realm));
-    read_action_call(tenant, &path).send().await
+    read_action_call(tenant, &path)
+        .send()
+        .await
+        .map_err(|error| withheld(error, &format!("`{node_type}?_action=schema`")))
 }
 
 pub async fn node_template(tenant: &str, realm: &str, node_type: &str) -> Result<Value> {
     validate_node_type(node_type)?;
     let path = format!("{}/{node_type}?_action=template", nodes_path(realm));
-    read_action_call(tenant, &path).send().await
+    read_action_call(tenant, &path)
+        .send()
+        .await
+        .map_err(|error| withheld(error, &format!("`{node_type}?_action=template`")))
 }
 
 pub async fn list_custom_node_types(tenant: &str) -> Result<Vec<Value>> {
     let path = "/am/json/node-designer/node-type?_queryFilter=true";
-    let body = crate::aic::api::get_versioned(tenant, path, API_VERSION).await?;
+    let body = crate::aic::api::get_versioned(tenant, path, API_VERSION)
+        .await
+        .map_err(|error| {
+            withheld(
+                error,
+                "the custom node type list (`node-designer/node-type`)",
+            )
+        })?;
     let result = body
         .get("result")
         .and_then(Value::as_array)
@@ -823,7 +852,7 @@ impl std::fmt::Display for PushError {
             f,
             "{} {outcome}: {}",
             self.stopped_at,
-            withheld_message(&self.source)
+            withheld_message(&self.source, &format!("`{}`", self.stopped_at))
         )?;
         let list = |writes: &[String]| {
             if writes.is_empty() {

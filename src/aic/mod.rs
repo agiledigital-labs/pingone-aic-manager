@@ -406,9 +406,23 @@ fn trace_gateway_body(
         .collect::<Vec<_>>()
         .join(", ");
     format!(
-        "{body}\n\na non-JSON {status} answer{server}, the shape a gateway gives rather than AM \
-         or IDM. {lookups} shows whether AM or IDM recorded the request."
+        "{body}{GATEWAY_TRACE_START}{status} answer{server}, the shape a gateway gives rather than \
+         AM or IDM. {lookups}{GATEWAY_TRACE_END}"
     )
+}
+
+const GATEWAY_TRACE_START: &str = "\n\na non-JSON ";
+const GATEWAY_TRACE_END: &str = " shows whether AM or IDM recorded the request.";
+
+/// The transaction-id lookup [`trace_gateway_body`] appended to an error
+/// body, without the server's text before it — for a caller that must not
+/// show the body but still owes the operator the ids to look up. `None` when
+/// nothing was appended. The suffix is matched where it was put, at the end,
+/// so text earlier in the body cannot pose as it.
+pub(crate) fn gateway_trace(body: &str) -> Option<&str> {
+    let start = body.rfind(GATEWAY_TRACE_START)?;
+    let trace = &body[start + 2..];
+    (trace.ends_with(GATEWAY_TRACE_END) && trace.contains("`aic logs tx ")).then_some(trace)
 }
 
 /// Backoff before retry `attempt + 1` of a read that answered `status`, or
@@ -457,6 +471,35 @@ fn gateway_retry_delay(status: reqwest::StatusCode, attempt: u32) -> Option<std:
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    /// [`gateway_trace`] reads back exactly what [`trace_gateway_body`]
+    /// appended — every id, retries included — and nothing of the body; and
+    /// finds nothing in a body that was left alone.
+    #[test]
+    fn the_gateway_trace_is_read_back_without_the_body() {
+        let ids = ["tx-first".to_string(), "tx-retry".to_string()];
+        let traced = trace_gateway_body(
+            reqwest::StatusCode::SERVICE_UNAVAILABLE,
+            "<html>BODY-MARKER</html>".into(),
+            Some("gw"),
+            &ids,
+        );
+        let trace = gateway_trace(&traced).expect("a trace");
+        assert!(
+            trace.contains("`aic logs tx tx-first`, `aic logs tx tx-retry`"),
+            "{trace}"
+        );
+        assert!(trace.starts_with("a non-JSON 503"), "{trace}");
+        assert!(!trace.contains("BODY-MARKER"), "{trace}");
+        let untouched = trace_gateway_body(
+            reqwest::StatusCode::SERVICE_UNAVAILABLE,
+            r#"{"code":503}"#.into(),
+            None,
+            &ids,
+        );
+        assert_eq!(gateway_trace(&untouched), None);
+        assert_eq!(gateway_trace("plain body"), None);
+    }
 
     fn tenant(base_url: String) -> Tenant {
         Tenant {
