@@ -12,6 +12,10 @@
 # password (the case) and one with (the control), and reports for each of read, read with ["*"],
 # read with ["password"], query, and a `password pr` filter as the control that it was stored: whether `password` is an own key, its typeof, whether it starts
 # with the encoded prefix. Passwords are never printed. kdemo-g4-* users, deleted on exit.
+#
+# Ownership: the Create Object user's userName carries this run's prefix, run id and a random
+# suffix, and is registered for deletion only after the journey took CREATED and exactly one user
+# with that userName exists. A user this run cannot prove it created is never deleted.
 set -uo pipefail
 export EXPERIMENT_PREFIX="${EXPERIMENT_PREFIX:-kdemo-g4}"
 # shellcheck disable=SC1091  # the prelude is checked on its own
@@ -20,7 +24,8 @@ export EXPERIMENT_PREFIX="${EXPERIMENT_PREFIX:-kdemo-g4}"
 python3 - <<'PY' 2>&1 | "$REDACT" --redact
 import json
 import uuid
-from experiment_journey_lib import (Fixture, authenticate, show, dump_source, log, SUCCESS, call, REALM, list_outcomes)
+import urllib.parse
+from experiment_journey_lib import (Fixture, authenticate, show, dump_source, log, SUCCESS, call, REALM, list_outcomes, hidden)
 
 USERS = f"/openidm/managed/{REALM}_user"
 fx = Fixture("np")
@@ -66,10 +71,17 @@ if (callbacks.isEmpty()) {
 }
 action.goTo("true");
 """
+CREATED_NAME = fx.name("created-" + uuid.uuid4().hex[:8])
 CREATE_SEED = r"""
-nodeState.putShared("objectAttributes", {userName: "kdemo-g4-created", givenName: "Zz", sn: "Emu", mail: "kdemo-g4-created@example.com"});
+nodeState.putShared("objectAttributes", {userName: NAME, givenName: "Zz", sn: "Emu", mail: NAME + "@example.com"});
 action.goTo("true");
-"""
+""".replace("NAME", json.dumps(CREATED_NAME))
+
+
+def users_named(name):
+    q = urllib.parse.quote(f'userName eq "{name}"')
+    st, b, _ = call("GET", f"{USERS}?_queryFilter={q}&_fields=userName,mail,password", api="resource=1.0")
+    return st, b, [u for u in (b.get("result", []) if isinstance(b, dict) else []) if u.get("userName") == name]
 try:
     fx.track("user", f"{USERS}/{NOPW}")
     fx.track("user", f"{USERS}/{WITHPW}")
@@ -77,6 +89,9 @@ try:
     t = fx.tree("report", rep, {rep: ("ScriptedDecisionNode", "report", {"true": SUCCESS})})
     show("read shapes inside a journey script (no password vs password)", authenticate(t))
 
+    st, _, before = users_named(CREATED_NAME)
+    if st != 200 or before:
+        raise RuntimeError(f"{CREATED_NAME} pre-check: HTTP {st}, {len(before)} existing; not creating")
     seed = fx.scripted("seed", CREATE_SEED, ["true"])
     cr = fx.node("CreateObjectNode", {"identityResource": f"managed/{REALM}_user"})
     nodes = {seed: ("ScriptedDecisionNode", "seed", {"true": cr}), cr: ("CreateObjectNode", "create", {})}
@@ -85,11 +100,16 @@ try:
         nodes[cr][2][oc] = d
         nodes[d] = ("ScriptedDecisionNode", f"dump {oc}", {"true": SUCCESS})
     t2 = fx.tree("create", seed, nodes)
-    show("Create Object without a password", authenticate(t2))
-    st, b, _ = call("GET", f"{USERS}?_queryFilter=" + "userName+eq+%22kdemo-g4-created%22&_fields=userName,mail,password", api="resource=1.0")
+    created = authenticate(t2)
+    show("Create Object without a password", created)
+    st, b, mine = users_named(CREATED_NAME)
     log("--- created user read over IDM REST:", st, json.dumps(b)[:300])
-    for u in (b.get("result", []) if isinstance(b, dict) else []):
-        fx.track("user", f"{USERS}/{u['_id']}")
+    # Ownership: the journey reported CREATED and exactly one user carries this run's unique name.
+    took_created = any(k.startswith("dump-CREATED-") for k in (hidden(created[1]) or {}))
+    if took_created and len(mine) == 1:
+        fx.track("user", f"{USERS}/{mine[0]['_id']}")
+    else:
+        log(f"--- not registering for cleanup: CREATED={took_created}, matches={len(mine)}")
 finally:
     log("--- cleanup")
     for line in fx.cleanup():
