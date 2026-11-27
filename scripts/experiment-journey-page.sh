@@ -28,6 +28,7 @@ set -uo pipefail
 
 python3 - <<'PY' 2>&1 | "$REDACT" --redact
 import json
+import uuid
 from experiment_journey_lib import (Fixture, authenticate, show, fill, dump_source,
                                     log, SUCCESS, call, NODES, list_outcomes)
 
@@ -104,12 +105,17 @@ try:
     # Config rejection: two-outcome child not last.
     s = fx.scripted("bad-child", "action.goTo('a');", ["a", "b"])
     u = fx.node("UsernameCollectorNode", {})
-    st, b, _ = call("PUT", f"{NODES}/PageNode/00000000-0000-4000-8000-00000000zz01".replace("zz", "00"),
+    # A fresh id: a fixed one replaced (200) whatever page already held it, and cleanup then
+    # deleted it. Registered for deletion only on a create.
+    bad_page = f"{NODES}/PageNode/{uuid.uuid4()}"
+    st, b, _ = call("PUT", bad_page,
                     {"nodes": [{"_id": s, "nodeType": "ScriptedDecisionNode", "displayName": "x"},
                                {"_id": u, "nodeType": "UsernameCollectorNode", "displayName": "y"}]})
     log("--- page with two-outcome child first:", st, json.dumps(b))
-    if st in (200, 201):
-        fx.track("node", f"{NODES}/PageNode/00000000-0000-4000-8000-000000000001")
+    if st == 201:
+        fx.track("node", bad_page)
+    elif st == 200:
+        log("    replaced an existing page; not registering it for deletion")
     # "unwired" is "order" with the tree wiring the scripted child's outcome
     # ("true") instead of the page's listed one: the control for the 500.
     for tag, goto, emit, order, wire in [
