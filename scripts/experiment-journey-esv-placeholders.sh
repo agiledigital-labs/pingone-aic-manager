@@ -7,6 +7,11 @@
 # it equals the ESV read through systemEnv). A new ESV needs a tenant restart, so this reads an
 # ESV the sandbox already holds of each type (picked by type, never printed) and creates none.
 #
+# No ESV value leaves the journey script: it compares each property with the ESVs itself and
+# reports only type names, booleans and, for the literal cases, a value drawn from a fixed list of
+# the probe's own literals (anything else reads "<other>", and a text equal to an ESV "<esv>").
+# The callback and transcript carry those.
+#
 # Objects are kdemo-g3-*, deleted on exit, deletion confirmed by a GET.
 
 set -uo pipefail
@@ -39,14 +44,26 @@ sn = uuid.uuid4().hex
 TYPE_PATH = f"/am/json/node-designer/node-type/{sn}-1"
 SCRIPT = r'''
 var names = ["tb", "ts", "tn"];
-var out = {};
+// The probe's own literals; a property whose text is none of these is reported as "<other>".
+var LITERALS = ["true", "false", "TRUE", "maybe", "abc", "7", "7.0", "1.5", "0", "NaN", "null", "undefined", ""];
+var ref = ESVREF;
+var esv = {};
+for (var k in ref) esv[k] = systemEnv.getProperty(ref[k]);
+var out = { ref: {} };
+for (var k2 in esv) out.ref[k2] = { typeof: typeof esv[k2], isNull: esv[k2] === null };
 for (var i = 0; i < names.length; i++) {
   var v = properties[names[i]];
-  out[names[i]] = { typeof: typeof v, text: v === undefined || v === null ? String(v) : String(v) };
+  var text = String(v);
+  var r = { typeof: typeof v, esv: {} }, fromEsv = false;
+  for (var k3 in esv) {
+    var e = esv[k3];
+    r.esv[k3] = { same: v === e, sameText: text === String(e), embedded: text === "a-" + String(e) + "-b" };
+    fromEsv = fromEsv || r.esv[k3].sameText || r.esv[k3].embedded;
+  }
+  // A text that matches an ESV is never echoed, even when it is also one of the literals.
+  r.literal = fromEsv ? "<esv>" : LITERALS.indexOf(text) >= 0 ? text : "<other>";
+  out[names[i]] = r;
 }
-var ref = ESVREF;
-out.ref = {};
-for (var k in ref) { var e = systemEnv.getProperty(ref[k]); out.ref[k] = { typeof: typeof e, text: String(e) }; }
 nodeState.putShared("probe", JSON.stringify(out));
 outcome = "next";
 '''
