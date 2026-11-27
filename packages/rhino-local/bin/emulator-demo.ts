@@ -52,6 +52,7 @@ try {
   if (!Number.isInteger(days) || days < 1) throw new Error("--retention-days must be a positive integer");
   const scale = Number(values.scale);
   const concurrency = Number(values.concurrency);
+  if (!Number.isSafeInteger(concurrency) || concurrency < 1) throw new Error("--concurrency must be a positive integer");
   const port = Number(values.port);
 
   const mix = parseMix(readFileSync(values.mix, "utf8"));

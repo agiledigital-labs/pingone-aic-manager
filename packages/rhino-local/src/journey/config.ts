@@ -57,6 +57,10 @@ export class JourneyConfig {
     for (const [id, script] of Object.entries(input.scripts)) record(script, `scripts/${id}`);
     for (const page of Object.values(input.nodes.PageNode ?? {})) {
       if (!Array.isArray(page.nodes)) continue;
+      // Measured (docs/api/09-journeys.md, PageNode children): a page cannot hold a page.
+      for (const child of page.nodes)
+        if (child !== null && typeof child === "object" && (child as Record<string, unknown>).nodeType === "PageNode")
+          throw new RangeError("400 Invalid config: Illegal child node type: PageNode");
       for (const child of page.nodes.slice(0, -1)) {
         if (child === null || typeof child !== "object" || Array.isArray(child)) continue;
         const ref = child as Record<string, unknown>;

@@ -13,6 +13,8 @@ import { expandSources, type LogStore, type Snapshot } from "./store.ts";
 import { formatRfc3339Ns, parseRfc3339Ns } from "./time.ts";
 
 const MAX_PAGE = 1000;
+/** How many (source, cookie) attempt counts a fault-hooked server keeps. */
+const MAX_TRACKED_ATTEMPTS = 10_000;
 const DAY_NS = 24n * 3600n * 1_000_000_000n;
 
 /** What a fault hook sees: the request as the server understood it. */
@@ -242,6 +244,11 @@ export async function startLogsServer(options: LogsServerOptions): Promise<LogsS
   const quota =
     perMinute === false ? undefined : new Quota(perMinute, options.realNowMs ?? (() => Date.now()));
   let fault = options.fault;
+  /**
+   * Attempts per (source, cookie), for the fault hook's `attempt`. Kept only while a hook is
+   * installed (a server without one, the CLI's and the demo's, keeps nothing per cookie), and
+   * bounded: the oldest key goes once `MAX_TRACKED_ATTEMPTS` are held.
+   */
   const attempts = new Map<string, number>();
 
   const send = (res: ServerResponse, status: number, body: unknown, headers: Record<string, string> = {}): void => {
@@ -295,8 +302,14 @@ export async function startLogsServer(options: LogsServerOptions): Promise<LogsS
     }
 
     const cookie = param("_pagedResultsCookie") ?? null;
-    const reportedAttempt = (attempts.get(`${sourceParam}|${cookie ?? ""}`) ?? 0) + 1;
-    attempts.set(`${sourceParam}|${cookie ?? ""}`, reportedAttempt);
+    let reportedAttempt = 1;
+    if (fault !== undefined) {
+      const key = `${sourceParam}|${cookie ?? ""}`;
+      reportedAttempt = (attempts.get(key) ?? 0) + 1;
+      attempts.delete(key);
+      attempts.set(key, reportedAttempt);
+      if (attempts.size > MAX_TRACKED_ATTEMPTS) attempts.delete(attempts.keys().next().value as string);
+    }
 
     if (quota !== undefined) {
       const wait = quota.charge();
@@ -407,6 +420,7 @@ export async function startLogsServer(options: LogsServerOptions): Promise<LogsS
     port,
     setFault(hook) {
       fault = hook;
+      attempts.clear();
     },
     close: () =>
       new Promise<void>((resolve, reject) => {

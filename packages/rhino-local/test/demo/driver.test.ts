@@ -1,11 +1,11 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { RhinoRunner } from "../../src/runner.ts";
 import { parseBreaks } from "../../src/demo/breaks.ts";
-import { Arrivals } from "../../src/demo/driver.ts";
+import { Arrivals, Driver, manualPacer } from "../../src/demo/driver.ts";
 import { Rng } from "../../src/demo/rng.ts";
 import { parseMix } from "../../src/demo/mix.ts";
 import { formatRfc3339Ns } from "../../src/logs/time.ts";
-import { canon, HOUR, MINUTE, mixJson, payload, runDriver, T0, ts } from "./rig.ts";
+import { canon, config, HOUR, makeEngineFor, MINUTE, mixJson, payload, Recording, runDriver, T0, ts } from "./rig.ts";
 import type { LogRecord } from "../../src/logs/record.ts";
 
 let runner: RhinoRunner;
@@ -60,6 +60,69 @@ describe("handoff", () => {
     const arrivals = new Arrivals(zero, () => 1e9, T0, T0 + 3n);
     expect([arrivals.next(), arrivals.next(), arrivals.next()]).toEqual([T0 + 1n, T0 + 2n, undefined]);
   });
+});
+
+// Astra review P2-1: the horizon renews with each arrival, so a recurring stream with no end keeps
+// going. Discriminating: a horizon fixed at start + 400 days ended this stream on day 400.
+describe("a stream with no end", () => {
+  it("still yields arrivals past day 400 at a constant rate", () => {
+    const rng = Object.create(Rng.prototype) as Rng;
+    // A half-hour gap from each hour's start: one arrival an hour, at :30.
+    rng.exponential = () => Number(HOUR) / 2;
+    const arrivals = new Arrivals(rng, () => 2, T0);
+    const day = 24n * HOUR;
+    let last: bigint | undefined;
+    for (let i = 0; i < 24 * 410; i++) last = arrivals.next();
+    expect(last).toBeDefined();
+    expect(last! - T0).toBeGreaterThan(405n * day);
+  });
+  it("ends when the rate stays zero for the whole idle horizon", () => {
+    const rng = Object.create(Rng.prototype) as Rng;
+    rng.exponential = () => Number(HOUR) / 2;
+    const day = 24n * HOUR;
+    // Positive for the first day only.
+    const arrivals = new Arrivals(rng, (t) => (t < T0 + day ? 2 : 0), T0);
+    let n = 0;
+    while (arrivals.next() !== undefined) n++;
+    expect(n).toBe(24);
+  });
+});
+
+// Astra review P2-2 and P2-3.
+describe("driver bounds", () => {
+  const driver = (concurrency: number) => {
+    const cfg = config();
+    return new Driver({
+      mix: parseMix(traffic()),
+      config: cfg,
+      makeEngine: makeEngineFor(runner, cfg),
+      sink: new Recording(),
+      pacer: manualPacer(T0),
+      seed: "bounds",
+      concurrency,
+    });
+  };
+  it.each([0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY])("refuses concurrency %s", (n) => {
+    expect(() => driver(n)).toThrow(/concurrency must be a positive integer/);
+  });
+  it("removes each wait's abort listener when the wait ends", async () => {
+    const controller = new AbortController();
+    let added = 0;
+    let removed = 0;
+    const add = controller.signal.addEventListener.bind(controller.signal);
+    const remove = controller.signal.removeEventListener.bind(controller.signal);
+    controller.signal.addEventListener = ((...args: Parameters<typeof add>) => {
+      added++;
+      add(...args);
+    }) as typeof add;
+    controller.signal.removeEventListener = ((...args: Parameters<typeof remove>) => {
+      removed++;
+      remove(...args);
+    }) as typeof remove;
+    await driver(1).run({ until: T0 + 5n * MINUTE, signal: controller.signal });
+    expect(added).toBeGreaterThan(10);
+    expect(removed).toBe(added);
+  }, 60_000);
 });
 
 describe("rates", () => {
