@@ -94,7 +94,8 @@ export function customBlocked(): string[] {
  * `get(key)` and `putShared(key, value)` forward exactly those, as the view always has, so a call
  * with extra arguments (`['realm'].map(nodeState.get)` passes value, index and array) behaves as
  * before rather than meeting the binding's arity check. `getProperty` forwards what it is given, as
- * the binding does in a Scripted Decision node; only its one-argument call is measured here.
+ * the binding does in a Scripted Decision node; only its one-argument call is measured here, and
+ * its overloads and arity error in a custom node are assumed parity with doc 12 (doc 25 says so).
  */
 const CUSTOM_VIEWS: Readonly<Record<string, Readonly<Record<string, number | null>>>> = {
   nodeState: { get: 1, putShared: 2 },
@@ -119,9 +120,16 @@ const customNodeViews = `
     });
     Object.keys(arity).forEach(function (key) {
       view[key] = function () {
-        var args = arguments, n = arity[key], i;
-        if (n !== null) for (args = [], i = 0; i < n; i += 1) args.push(arguments[i]);
-        var result = target[key].apply(target, args);
+        // Fixed direct calls, as the view had before: nothing here reaches a prototype method the
+        // script can replace, so a plain read does not depend on the script's Array.prototype.
+        // getProperty's own arities (1..3) go direct too; only a longer call, which the binding
+        // refuses by arity, goes through apply.
+        var n = arity[key] === null ? arguments.length : arity[key], a = arguments;
+        var result = n === 0 ? target[key]()
+          : n === 1 ? target[key](a[0])
+          : n === 2 ? target[key](a[0], a[1])
+          : n === 3 ? target[key](a[0], a[1], a[2])
+          : target[key].apply(target, a);
         return result === target ? view : result;
       };
     });

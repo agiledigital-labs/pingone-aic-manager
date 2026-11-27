@@ -374,6 +374,36 @@ describe("P2-3 custom nodes reach only the measured bindings", () => {
     expect(dumpedBy(done.body)).toBe("s");
     expect(dumped(done.body).username).toBe("/alpha");
   });
+  // Review round 8 P2-1: a plain read does not depend on the script's Array.prototype. Discriminating:
+  // a view that built its argument list with push took Script Error with username unset.
+  it("reads nodeState while the script has replaced Array.prototype.push", async () => {
+    const done = await req(
+      custom(
+        "var push = Array.prototype.push, realm; Array.prototype.push = undefined; try { realm = nodeState.get('realm'); } finally { Array.prototype.push = push; } nodeState.putShared('username', realm); outcome = 'ok';",
+        true,
+        runner,
+        { errorTo: "errDump" },
+      ),
+    );
+    expect(done.status).toBe(200);
+    expect(dumpedBy(done.body)).toBe("s");
+    expect(dumped(done.body).username).toBe("/alpha");
+  });
+  // Review round 8 P3: getProperty forwards every argument, so its overloads and arity refusal are
+  // the Scripted Decision binding's (doc 12) -- assumed parity; only getProperty(name) is measured.
+  it.each([
+    ["three arguments select the typed overload", "systemEnv.getProperty('esv.round8.n', '0', 'integer') + 1", "s", "8"],
+    ["four arguments meet the binding's arity check", "systemEnv.getProperty('esv.round8.n', '0', 'integer', 'x')", "err", null],
+  ])("getProperty: %s", async (_name, expr, edge, username) => {
+    const done = await req(
+      custom(`nodeState.putShared('username', String(${expr})); outcome = 'ok';`, true, runner, {
+        errorTo: "errDump",
+        esv: { "esv.round8.n": "7" },
+      }),
+    );
+    expect(dumpedBy(done.body)).toBe(edge);
+    expect(dumped(done.body).username).toBe(username);
+  });
   // Review round 6 P1: the emulated systemEnv has no member but getProperty, so there is no other
   // member to refuse by name; an unknown one reads undefined and calling it throws a TypeError,
   // which routes like any throw. What the tenant's other members do is unmeasured.
@@ -405,24 +435,25 @@ describe("P2-3 custom nodes reach only the measured bindings", () => {
   it("labels the no-route unlisted outcome assumed, never measured", async () => {
     const done = await req(custom("outcome = 'wrong';", false));
     expect(done.status).toBe(401);
-    // Review round 7 P2-2: the complete custom-node entries, source included, so the claim fails
-    // whether it is appended to the measured entry or added as a second one, in any wording.
-    const customEntries = (done.provenance ?? []).filter(
-      (e) => /custom node/i.test(e.behavior) || (e.source ?? "").includes("custom node"),
-    );
-    expect(customEntries).toEqual([
+    // Review round 8 P2-2: the fixture's complete measured list, exactly, not a selection by prose
+    // or citation, so the claim fails as a measured entry in any wording under any source.
+    const kind = (k: string) => (done.provenance ?? []).filter((e) => e.kind === k);
+    const SOURCE = "docs/api/25-journey-runtime.md (measurement agent, 2026-11-02)";
+    expect(kind("measured")).toEqual([
+      { kind: "measured", behavior: "unknown and innerTreeOnly direct journeys return No Configuration found", source: SOURCE },
       {
         kind: "measured",
         behavior:
           "a custom node runs its type's script with the instance's properties bound; a throw, an outcome the type does not list or an unset outcome takes Script Error when the type has an error outcome; without one a throw fails the journey with 401 Login failure; a missing required property fails it with 401; an outputs list does not restrict its writes",
         source: "docs/api/25-journey-runtime.md (custom node types, 2026-11-25)",
       },
-      {
-        kind: "assumed",
-        behavior:
-          "a custom node's unlisted or unset outcome without an error outcome fails the journey with 401 like a throw; unmeasured",
-      },
+      { kind: "measured", behavior: "next-gen nodeState has no getShared/getTransient; callback-free boundaries retain transient state", source: SOURCE },
+      { kind: "measured", behavior: "action withErrorMessage works in either call order; withLockoutMessage has no visible failure-message effect", source: SOURCE },
     ]);
+    expect(kind("assumed")).toContainEqual({
+      kind: "assumed",
+      behavior: "a custom node's unlisted or unset outcome without an error outcome fails the journey with 401 like a throw; unmeasured",
+    });
   });
   // Review round 5 P2-3: outside the named refusals a custom script gets ordinary JavaScript errors,
   // which it can catch. Discriminating: a named refusal for these would be an uncatchable 501.

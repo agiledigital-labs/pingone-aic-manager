@@ -855,7 +855,11 @@ calling a method the next-gen `nodeState` has other than `get` and
 (`custom node binding: <name>`); what the tenant does there is unmeasured. The
 emulated `systemEnv` has no member but `getProperty`, so another member reads
 `undefined` and calling it is a `TypeError`; the tenant's other `systemEnv`
-members are unmeasured in a custom node.
+members are unmeasured in a custom node. Only the one-argument
+`getProperty(name)` of a configured ESV is measured there; the emulator passes
+every argument through, so the default-value and typed overloads and the arity
+error are the Scripted Decision binding's (doc 12) — assumed parity, not a
+custom node measurement.
 Other names are ordinary JavaScript: an unknown global throws a
 `ReferenceError`, and `nodeState.getShared` / `getTransient`, absent from the
 next-gen `nodeState` as above, throw a `TypeError` when called. A bare
