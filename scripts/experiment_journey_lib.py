@@ -76,16 +76,28 @@ class Fixture:
     def __init__(self, label):
         self.label = label
         self.created = []  # (kind, path)
-        self.run = uuid.uuid4().hex[:8]
+        # The full run id: names derived from it (trees, users found by name, page-discovery's
+        # prefix) are how cleanup decides what this run owns, so they must not repeat across
+        # runs. Eight hex digits could, and two runs then deleted each other's objects.
+        self.run = uuid.uuid4().hex
 
     def name(self, suffix):
         return f"{PREFIX}-{self.label}-{self.run}-{suffix}"
 
     def put(self, kind, path, body):
+        """PUT, and register the object for deletion only if this run created it.
+
+        A 201 is the only create signal. A 200 means the PUT replaced an object this run does
+        not own, so deleting it at cleanup would take another run's (or someone's) object.
+        """
         st, b, _ = call("PUT", path, body)
         if st not in (200, 201):
             raise RuntimeError(f"PUT {kind} {path} -> {st}: {json.dumps(b)[:600]}")
-        self.created.append((kind, path))
+        if st == 201:
+            self.created.append((kind, path))
+        else:
+            print(f"warning: PUT {kind} {path} -> 200 replaced an existing object; "
+                  "not registering it for deletion", file=sys.stderr)
         return b
 
     def script(self, name_suffix, source):
@@ -115,7 +127,14 @@ class Fixture:
         for i, (nid, (ntype, disp, conns)) in enumerate(nodes.items()):
             tn[nid] = {"connections": conns, "displayName": f"zzemu {disp}",
                        "nodeType": ntype, "version": "1.0", "x": 100 + 150 * i, "y": 100}
-        self.put("tree", f"{TREES}/{urllib.parse.quote(name)}", {
+        path = f"{TREES}/{urllib.parse.quote(name)}"
+        # Never overwrite an occupied name: a reused suffix within a run, or anything else already
+        # there, is refused (a GET of an absent tree is 404, doc 09). `put` still declines to
+        # register a 200 if one races in between the two calls.
+        st, _, _ = call("GET", path)
+        if st != 404:
+            raise RuntimeError(f"tree name {name} is not free (GET -> {st}); not overwriting it")
+        self.put("tree", path, {
             "entryNodeId": entry, "nodes": tn, "enabled": True,
             "innerTreeOnly": inner_only, "noSession": False, "mustRun": False,
             "transactionalOnly": False,
@@ -129,7 +148,8 @@ class Fixture:
         uid = str(uuid.uuid4())
         st, b, _ = call("PUT", f"/openidm/managed/{REALM}_user/{uid}", attrs,
                         api="resource=1.0", headers={"If-None-Match": "*"})
-        if st not in (200, 201):
+        if st != 201:
+            # If-None-Match: * makes anything but a create an error; never register a 200.
             raise RuntimeError(f"create user -> {st}: {json.dumps(b)[:400]}")
         self.created.append(("user", f"/openidm/managed/{REALM}_user/{uid}"))
         return uid

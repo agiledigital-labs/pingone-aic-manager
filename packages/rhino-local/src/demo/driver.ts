@@ -44,24 +44,40 @@ export function clockPacer(clock: Clock, maxSleepMs = 40): Pacer {
   let rate = 1;
   return {
     nowNs: () => clock.nowNs(),
-    async waitUntil(t, wake) {
-      // One reaction on `wake` for the whole wait, not one per poll.
-      const woken = wake.then(() => "wake" as const);
-      for (;;) {
-        const now = clock.nowNs();
-        if (now >= t) return;
-        const real = performance.now();
-        if (anchor === undefined) anchor = { virtual: now, real };
-        else if (real - anchor.real > 200) rate = Math.max(1e-6, Number(now - anchor.virtual) / 1e6 / (real - anchor.real));
-        const ms = Math.min(maxSleepMs, Math.max(1, Number(t - now) / 1e6 / rate));
+    waitUntil(t, wake) {
+      // One subscription to `wake` for the whole wait, and a timer chain rather than a
+      // `Promise.race` per poll: each race subscribed to `wake` again, and every losing reaction
+      // stayed pending until the wait ended (about two million in a one-day gap).
+      return new Promise<void>((resolve, reject) => {
         let timer: NodeJS.Timeout | undefined;
-        const slept = new Promise<"slept">((resolve) => {
-          timer = setTimeout(() => resolve("slept"), ms);
-        });
-        const woke = await Promise.race([slept, woken]);
-        clearTimeout(timer);
-        if (woke === "wake") return;
-      }
+        let settled = false;
+        const settle = (error?: { readonly cause: unknown }): void => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          if (error === undefined) resolve();
+          else reject(error.cause);
+        };
+        wake.then(
+          () => settle(),
+          (cause: unknown) => settle({ cause }),
+        );
+        const poll = (): void => {
+          if (settled) return;
+          try {
+            const now = clock.nowNs();
+            if (now >= t) return settle();
+            const real = performance.now();
+            if (anchor === undefined) anchor = { virtual: now, real };
+            else if (real - anchor.real > 200) rate = Math.max(1e-6, Number(now - anchor.virtual) / 1e6 / (real - anchor.real));
+            const ms = Math.min(maxSleepMs, Math.max(1, Number(t - now) / 1e6 / rate));
+            timer = setTimeout(poll, ms);
+          } catch (cause) {
+            settle({ cause });
+          }
+        };
+        poll();
+      });
     },
   };
 }
@@ -129,11 +145,11 @@ class Heap<T> {
 /**
  * Poisson arrivals from a rate that is constant within each virtual hour. A gap is at least one
  * nanosecond, so no arrival lands on the instant a stream starts (the handoff instant). A stream
- * with no end runs for as long as its rate keeps producing arrivals; it ends only after a search of
- * `IDLE_HORIZON_NS` past its last arrival (or its start) finds no hour with a positive rate, which
- * is what stops a rate that is zero for ever from spinning. Exported for its test only.
+ * with no end never retires while some hour ahead has a positive rate, however sparse; it ends
+ * only after `IDLE_HORIZON_NS` of consecutive zero-rate hours, which is what stops a rate that is
+ * zero for ever from spinning. Exported for its test only.
  */
-/** How far a stream searches past its last arrival for an hour with a positive rate. */
+/** How long a run of zero-rate hours lasts before a stream with no end is retired. */
 const IDLE_HORIZON_NS = 400n * 24n * HOUR_NS;
 
 export class Arrivals {
@@ -141,35 +157,32 @@ export class Arrivals {
   readonly #end: bigint | undefined;
   readonly #rng: Rng;
   readonly #rate: (t: bigint) => number;
-  /** Where the current search for a positive-rate hour began: the start, or the last arrival. */
-  #searchFrom: bigint;
+  /** Where the current run of zero-rate hours began; undefined while the rate is positive. */
+  #idleFrom: bigint | undefined;
 
   constructor(rng: Rng, rate: (t: bigint) => number, start: bigint, end?: bigint) {
     this.#rng = rng;
     this.#rate = rate;
     this.#cursor = start;
     this.#end = end;
-    this.#searchFrom = start;
   }
 
   next(): bigint | undefined {
     for (;;) {
-      if (
-        this.#cursor - this.#searchFrom >= IDLE_HORIZON_NS ||
-        (this.#end !== undefined && this.#cursor >= this.#end)
-      )
-        return undefined;
+      if (this.#end !== undefined && this.#cursor >= this.#end) return undefined;
       const perHour = this.#rate(this.#cursor);
       const hourEnd = (this.#cursor / HOUR_NS + 1n) * HOUR_NS;
       if (!(perHour > 0)) {
+        this.#idleFrom ??= this.#cursor;
+        if (this.#cursor - this.#idleFrom >= IDLE_HORIZON_NS) return undefined;
         this.#cursor = hourEnd;
         continue;
       }
+      this.#idleFrom = undefined;
       const gap = BigInt(Math.max(1, Math.round(this.#rng.exponential(perHour / Number(HOUR_NS)))));
       const at = this.#cursor + gap;
       if (at < hourEnd) {
         this.#cursor = at;
-        this.#searchFrom = at;
         return this.#end !== undefined && at >= this.#end ? undefined : at;
       }
       this.#cursor = hourEnd;
