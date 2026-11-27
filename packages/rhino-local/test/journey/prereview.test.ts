@@ -333,3 +333,24 @@ describe("P3-8 an unknown script logger level is refused, not dropped", () => {
     );
   });
 });
+
+describe("P3-4 one localized-text rule for Page headers and node messages", () => {
+  const message = (body: JsonValue) =>
+    (body as Wire).callbacks[0]?.output.find((f) => f.name === "message")?.value;
+  it("MessageNode shows the en entry of several, as a Page header does", async () => {
+    const e = emu({ MessageNode: { node: { message: { fr: "F", en: "E" } } } }, "MessageNode", "", [
+      "true",
+      "false",
+    ]);
+    expect(message((await req(e)).body)).toBe("E");
+  });
+  it("MessageNode refuses several locales with no en", async () => {
+    const e = emu({ MessageNode: { node: { message: { fr: "F", de: "D" } } } }, "MessageNode", "", [
+      "true",
+      "false",
+    ]);
+    const name = "MessageNode message with several locales and no en";
+    expectEmulationFailure(name);
+    refused(await req(e), name);
+  });
+});
