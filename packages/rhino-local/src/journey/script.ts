@@ -89,9 +89,16 @@ export function customBlocked(): string[] {
  * `getProperty`, which `scripts/experiment-journey-esv-placeholders.sh` calls in a custom node
  * (doc 25, ESV placeholders in custom node properties). Nothing else of either was measured there.
  */
-const CUSTOM_VIEWS: Readonly<Record<string, readonly string[]>> = {
-  nodeState: ["get", "putShared"],
-  systemEnv: ["getProperty"],
+/**
+ * Each allowed method maps to the number of arguments the view forwards, or `null` for all of them.
+ * `get(key)` and `putShared(key, value)` forward exactly those, as the view always has, so a call
+ * with extra arguments (`['realm'].map(nodeState.get)` passes value, index and array) behaves as
+ * before rather than meeting the binding's arity check. `getProperty` forwards what it is given, as
+ * the binding does in a Scripted Decision node; only its one-argument call is measured here.
+ */
+const CUSTOM_VIEWS: Readonly<Record<string, Readonly<Record<string, number | null>>>> = {
+  nodeState: { get: 1, putShared: 2 },
+  systemEnv: { getProperty: null },
 };
 /**
  * A custom node's restricted views of those bindings, built in the decision scope where the bridge
@@ -105,14 +112,16 @@ const customNodeViews = `
 (function (host, views) {
   var global = this, out = {};
   Object.keys(views).forEach(function (name) {
-    var target = global[name], allowed = views[name], view = {};
+    var target = global[name], arity = views[name], view = {};
     Object.keys(target).forEach(function (key) {
-      if (typeof target[key] === 'function' && allowed.indexOf(key) === -1)
+      if (typeof target[key] === 'function' && !Object.prototype.hasOwnProperty.call(arity, key))
         view[key] = host('refusal', 'custom node binding: ' + name + '.' + key);
     });
-    allowed.forEach(function (key) {
+    Object.keys(arity).forEach(function (key) {
       view[key] = function () {
-        var result = target[key].apply(target, arguments);
+        var args = arguments, n = arity[key], i;
+        if (n !== null) for (args = [], i = 0; i < n; i += 1) args.push(arguments[i]);
+        var result = target[key].apply(target, args);
         return result === target ? view : result;
       };
     });

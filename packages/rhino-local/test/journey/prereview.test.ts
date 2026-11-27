@@ -358,6 +358,22 @@ describe("P2-3 custom nodes reach only the measured bindings", () => {
     expect(dumpedBy(done.body)).toBe("s");
     expect(dumped(done.body).username).toBe("from-esv");
   });
+  // Review round 7 P2-1: the view forwards get(key) and putShared(key, value) exactly, as before
+  // ef89676d. Discriminating: Array.map passes (value, index, array), which the binding's own arity
+  // check refuses, so forwarding every argument would take Script Error with username unset.
+  it("forwards only the key when map passes nodeState.get extra arguments", async () => {
+    const done = await req(
+      custom(
+        "nodeState.putShared('username', ['realm'].map(nodeState.get).join(','), 'extra'); outcome = 'ok';",
+        true,
+        runner,
+        { errorTo: "errDump" },
+      ),
+    );
+    expect(done.status).toBe(200);
+    expect(dumpedBy(done.body)).toBe("s");
+    expect(dumped(done.body).username).toBe("/alpha");
+  });
   // Review round 6 P1: the emulated systemEnv has no member but getProperty, so there is no other
   // member to refuse by name; an unknown one reads undefined and calling it throws a TypeError,
   // which routes like any throw. What the tenant's other members do is unmeasured.
@@ -389,11 +405,24 @@ describe("P2-3 custom nodes reach only the measured bindings", () => {
   it("labels the no-route unlisted outcome assumed, never measured", async () => {
     const done = await req(custom("outcome = 'wrong';", false));
     expect(done.status).toBe(401);
-    const of = (kind: string) =>
-      (done.provenance ?? []).filter((e) => e.kind === kind).map((e) => e.behavior).join("\n");
-    expect(of("assumed")).toContain("unlisted or unset outcome without an error outcome fails the journey with 401");
-    expect(of("measured")).not.toMatch(/does not list[^;]*else fails the journey/);
-    expect(of("assumed")).not.toContain("outputs");
+    // Review round 7 P2-2: the complete custom-node entries, source included, so the claim fails
+    // whether it is appended to the measured entry or added as a second one, in any wording.
+    const customEntries = (done.provenance ?? []).filter(
+      (e) => /custom node/i.test(e.behavior) || (e.source ?? "").includes("custom node"),
+    );
+    expect(customEntries).toEqual([
+      {
+        kind: "measured",
+        behavior:
+          "a custom node runs its type's script with the instance's properties bound; a throw, an outcome the type does not list or an unset outcome takes Script Error when the type has an error outcome; without one a throw fails the journey with 401 Login failure; a missing required property fails it with 401; an outputs list does not restrict its writes",
+        source: "docs/api/25-journey-runtime.md (custom node types, 2026-11-25)",
+      },
+      {
+        kind: "assumed",
+        behavior:
+          "a custom node's unlisted or unset outcome without an error outcome fails the journey with 401 like a throw; unmeasured",
+      },
+    ]);
   });
   // Review round 5 P2-3: outside the named refusals a custom script gets ordinary JavaScript errors,
   // which it can catch. Discriminating: a named refusal for these would be an uncatchable 501.

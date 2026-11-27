@@ -819,7 +819,8 @@ refused only when its value is a configured session's.
 **No committed probe for the type, instance, binding, throw and route rows
 below**: they come from an uncommitted run on 2026-11-25. The committed
 `scripts/experiment-journey-esv-placeholders.sh` covers custom node
-properties and their ESV placeholders only.
+properties and their ESV placeholders, and one binding: its custom node script
+calls `systemEnv.getProperty` to read the ESV it compares against.
 
 The sandbox allows creating them. A type is stored at
 `/am/json/node-designer/node-type/<serviceName>-1` (header
