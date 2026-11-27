@@ -13,7 +13,8 @@ export default defineConfig({ test: {
   maxWorkers: 1,
   ...(process.env.R8_CANARY === "true" ? { fileParallelism: false } : {}),
   maxConcurrency: 1,
-  ...(process.env.R7_PRECOLLECT ? { hookTimeout: 500 } : {}),
+  // R7 expects a pass; this only bounds a readiness deadlock. 500 ms flaked at load ~28.
+  ...(process.env.R7_PRECOLLECT ? { hookTimeout: 5_000 } : {}),
   ...(process.env.R6_BROKEN_RUNNER === "true" ? { hookTimeout: 500 } : {}),
   reporters: [...(process.env.R6_QUEUE_DELAY === "true" || process.env.R8_CANARY === "true" ? ["test/fixtures/emulation-backstop/queued-reporter.ts"] : []), "json", ...(existsSync("src/harness/vitest-reporter.ts") ? ["src/harness/vitest-reporter.ts"] : [])],
   outputFile: process.env.R5_REPORT!,
