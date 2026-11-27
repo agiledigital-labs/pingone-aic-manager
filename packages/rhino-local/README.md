@@ -3065,9 +3065,11 @@ identity value nor objectAttributes, a non-object shared objectAttributes under
 AttributeCollector or Identify, `ValidatedPasswordNode` over an existing
 transient objectAttributes, a `ValidatedUsernameNode` Page child, callbacks
 posted without an authId to an entry node other than a scripted decision, a
-non-array `outcomes` configuration, Patch patchAsObject (and `ignoredFields` that is not a list of plain attribute names) and
-nested Pages remain fatal missing behavior when
-reached. Policy evaluation is not copied
+non-array `outcomes` configuration and Patch patchAsObject (and `ignoredFields` that is not a list of plain attribute names)
+remain fatal missing behavior when
+reached. A Page that holds a Page is refused when the configuration is loaded,
+with AM's measured `400 Invalid config: Illegal child node type: PageNode`
+(doc 09). Policy evaluation is not copied
 into the journey layer: managed writes use the existing IDM policy seam.
 
 AttributeCollector with `validateInputs: true` (doc 25, 2026-11-25) takes its

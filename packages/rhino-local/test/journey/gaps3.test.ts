@@ -436,6 +436,17 @@ describe("nodes as page children", () => {
     expect(() => new JourneyConfig(pageInput([NAME, MESSAGE], ["true", "false"]))).not.toThrow();
   });
 
+  // Astra review P2-4: a page cannot hold a page (doc 09, measured 400). Discriminating: the sole
+  // child is a PageNode, which the not-last-child check never sees.
+  it("a PageNode child is refused when the page is configured, last or not", () => {
+    for (const children of [[{ type: "PageNode", config: { nodes: [] } }], [NAME, { type: "PageNode", config: { nodes: [] } }]])
+      expect(() => new JourneyConfig(pageInput(children, ["outcome"]))).toThrow(
+        "400 Invalid config: Illegal child node type: PageNode",
+      );
+    // Control: the same page with a collector in its place is accepted.
+    expect(() => new JourneyConfig(pageInput([NAME], ["outcome"]))).not.toThrow();
+  });
+
   it("ValidatedUsernameNode as a child writes username and objectAttributes.userName; the later writer wins username", async () => {
     const after = await submit([NAME, VALIDATED], ["outcome"], { 0: "first", 1: "second" });
     expect(types(after.first.body)).toEqual(["NameCallback", "NameCallback"]);
