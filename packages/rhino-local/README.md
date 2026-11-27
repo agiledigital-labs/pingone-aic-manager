@@ -2568,6 +2568,11 @@ rate}`; now is `virtual_origin + (real now - real_origin) * rate`, read once at
   own stream in `source`. Other sources the tenant lists (`ctsstore`,
   `userstore*`) are accepted and empty; anything else is a 400.
 - **`transactionId`** is a prefix match on `payload.transactionId`, as measured.
+- **`_queryFilter`** serves exactly one form, `payload/transactionId eq "<id>"`,
+  an exact match (docs/api/08-logs.md). Any other filter, the filter combined with
+  `transactionId`, and any query parameter the server does not know is a `501`
+  naming it, the emulator's own refusal, rather than a page that silently ignores
+  it. The paging cookie is bound to the filter like the rest of the query.
 - **Publication.** A record is visible once virtual now >= its timestamp (zero
   lag, which meets "published within two virtual minutes"). A record stamped in
   the future stays hidden until the clock reaches it.
@@ -2586,7 +2591,7 @@ rate}`; now is `virtual_origin + (real now - real_origin) * rate`, read once at
   answer instead of the real reply. It runs after auth and the quota, so an
   injected 5xx still spends quota, as a real one does.
 
-Not served: `/monitoring/logs/sources`, `/monitoring/logs/tail`, `_queryFilter`.
+Not served: `/monitoring/logs/sources`, `/monitoring/logs/tail`, and any `_queryFilter` but the one above.
 
 ## Artefacts
 
@@ -2875,8 +2880,9 @@ runs, since whether AM runs it is unmeasured. `ValidatedPasswordNode` (`validate
 transient password and transient objectAttributes. `nodeState.get` returns the
 whole transient value when present, otherwise shared; objectAttributes maps are
 never merged across these buckets. Extending that shadowing to other caller keys
-is labelled assumed. The shared `pageNodeCallbacks` value is assumed to be the
-merged wire array; doc 25 measures its presence/lifetime, not its contents.
+is labelled assumed. Every callback carries a top-level `_id` counting across the
+journey, and shared `pageNodeCallbacks` is the measured map of callback `_id` to
+child index, accumulating over re-sends and revisits (doc 25).
 Page discovery evaluates every script child once for real and retains its state
 effects, ignoring its goTo (measured); submission evaluates each child again.
 `withErrorMessage` in a discovery run, or alongside queued callbacks, is missing:
@@ -2973,7 +2979,9 @@ nodes.
 `ValidatedUsernameNode` (with `validateInput: false`), `MessageNode` and
 `GetAuthenticatorAppNode` run standalone and as `PageNode` children, as measured
 (doc 25, "Nodes as Page children"). A `MessageNode` must be the last child, and a
-display-only page leaves no `pageNodeCallbacks`.
+page whose only child is a display node, a one-time-password collector or a choice
+collector leaves no `pageNodeCallbacks`. An empty or blank answer to a
+`MessageNode` or `ChoiceCollectorNode` is `missing` (unmeasured), not index 0.
 
 ESV placeholders in node configuration (`&{esv.…}`, bare or wrapped as
 `{"$string": …}`, `{"$int": …}` or `{"$bool": …}`) resolve from
@@ -2984,7 +2992,9 @@ custom node properties"). An unconfigured ESV is `missing`.
 Custom Node Designer types: put the type definition in
 `JourneyConfigInput.customNodeTypes`, keyed `designer-<serviceName>`
 (`outcomes`, `errorOutcome`, `inputs`, `outputs`, `script`, `properties`). The
-script runs with `properties`, `nodeState` and `outcome` bound; a throw or
+script runs with `properties`, `nodeState` (`get` and `putShared` only) and
+`outcome` bound, and any other binding it touches is `missing`, naming it
+(`custom node binding: openidm`); a throw or
 unlisted outcome takes `Script Error` when `errorOutcome` is set. Not modelled:
 the `inputs` read restriction, and `outputs` (also unrestrictive on the tenant).
 The OTP expiry boundary, cookie expiry and `idleTimeout`, and `ValidatedPasswordNode`
@@ -3107,7 +3117,7 @@ It starts the logs server, then runs the driver on the shared clock until
 SIGINT. It runs journeys on Java 25 like the rest of the package; from a source
 checkout (not the packed tarball, which ships prebuilt classes) that has to be a
 JDK, since the runner classes are compiled on first use: point `JAVA_HOME` (or
-`AIC_SCRIPT_TESTER_JAVA_HOME`) at a JDK 25, or it fails with `spawn javac ENOENT`. It prints a status line every 30 s (journeys started, finished, lag).
+`AIC_SCRIPT_TESTER_JAVA_HOME`) at a JDK 25, or it fails with `spawn javac ENOENT`. It prints a status line every 30 s (journeys started, finished, errored, lag). On SIGINT or SIGTERM it prints the final report (journeys by outcome, errored by status) and exits `1` if any journey hit an engine `501` (an unmodelled behaviour) or `400`, else `0`.
 
 **Journeys file.** One JSON object: the `JourneyConfig` input (`realm`, `trees`,
 `nodes`, `scripts`) plus an optional `idm` key (an IDM config) for nodes that
