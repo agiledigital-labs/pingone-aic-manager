@@ -1412,9 +1412,12 @@ Every journey diagnostic names an AIC API error by its status and the endpoint
 by the response body, which can carry a node's config — nor by anything in
 it, including text shaped like the transport's `aic logs tx` lookup. A push
 that stops on a write whose outcome is unknown names the transaction id `aic`
-chose and sent for that write, with its `aic logs tx <id>` lookup; a failed
-read carries no lookup, because the agent picks a read's ids (a fresh one per
-retry) and the CLI cannot know them.
+assigned to that write's attempt and, since the attempt may have failed before
+the request went out, says only that if the request reached the tenant
+`aic logs tx <id> --tenant <tenant>` finds it — naming the tenant the push
+wrote to, not whatever `aic logs` would default to. A failed read carries no
+lookup, because the agent picks a read's ids (a fresh one per retry) and the
+CLI cannot know them.
 `using-script` exits non-zero when some journey's answer is unknown: a read
 failed, or a successful reply could not be used — a listing row with no
 `_id`, a tree or page whose node list is not readable, an entry with no

@@ -1144,21 +1144,29 @@ fn a_write_that_was_never_dispatched_is_not_called_sent() {
 /// Regression (review round 8 P1-2): the printed lookup left the tenant to
 /// the logs command's own resolution, so with another project default it
 /// searched a tenant the push never wrote. The discriminating input is a
-/// second tenant as the default and `--tenant stub` on the push.
+/// push with `--tenant other` while `stub` is the project default — the
+/// fixture's usual tenant, so a lookup naming the default, or any fixed
+/// tenant, is caught.
 #[test]
 fn the_lookup_names_the_tenant_the_push_wrote_to() {
     let project = Project::new();
     std::fs::write(
         project.0.join(".aic/config.toml"),
-        "project = \"test\"\ndefault_tenant = \"different\"\n\n\
+        "project = \"test\"\ndefault_tenant = \"stub\"\n\n\
          [[tenant]]\nname = \"stub\"\nbase_url = \"https://tenant.example.com\"\ntheme = \"production\"\nscopes = []\n\n\
-         [[tenant]]\nname = \"different\"\nbase_url = \"https://tenant-b.example.com\"\ntheme = \"production\"\nscopes = []\n",
+         [[tenant]]\nname = \"other\"\nbase_url = \"https://tenant-b.example.com\"\ntheme = \"production\"\nscopes = []\n",
     )
     .unwrap();
     project.write_snapshot(&journey());
     let mut local = journey();
     local["nodes"]["user"]["validateInput"] = json!(true);
     project.write_export(&local);
+    // The workspace is per tenant: move the files to `other`'s.
+    std::fs::rename(
+        project.0.join("workspace/stub"),
+        project.0.join("workspace/other"),
+    )
+    .unwrap();
     let mut tenant = Tenant::new(journey());
     tenant.fail_put = Some((
         "user",
@@ -1166,13 +1174,15 @@ fn the_lookup_names_the_tenant_the_push_wrote_to() {
         true,
     ));
 
-    let (output, tenant) = project.push(tenant, &["--tenant", "stub"]);
+    let (output, tenant) = project.push(tenant, &["--tenant", "other"]);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert_eq!(output.status.code(), Some(1), "{stderr}");
-    let (_, sent) = tenant.sent_ids.last().unwrap();
+    let (_, sent) = tenant
+        .sent_ids
+        .last()
+        .unwrap_or_else(|| panic!("no PUT: {stderr}"));
     assert!(
-        stderr.contains(&format!("`aic logs tx {sent} --tenant stub`")),
+        stderr.contains(&format!("`aic logs tx {sent} --tenant other`")),
         "{stderr}"
     );
-    assert!(!stderr.contains("--tenant different"), "{stderr}");
 }
