@@ -641,6 +641,13 @@ where
     let mut unread = Vec::new();
     while let Some((id, node_type)) = queue.pop_front() {
         match fetch_node(node_type.clone(), id.clone()).await {
+            // A success whose body is not a config — `null` (an empty body
+            // decodes to it) or any non-object — is not an answer about the
+            // node either, so it is unread like a failure, never exported.
+            Ok(node) if !node.is_object() => unread.push(format!(
+                "{node_type}/{id} (came back as {}, not a config)",
+                shape(Some(&node))
+            )),
             Ok(node) => {
                 match page_children(&id, &node_type, &node) {
                     Ok(children) => {
@@ -782,10 +789,33 @@ pub async fn push_preflight(
 /// silently points it at whatever child config the tenant has — neither is
 /// the export the operator pushed. A tree-listed node without one is skipped
 /// with a warning, as it always was.
+///
+/// **A config that is not a JSON object refuses the push** too: `PUT`ting
+/// `null` or a string as a node is not an edit anyone made on purpose, and a
+/// pull never writes one ([`assemble_export_with`]).
 fn push_plan(export: &JourneyExport) -> Result<(Vec<NodeRef>, Vec<NodeRef>)> {
     let (writes, absent): (Vec<NodeRef>, Vec<NodeRef>) = journey_refs(&export.tree, &export.nodes)?
         .into_iter()
         .partition(|node| export.nodes.contains_key(&node.id));
+    let malformed: Vec<String> = writes
+        .iter()
+        .filter_map(|node| {
+            let config = &export.nodes[&node.id];
+            (!config.is_object()).then(|| format!("{} ({})", node.label(), shape(Some(config))))
+        })
+        .collect();
+    if !malformed.is_empty() {
+        let name = export
+            .tree
+            .get("_id")
+            .and_then(Value::as_str)
+            .unwrap_or("?");
+        return Err(Error::Config(format!(
+            "journey {name}: the export's config for node(s) {} is not a JSON object. Nothing \
+             was written",
+            malformed.join(", ")
+        )));
+    }
     let orphans: Vec<String> = absent
         .iter()
         .filter_map(|node| {

@@ -1354,7 +1354,10 @@ fn journey_push_refuses_a_local_node_config_that_is_not_an_object() {
     let (output, tenant) = project.push(Tenant::new(journey()), &[]);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert_eq!(output.status.code(), Some(1), "{stderr}");
-    assert!(stderr.contains("script"), "{stderr}");
+    assert!(
+        stderr.contains("ScriptedDecisionNode/script (null) is not a JSON object"),
+        "{stderr}"
+    );
     assert_eq!(tenant.writes(), Vec::<String>::new(), "{stderr}");
 }
 
