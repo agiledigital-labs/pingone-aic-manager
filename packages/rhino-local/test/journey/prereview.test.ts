@@ -8,7 +8,7 @@ import { IdmConfig, IdmEmulator } from "../../src/idm/index.ts";
 import { JourneyConfig, JourneyEmulator, type JourneyOptions } from "../../src/journey/index.ts";
 import { expectEmulationFailure } from "../../src/harness/emulation-guard.ts";
 import type { JsonValue } from "../../src/protocol.ts";
-import { SUCCESS_NODE_ID as SUCCESS } from "../../src/aic/constants.ts";
+import { FAILURE_NODE_ID as FAILURE, SUCCESS_NODE_ID as SUCCESS } from "../../src/aic/constants.ts";
 
 let runner: RhinoRunner;
 beforeAll(async () => {
@@ -201,22 +201,34 @@ describe("P2-2 callback _id and pageNodeCallbacks", () => {
 
 describe("P2-3 custom nodes reach only the measured bindings", () => {
   const SN = "designer-0123456789abcdef0123456789abcdef";
-  function custom(body: string, errorOutcome = true, using: RhinoRunner = runner) {
+  /**
+   * A journey whose custom node `c` goes to `dump` by `ok` and by Script Error (or to `errorTo`).
+   * With `inner`, `c` sits in an inner tree that the outer tree evaluates before `dump`.
+   */
+  function custom(
+    body: string,
+    errorOutcome = true,
+    using: RhinoRunner = runner,
+    { errorTo = "dump", inner = false }: { errorTo?: string; inner?: boolean } = {},
+  ) {
+    const node = (next: string) => ({ nodeType: SN, connections: { ok: next, "Script Error": errorTo === "dump" ? next : errorTo } });
+    const dump = { nodeType: "ScriptedDecisionNode", connections: { true: SUCCESS } };
     return new JourneyEmulator(
       new JourneyConfig({
         realm: "alpha",
-        trees: {
-          t: {
-            entryNodeId: "c",
-            nodes: {
-              c: { nodeType: SN, connections: { ok: "dump", "Script Error": "dump" } },
-              dump: { nodeType: "ScriptedDecisionNode", connections: { true: SUCCESS } },
-            },
-          },
-        },
+        trees: inner
+          ? {
+              t: {
+                entryNodeId: "e",
+                nodes: { e: { nodeType: "InnerTreeEvaluatorNode", connections: { true: "dump", false: FAILURE } }, dump },
+              },
+              in: { entryNodeId: "c", innerTreeOnly: true, nodes: { c: node(SUCCESS) } },
+            }
+          : { t: { entryNodeId: "c", nodes: { c: node("dump"), dump } } },
         nodes: {
           [SN]: { c: { greeting: "hi" } },
           ScriptedDecisionNode: { dump: { script: "dump", outcomes: ["true"] } },
+          ...(inner ? { InnerTreeEvaluatorNode: { e: { tree: "in" } } } : {}),
         },
         customNodeTypes: {
           [SN]: {
@@ -282,14 +294,14 @@ describe("P2-3 custom nodes reach only the measured bindings", () => {
     expect(done.status).toBe(200);
     expect(dumped(done.body).username).toBe("local");
   });
-  // The wrapper runs the script inside a block, where Rhino defines a function declaration only
-  // when it is reached, so a released name read above its declaration must not be the harness's own
-  // binding. (The tenant hoists it; that is unmodelled either way, but this way it is not a leak.)
-  it("a function name read above its declaration is not the harness binding", async () => {
+  // The script runs top-level, so the emulator hoists a function declaration as any script does
+  // (the tenant's hoisting in a custom node is unrecorded): read above it, the name is the script's
+  // own function, never the harness's binding.
+  it("a function name read above its declaration is the script's own function", async () => {
     const done = await req(
       custom("nodeState.putShared('username', typeof utils); outcome = 'ok'; function utils() {}"),
     );
-    expect(dumped(done.body).username).not.toBe("object");
+    expect(dumped(done.body).username).toBe("function");
   });
   // Review round 2 P2-1: declarations come from the parse, not the text. Discriminating: each of the
   // first two is a declaration a regex misses; each of the last three is text a regex mistakes for one.
@@ -312,6 +324,46 @@ describe("P2-3 custom nodes reach only the measured bindings", () => {
     const name = "custom node binding: logger";
     expectEmulationFailure(name);
     refused(await req(custom(`${prefix} logger.info('x'); outcome = 'ok';`)), name);
+  });
+  // Review round 4 (deviation 1): a bare typeof binds the name rather than reading it, and the
+  // adapter cannot tell typeof from a declaration, so an unbound blocked name reads "undefined" as
+  // any unbound name does. Its pair, typeof this.httpClient, is the named refusal (table above).
+  it("a bare typeof of a blocked name the script never bound is \"undefined\"", async () => {
+    const done = await req(custom("nodeState.putShared('username', typeof httpClient); outcome = 'ok';"));
+    expect(dumped(done.body).username).toBe("undefined");
+  });
+  // Review round 4 P1-1: with no Script Error route a throw fails the journey and nothing it wrote
+  // survives, so a write the harvest could not serialize must not become an emulation failure.
+  it("a throw with no error outcome is 401 even after an unserializable write", async () => {
+    const done = await req(custom("nodeState.putShared('bad', {u: undefined}); throw 'boom';", false));
+    expect(done.status).toBe(401);
+  });
+  // Review round 4 P1-2: a computed string is a string; a String object is not one (Script Error,
+  // here routed to failure so the two edges differ).
+  it.each([
+    ["a concatenation", "var suffix = 'k'; outcome = 'o' + suffix;", 200],
+    ["a join", "outcome = ['o', 'k'].join('');", 200],
+    ["a literal", "outcome = 'ok';", 200],
+    ["a String object", "outcome = new String('ok');", 401],
+  ])("routes %s by its value", async (_, body, status) => {
+    const done = await req(custom(`nodeState.putShared('username', 'u'); ${body}`, true, runner, { errorTo: FAILURE }));
+    expect(done.status).toBe(status);
+  });
+  // Review round 4 P2-2: in an inner tree, a throw or an unlisted outcome with no error outcome is
+  // unmeasured, so it stays the named gap rather than the root's 401.
+  it.each([
+    ["a throw", "throw 'boom';"],
+    ["an unlisted outcome", "outcome = 'wrong';"],
+  ])("refuses %s in an inner tree with no error outcome by name", async (_, body) => {
+    const name = "inner tree script exception";
+    expectEmulationFailure(name);
+    refused(await req(custom(body, false, runner, { inner: true })), name);
+  });
+  // Control for the inner-tree fixture: a listed outcome passes through it.
+  it("an inner-tree custom node with a listed outcome finishes the outer tree", async () => {
+    const done = await req(custom("nodeState.putShared('username', 'inner'); outcome = 'ok';", false, runner, { inner: true }));
+    expect(done.status).toBe(200);
+    expect(dumped(done.body).username).toBe("inner");
   });
   // Review round 3 P2-6: a type without a script is refused when the configuration loads, by name,
   // not as a TypeError from inside the engine on first use.
@@ -378,7 +430,8 @@ describe("P2-3 custom nodes reach only the measured bindings", () => {
   // Discriminating: with an error outcome, a plain throw would quietly take Script Error.
   it.each([
     ["openidm", "openidm.read('managed/alpha_user/x'); outcome = 'ok';"],
-    ["httpClient", "var t = typeof httpClient; outcome = 'ok';"],
+    // Review round 4: typeof through the global object is a property read, and refuses.
+    ["httpClient", "var t = typeof this.httpClient; outcome = 'ok';"],
     ["callbacksBuilder", "callbacksBuilder.textOutputCallback(0, 'x'); outcome = 'ok';"],
     ["action", "action.goTo('ok');"],
     // Review round 3: a free read and a read through the global object both reach the refusal.

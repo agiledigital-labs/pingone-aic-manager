@@ -3002,15 +3002,26 @@ Custom Node Designer types: put the type definition in
 (`outcomes`, `errorOutcome`, `inputs`, `outputs`, `script`, `properties`). The
 script runs as an ordinary top-level script in a scope of its own, with
 `properties`, `nodeState` (`get` and `putShared` only) and `outcome` defined in
-it. Any other binding it reads is `missing`, naming it
-(`custom node binding: openidm`), whether read bare, through `this` or with
-`typeof`. A name the script declares or assigns at its own top level
-(`var logger = …`) is its own and is never refused, and declarations hoist as in
-any script, so `typeof logger` above `var logger` is `"undefined"`; a helper's
+it. A read of a next-gen Scripted Decision binding other than `nodeState`
+(`openidm`, `httpClient`, `logger`, `action`, …, plus `existingSession`,
+`require`, `sharedState` and `transientState`) is `missing`, naming it
+(`custom node binding: openidm`), whether read bare or through `this`; so is a
+call to any other method the next-gen `nodeState` has
+(`custom node binding: nodeState.getObject`). Anything else is ordinary
+JavaScript: an unknown global is a `ReferenceError`, and the legacy
+`nodeState.getShared` / `getTransient`, absent from the next-gen `nodeState`
+(doc 25), are a `TypeError` when called; both are throws like any other. A
+bare `typeof` of an unbound binding is `"undefined"`, as for any unbound name
+(`typeof this.httpClient` refuses), and `"logger" in this` is `false`. A name
+the script declares or assigns at its own top level (`var logger = …`) is its
+own and is never refused, and declarations hoist as in any script; a helper's
 locals and declaration-like text in a string or comment leave the refusal in
-place. `"logger" in this` is `false`, not refused. Top-level `const` and `let`
-behave as in a Scripted Decision script (doc 12). A throw or
-unlisted outcome takes `Script Error` when `errorOutcome` is set. Not modelled:
+place. Top-level `const` and `let` behave as in a Scripted Decision script (doc
+12). `outcome` routes by its string value, computed (`'o' + suffix`) or literal;
+a `new String('ok')` object is not a string and is treated as unlisted. A throw or
+unlisted outcome takes `Script Error` when `errorOutcome` is set; without it the
+journey fails with `401` at the top level, and in an inner tree, which is
+unmeasured, it is `missing` (`inner tree script exception`). Not modelled:
 the `inputs` read restriction, and `outputs` (also unrestrictive on the tenant).
 The OTP expiry boundary, cookie expiry and `idleTimeout`, and `ValidatedPasswordNode`
 or Page children for the new nodes are unmeasured or unsupported.

@@ -384,9 +384,11 @@ public final class Runner {
     // A Node Designer script: run in its own scope (CustomNodeScope), not the decision scope.
     final String customProperties;
     final List<String> customBlocked;
+    final boolean customErrorOutcome;
     try {
       customProperties = Json.optionalString(job, "customProperties");
       customBlocked = Json.optionalStringList(job, "customBlocked");
+      customErrorOutcome = Json.optionalBoolean(job, "customErrorOutcome", false);
       if ((customProperties == null) != (customBlocked == null) || (customProperties != null && bridge == null)) {
         throw new IllegalArgumentException("customProperties and customBlocked go together, on a journey job");
       }
@@ -548,9 +550,11 @@ public final class Runner {
       } catch (RhinoException e) {
         if (HarnessFaults.isStackOverflow(e)) return stackOverflowResponse(id, e, faults, sourceName);
         final Map<String, Object> thrown = errorFromRhino(id, "runtime_error", e);
-        // A custom node that throws keeps what it wrote before the throw (doc 25): the engine
-        // takes its effects from this harvest when the type routes a throw to Script Error.
-        if (custom != null) {
+        // A custom node that throws keeps what it wrote before the throw (doc 25), and the engine
+        // takes its effects from this harvest -- only when the type routes a throw to Script Error.
+        // Otherwise the journey fails and nothing written survives, so nothing is serialized: a
+        // write the harvest cannot serialize must not turn that failure into an emulation one.
+        if (custom != null && customErrorOutcome) {
           thrown.put("valueKind", "string");
           thrown.put("value", bridge.harvestCustom(cx, null));
         }

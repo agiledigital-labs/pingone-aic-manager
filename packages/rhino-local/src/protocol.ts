@@ -113,6 +113,8 @@ export interface JobRequest {
    */
   customProperties?: string;
   customBlocked?: string[];
+  /** The custom type routes a throw to Script Error, so a runtime error carries the harvest. */
+  customErrorOutcome?: boolean;
 }
 
 export interface JobError {

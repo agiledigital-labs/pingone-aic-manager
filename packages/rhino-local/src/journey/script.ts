@@ -85,8 +85,10 @@ export function customBlocked(): string[] {
 const CUSTOM_NODE_STATE = ["get", "putShared"];
 /**
  * A custom node's restricted `nodeState`, built in the decision scope where the bridge is reachable
- * and handed to the custom node's own scope (java/CustomNodeScope.java). Every other method is a
- * refusal naming it.
+ * and handed to the custom node's own scope (java/CustomNodeScope.java). Every other method the
+ * next-gen `nodeState` has is a refusal naming it. The legacy `getShared` and `getTransient` are
+ * not among them -- the decision overlay deletes them first, as doc 25 measured -- so calling one
+ * is an ordinary TypeError, a throw like any other.
  */
 const customNodeState = `
 (function (host, allowed) {

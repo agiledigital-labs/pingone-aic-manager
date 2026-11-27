@@ -7,6 +7,7 @@ import org.mozilla.javascript.NativeObject;
 import org.mozilla.javascript.Scriptable;
 import org.mozilla.javascript.ScriptableObject;
 import org.mozilla.javascript.Undefined;
+import org.mozilla.javascript.Wrapper;
 import org.mozilla.javascript.json.JsonParser;
 
 /**
@@ -51,9 +52,16 @@ final class CustomNodeScope {
     return scope;
   }
 
-  /** {@code outcome} as the script left it: a string, or null for anything else or nothing. */
+  /**
+   * {@code outcome} as the script left it: a string, or null for anything else or nothing. A
+   * computed string ({@code 'o' + suffix}) is a Rhino ConsString, which this scope hands back
+   * wrapped as a Java object (its read goes through {@code Context.javaToJS}); it is unwrapped
+   * first, so it routes as the string it is. A {@code new String('ok')} object is not a string
+   * primitive and stays null.
+   */
   static String outcome(Scriptable scope) {
     Object value = ScriptableObject.getProperty(scope, "outcome");
+    if (value instanceof Wrapper) value = ((Wrapper) value).unwrap();
     return value instanceof CharSequence ? value.toString() : null;
   }
 
@@ -67,11 +75,11 @@ final class CustomNodeScope {
    * lives: a free {@code logger} and {@code this.logger} both reach it, and only when the script
    * has no variable of that name, since its own slot is found first.
    *
-   * <p>{@code typeof name} is the one read that goes through {@code has} instead of {@code get}
-   * (Rhino 1.7.14.1's {@code ScriptRuntime.typeofName} binds first, then reads), so {@code has}
-   * refuses when that is its caller. The caller is read from the stack, which is pinned to the
-   * Rhino version the runner pins; a later Rhino that renames it would make {@code typeof} of a
-   * blocked name read {@code "undefined"} instead of refusing.
+   * <p>A bare {@code typeof name} is the one read that goes through {@code has} instead of
+   * {@code get} (Rhino binds the name first), and {@code has} cannot tell which operator asked, so
+   * a bare {@code typeof} of a blocked name the script never bound reads {@code "undefined"}, as
+   * for any unbound name. {@code typeof this.name} is a property read and gets the refusal.
+   * {@code "name" in this} also asks {@code has}, and reads {@code false}.
    */
   static final class Lookup implements Scriptable {
     private final AmHostBridge bridge;
@@ -106,20 +114,7 @@ final class CustomNodeScope {
 
     @Override
     public boolean has(String name, Scriptable start) {
-      if (blocked.contains(name) && fromTypeof()) throw refuse(name);
       return false;
-    }
-
-    private static boolean fromTypeof() {
-      return StackWalker.getInstance()
-          .walk(
-              frames ->
-                  frames
-                      .limit(8)
-                      .anyMatch(
-                          f ->
-                              "org.mozilla.javascript.ScriptRuntime".equals(f.getClassName())
-                                  && "typeofName".equals(f.getMethodName())));
     }
 
     @Override

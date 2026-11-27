@@ -420,6 +420,9 @@ describe("one-time password and choice nodes as Page children", () => {
     expect(kinds("measured")).not.toContain("failedPolicies");
     expect(kinds("measured")).toContain("an empty one-time password answer sends the same page again");
     expect(kinds("assumed")).toContain("echoes an accepted sibling's submitted values");
+    // Review round 4 P2-1: the tag cites the Nov 25 measurement it comes from.
+    const tag = (resent.provenance ?? []).find((e) => e.behavior.includes("an empty one-time password answer"));
+    expect(tag?.source).toContain("2026-11-25");
   });
 
   it("after a username collector the one-time password input is IDToken2, and the page records both callbacks", async () => {

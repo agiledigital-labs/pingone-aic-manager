@@ -257,13 +257,31 @@ function mergeSession(before: SessionDelta | undefined, next: SessionDelta): Ses
       : {}),
   };
 }
-/** What doc 25 measured about a Page re-sent for each kind of rejecting child. */
-const PAGE_RETRY_EVIDENCE: Record<string, string> = {
-  AttributeCollectorNode:
-    "required empty attribute re-sends the whole page with echoed values and empty failedPolicies",
-  AcceptTermsAndConditionsNode: "a declined terms child re-sends the whole page with the collector's input echoed",
-  OneTimePasswordCollectorDecisionNode: "an empty one-time password answer sends the same page again, with no outcome",
+const PAGE_CHILDREN_SOURCE = "docs/api/25-journey-runtime.md (Page header, no-callback pages and extra children, 2026-11-25)";
+const OTP_PAGE_SOURCE =
+  "docs/api/25-journey-runtime.md (One Time Password Collector Decision and Choice Collector as Page children, 2026-11-25)";
+/**
+ * What doc 25 measured about a Page re-sent for each kind of rejecting child, keyed by the child's
+ * type, and for an Attribute Collector by its rejection cause too: a blank required value (re-sent
+ * with empty failedPolicies, on a mixed page) differs from a policy failure (non-empty
+ * failedPolicies, measured only on a lone Attribute Collector).
+ */
+const PAGE_RETRY_EVIDENCE: Record<string, { readonly behavior: string; readonly source: string }> = {
+  AttributeCollectorNode: {
+    behavior: "required empty attribute re-sends the whole page with echoed values and empty failedPolicies",
+    source: SOURCE,
+  },
+  AcceptTermsAndConditionsNode: {
+    behavior: "a declined terms child re-sends the whole page with the collector's input echoed",
+    source: PAGE_CHILDREN_SOURCE,
+  },
+  OneTimePasswordCollectorDecisionNode: {
+    behavior: "an empty one-time password answer sends the same page again, with no outcome",
+    source: OTP_PAGE_SOURCE,
+  },
 };
+/** The rejection key for an Attribute Collector whose re-sent callbacks carry a failed policy. */
+const ATTRIBUTE_POLICY_FAILURE = "AttributeCollectorNode policy failure";
 const ECHO_MEASURED_WITH = new Set(["AttributeCollectorNode", "AcceptTermsAndConditionsNode"]);
 
 export class JourneyEmulator {
@@ -800,7 +818,11 @@ export class JourneyEmulator {
         sourceName: script.name ?? config.script ?? "script",
         // A custom node's script runs unmodified in its own scope (java/CustomNodeScope.java).
         ...(custom
-          ? { customProperties: JSON.stringify(custom.properties), customBlocked: customBlocked() }
+          ? {
+              customProperties: JSON.stringify(custom.properties),
+              customBlocked: customBlocked(),
+              customErrorOutcome: custom.def.errorOutcome === true,
+            }
           : {}),
         classAllowList: decisionNodeClassAllowList(),
         ...journeyPreamble({
@@ -1201,9 +1223,12 @@ export class JourneyEmulator {
         if (counts[index]) {
           if (counts[index] !== count)
             this.missing("PageNode callback count changes on resubmission");
-          retry.push(...collected.splice(0, count));
+          const again = collected.splice(0, count);
+          retry.push(...again);
           const child = config.nodes[index];
-          rejecting.add(isDocument(child) ? String(child.nodeType) : "unknown");
+          const type = isDocument(child) ? String(child.nodeType) : "unknown";
+          const failedPolicy = again.some((cb) => Array.isArray(cb.failedPolicies) && cb.failedPolicies.length > 0);
+          rejecting.add(type === "AttributeCollectorNode" && failedPolicy ? ATTRIBUTE_POLICY_FAILURE : type);
         } else if (
           answered.every(
             (cb) => cb.type === "StringAttributeInputCallback" || cb.type === "NameCallback",
@@ -1234,7 +1259,10 @@ export class JourneyEmulator {
       // map holds after it is assumed to keep the first send's rule.
       if (lonePageChild(config.nodes)) {
         if (config.nodes.some((c) => isDocument(c) && c.nodeType === "OneTimePasswordCollectorDecisionNode"))
-          this.measured(PAGE_RETRY_EVIDENCE.OneTimePasswordCollectorDecisionNode!);
+        {
+          const otp = PAGE_RETRY_EVIDENCE.OneTimePasswordCollectorDecisionNode!;
+          this.evidence.measured(otp.behavior, otp.source);
+        }
         this.evidence.assumed(
           "a Page whose only child is re-sent leaves no pageNodeCallbacks, as on its first send; the map after a re-send is unmeasured",
         );
@@ -1243,7 +1271,11 @@ export class JourneyEmulator {
       // Each rejecting child's own measurement, never another node's wire shape.
       for (const type of rejecting) {
         const tag = PAGE_RETRY_EVIDENCE[type];
-        if (tag) this.measured(tag);
+        if (tag) this.evidence.measured(tag.behavior, tag.source);
+        else if (type === ATTRIBUTE_POLICY_FAILURE)
+          this.evidence.assumed(
+            "a Page re-sent for an attribute that failed a policy keeps its siblings as for a blank required attribute; the policy failure's re-send (every answer kept, the failed policy named) was measured on a lone Attribute Collector only",
+          );
         else
           this.evidence.assumed(
             `a Page re-sent for a rejected ${type} child; a page re-send is measured for the attribute collector, terms and one-time password children only`,
@@ -1412,10 +1444,6 @@ export class JourneyEmulator {
   }
 }
 
-/**
- * Rhino's own text for a throw, `<thrown value> (<script>#<line>)`: the tenant's ScriptException
- * message carries exactly that (`Error: boom (name#1)`; a thrown string reads `str (name#1)`).
- */
 /** What the runner's bridge harvests after a journey script (java/AmHostBridge.java, harvest). */
 type Harvest = {
   effects: {
@@ -1431,6 +1459,10 @@ type Harvest = {
   /** A custom node's script `outcome`: a string, else null. */
   customOutcome?: string | null;
 };
+/**
+ * Rhino's own text for a throw, `<thrown value> (<script>#<line>)`: the tenant's ScriptException
+ * message carries exactly that (`Error: boom (name#1)`; a thrown string reads `str (name#1)`).
+ */
 function thrownText(response: { error: { message: string | null } | null }): string {
   return response.error?.message ?? "unknown error";
 }

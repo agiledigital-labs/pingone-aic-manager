@@ -840,10 +840,17 @@ with `errorOutcome: false` a throw is `401`. A missing required property is
 written) returned `null`; an `outputs` list did not restrict writes.
 
 The emulator gives a custom node exactly those bindings. Reading any other
-next-gen binding (`openidm`, `httpClient`, `callbacksBuilder`, `action`, …) or
-calling a `nodeState` method other than `get` and `putShared` is `missing`,
-naming the binding (`custom node binding: <name>`); what the tenant does there
-is unmeasured.
+next-gen binding (`openidm`, `httpClient`, `callbacksBuilder`, `action`, …),
+bare or through `this`, or calling a method the next-gen `nodeState` has other
+than `get` and `putShared`, is `missing`, naming the binding
+(`custom node binding: <name>`); what the tenant does there is unmeasured.
+Other names are ordinary JavaScript: an unknown global throws a
+`ReferenceError`, and `nodeState.getShared` / `getTransient`, absent from the
+next-gen `nodeState` as above, throw a `TypeError` when called. A bare
+`typeof` of an unbound binding reads `"undefined"`. No custom node inside an
+inner tree was measured, so there the emulator reports a throw or an unlisted
+outcome without `errorOutcome` as `missing` (`inner tree script exception`)
+rather than the `401` above.
 
 ### Stub node vocabularies (2026-11-25)
 
