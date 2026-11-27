@@ -362,8 +362,12 @@ run:
 aic journey using-script <script-uuid> --realm alpha
 ```
 
-It lists journeys whose scripted nodes reference the script UUID in a top-level
-`script` or `scriptId` field.
+It lists journeys with a node whose config holds the script UUID in a top-level
+`script` or `scriptId` field. It reads one config per node of a type that can
+hold a script — `ScriptedDecisionNode`, `DeviceMatchNode` (counted by its
+`script` field whether or not `useScript` is set), `ConfigProviderNode`, and
+any other type whose name contains `Script` — and decides on the config alone,
+not the type name.
 
 ## Object shape (real example from sandbox)
 

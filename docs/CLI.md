@@ -1407,6 +1407,9 @@ so `push` says it already matches and records the tenant's copy as the
 snapshot; `status` then notes the child the export lacks. `pull` and `push`
 both refuse a journey whose nodes are ambiguous — one id listed under two node
 types, or a page inside a page (which AM refuses) — naming the nodes.
+Every journey diagnostic names an AIC API error by its status and the endpoint
+(`<nodeType>/<id>`, or the tree), never by the response body, which can carry
+a node's config.
 
 `push` writes each node, then the tree, as separate requests. When one fails,
 the error sorts the writes into three groups: those the tenant acknowledged
@@ -1484,7 +1487,9 @@ They compare the way `push` does, ignoring `_rev` everywhere.
   side (snapshot vs tenant). A node's type is the one on the side that changed
   (the export's for a local change, the tenant's for a remote one), so a local
   retype names the endpoint a push writes; its page comes from the tenant's
-  copy when that lists it.
+  copy when that lists it. A retype is a change even when the config is
+  byte-identical, because the push writes a different endpoint; `diff` lists
+  it the same way.
 - **Shared nodes.** A node's config is a realm object keyed by its id, so two
   journeys listing the same id share it, and pushing either rewrites it for
   both. When any node moved, `status` reads every tree in the realm once and
