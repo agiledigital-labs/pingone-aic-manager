@@ -57,8 +57,9 @@ aic <command> <subcommand> --help
   grants only its named permission—there is no `all` guard.
 
   The complete grammar is `--force`/`--force=operation` for the command's
-  primary override, `--force=syntax-check` for script syntax bypass, and
-  `--force=backup` for backup bypass. Optional values never consume the next
+  primary override, `--force=syntax-check` for script syntax bypass,
+  `--force=backup` for backup bypass, and `--force=reuse` for overwriting an
+  existing node a journey newly attaches (`journey push` only). Optional values never consume the next
   argument: use `=`, not `--force backup`. Repeat the flag to grant independent
   permissions, for example `--force --force=backup`. Unsupported guard names are
   parse errors before execution, including on preview commands.
@@ -1409,15 +1410,19 @@ types, or a page inside a page (which AM refuses) — naming the nodes.
 `push` writes each node, then the tree, as separate requests. When one fails,
 the error sorts the writes into three groups: those the tenant acknowledged
 (they stay on the tenant), the one that failed — refused and not applied only
-when AM gave a measured refusal, otherwise it **may have landed**, since a lost
-reply says nothing about the write — and those not attempted. The snapshot is
-not updated. `status` reads only the nodes the tenant's tree reaches, so a node
-written by a create that stopped partway, or one this push newly attached, does
-not show there; check the listed writes before pushing again.
+when AM gave a refusal measured for that endpoint (a page's `400 Node does not
+exist` / `Illegal child node type`), or the agent was locked and sent nothing;
+otherwise it **may have landed**, since a lost reply says nothing about the
+write — and those not attempted. The snapshot is not updated. `status` reads
+only the nodes the tenant's current tree and pages reference, so a node written
+above that no landed write attached does not show there; check the listed
+writes before pushing again.
 
-Before any write, `push` also reads every node the export references — in the
-tree or in a page — that the tenant's copy of the journey does not. Such a node
-is outside this journey's snapshot, so drift cannot protect it. A `404` (a fresh
+Before any write, `push` also reads every node the export references and
+carries a body for — in the tree or in a page — that the tenant's copy of the
+journey does not reference at the same type and id (the endpoint the write
+goes to). Drift cannot vouch for such a node: the tenant's journey does not
+reach it, even if an older snapshot did. A `404` (a fresh
 id) or content equal to the export (ignoring `_rev`) proceeds; an existing node
 whose content differs refuses the push, naming it, because another journey may
 use it. `--force=reuse` overwrites it. Bare `--force` overrides only the drift
@@ -1466,8 +1471,9 @@ They compare the way `push` does, ignoring `_rev` everywhere.
   the command exits non-zero. A node that answers 404 is deleted on the
   tenant, and is compared as absent. A copy that lists a node it does not carry
   — in its tree, or in a page's `nodes` — is noted under its row (and in `notes` in `--json`) but still
-  compared, as is an entry whose reference cannot be read (no `nodeType`, a
-  page with no readable `nodes`); every other reference in that copy is kept. With no
+  compared, as is an entry whose reference cannot be read (a tree entry or page
+  child with no `nodeType`, a page with no readable `nodes`); every other
+  reference in that copy, including the page's other children, is kept. With no
   names it covers every journey that has an export or a snapshot in the realm.
   Under each row it lists the parts that moved — `tree`, or a node by type, id
   and display name, plus `in page <id>` for a page's child — on the `local` side (export vs snapshot) and the `remote`

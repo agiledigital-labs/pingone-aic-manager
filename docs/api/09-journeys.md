@@ -74,10 +74,13 @@ whatever child config the tenant holds — neither is the export pushed. A page
 config read without its `nodes` key is an incomplete read and fails the pull,
 as in [23-promotion](23-promotion.md); one id listed under two node types, and
 a page inside a page, are refused by both pull and push. Before writing,
-`push` reads each node the export references that the tenant's journey does
-not, and refuses to replace one that exists with different content unless
-given `--force=reuse`: such a node is in no snapshot of this journey, and may
-belong to another.
+`push` reads each node the export references and carries a body for that the
+tenant's journey does not reference at the same type and id, and refuses to
+replace one that exists with different content unless given `--force=reuse`:
+the drift check cannot vouch for such a node, and it may belong to another
+journey. The two page refusals above are the only `400`s measured as "not
+applied"; a failed write to any other node type is reported as possibly
+landed.
 
 ### Redirect validation
 
