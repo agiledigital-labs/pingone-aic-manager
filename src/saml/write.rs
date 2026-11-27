@@ -10,6 +10,10 @@
 //!   verb's own gate, which names what would change.
 //! - [`WriteStatus`] / [`WriteFailure`]: a failed write says which side of the
 //!   send it failed on, because "it failed" is two different claims.
+//!
+//! Outside SAML, `journey::api`'s push classifies the write it stopped on with
+//! [`WriteFailure::from_send`], so a journey push and a SAML write call the
+//! same lost reply by the same name.
 
 use crate::{Error, Result};
 
@@ -78,8 +82,9 @@ pub enum WriteStatus {
 /// the message, both required, because neither alone identifies it.
 ///
 /// This is the only way a post-send error is classified as not applied, so
-/// an entry needs the evidence a `docs/api/` row needs. The two that exist
-/// are `rotate::spec`'s ESV refusals, both in `docs/api/03-esvs.md`;
+/// an entry needs the evidence a `docs/api/` row needs. The ones that exist
+/// are `rotate::spec`'s two ESV refusals (`docs/api/03-esvs.md`) and
+/// `journey::api`'s two `PageNode` `PUT` refusals (`docs/api/09-journeys.md`);
 /// `importEntity` has none, since every failure measured there is the same
 /// opaque 500.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -115,7 +120,9 @@ impl WriteFailure {
     /// was not applied. Everything else, whatever its status, is unknown.
     pub fn from_send(source: Error, measured: &[MeasuredRefusal]) -> Self {
         let status = match &source {
-            Error::ProdConfirmRequired | Error::AuthRequired => WriteStatus::Refused,
+            Error::ProdConfirmRequired | Error::AuthRequired | Error::AgentLocked => {
+                WriteStatus::Refused
+            }
             Error::Api { status, body }
                 if measured
                     .iter()

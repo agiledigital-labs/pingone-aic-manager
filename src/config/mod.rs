@@ -490,6 +490,22 @@ pub enum WorkspaceOrigin {
 
 static WORKSPACE_CONTEXT: OnceLock<WorkspaceContext> = OnceLock::new();
 
+/// The project root, when this invocation chose it explicitly — with
+/// `--project` or `AIC_PROJECT` — rather than by walking up from its working
+/// directory. A command printed for the operator to run later must carry it:
+/// neither the flag nor a command-scoped `AIC_PROJECT=… aic …` assignment is
+/// in effect for the next command they type.
+static EXPLICIT_PROJECT_ROOT: OnceLock<PathBuf> = OnceLock::new();
+
+pub fn set_explicit_project_root(root: PathBuf) {
+    let _ = EXPLICIT_PROJECT_ROOT.set(root);
+}
+
+/// See [`EXPLICIT_PROJECT_ROOT`]; absolute, so it resolves from any directory.
+pub fn explicit_project_root() -> Option<&'static Path> {
+    EXPLICIT_PROJECT_ROOT.get().map(PathBuf::as_path)
+}
+
 /// The detected workspace context (empty if not inside a workspace tree).
 pub fn workspace_context() -> WorkspaceContext {
     WORKSPACE_CONTEXT.get().cloned().unwrap_or_default()

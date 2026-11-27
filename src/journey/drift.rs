@@ -9,9 +9,9 @@
 //! `{"tree": …, "nodes": {id: config}}`, compared with `api::content_equal`,
 //! which ignores `_rev` everywhere — the same comparison `push` decides on.
 
-use super::api::content_equal;
+use super::api::{NodeRef, content_equal, walk_refs};
 use serde::Serialize;
-use serde_json::Value;
+use serde_json::{Map, Value};
 use std::collections::BTreeSet;
 
 /// The state of one journey, named as `aic script status` names a script's.
@@ -98,9 +98,11 @@ pub enum Part {
     Tree,
     Node {
         id: String,
-        /// From whichever copy's tree lists it.
+        /// From whichever copy lists it: its tree, or a page's config.
         node_type: Option<String>,
         display_name: Option<String>,
+        /// The page listing it, for a page's child.
+        page: Option<String>,
     },
 }
 
@@ -112,12 +114,18 @@ impl Part {
                 id,
                 node_type,
                 display_name,
+                page,
             } => {
                 let kind = node_type.as_deref().unwrap_or("node");
-                match display_name {
-                    Some(name) => format!("{kind} {id} ({name})"),
-                    None => format!("{kind} {id}"),
-                }
+                let name = display_name
+                    .as_ref()
+                    .map(|name| format!(" ({name})"))
+                    .unwrap_or_default();
+                let page = page
+                    .as_ref()
+                    .map(|page| format!(" in page {page}"))
+                    .unwrap_or_default();
+                format!("{kind} {id}{name}{page}")
             }
         }
     }
@@ -130,19 +138,44 @@ impl Part {
     }
 }
 
-fn node_meta(copies: &[&Value], id: &str, key: &str) -> Option<String> {
-    copies.iter().find_map(|copy| {
-        copy.pointer("/tree/nodes")
-            .and_then(|nodes| nodes.get(id))
-            .and_then(|meta| meta.get(key))
-            .and_then(Value::as_str)
-            .map(str::to_string)
-    })
+/// Every node a copy references — the tree's, and each held page's children —
+/// as `api::walk_refs` reads it. Lenient: a copy whose references are
+/// ambiguous is compared on what can be addressed; the tenant's copy never is
+/// one, because `api::pull` refuses it.
+fn walk(copy: &Value) -> (Vec<NodeRef>, Vec<String>) {
+    let empty = Map::new();
+    let nodes = copy
+        .get("nodes")
+        .and_then(Value::as_object)
+        .unwrap_or(&empty);
+    walk_refs(copy.get("tree").unwrap_or(&Value::Null), nodes)
+}
+
+fn refs(copy: &Value) -> Vec<NodeRef> {
+    walk(copy).0
+}
+
+/// What makes a copy's node references ambiguous or unreadable — a tree
+/// entry without a `nodeType`, one id under two types, a page inside a page,
+/// a page listing that cannot be read. The comparison carries on with every
+/// reference it can address; these say what it could not.
+pub fn reference_problems(copy: &Value) -> Vec<String> {
+    walk(copy).1
 }
 
 /// The parts that differ between two copies: the tree, then each node whose
-/// config differs or exists on one side only, in id order.
-pub fn changed_parts(left: &Value, right: &Value) -> Vec<Part> {
+/// config differs, whose type differs (a retype writes another endpoint even
+/// with the same config), or which exists on one side only, in id order.
+///
+/// A node's **type** comes from the first of `left`, `right` that lists it —
+/// so the caller puts the side whose change is being described first: a
+/// local retype is described by the local export's endpoint, the one a push
+/// writes. Its **page** comes from `current` first (the tenant's copy where
+/// one was read), since a child may have moved between pages since the
+/// snapshot, and its page is what `shared_with` reads sharing from. The
+/// display name falls through `left`, `right`, `current` to the first that
+/// has one.
+pub fn changed_parts(left: &Value, right: &Value, current: Option<&Value>) -> Vec<Part> {
     let mut out = Vec::new();
     let tree_equal = match (left.get("tree"), right.get("tree")) {
         (Some(a), Some(b)) => content_equal(a, b),
@@ -159,17 +192,44 @@ pub fn changed_parts(left: &Value, right: &Value) -> Vec<Part> {
             .unwrap_or_default()
     };
     let (a, b) = (nodes(left), nodes(right));
+    let named: Vec<NodeRef> = [left, right].into_iter().flat_map(refs).collect();
+    // Each side's type for an id: a retype changes the endpoint a node is
+    // written to even when its config is byte-identical, so it is a change.
+    let types = |copy: &Value| -> std::collections::HashMap<String, String> {
+        refs(copy)
+            .into_iter()
+            .map(|node| (node.id, node.node_type))
+            .collect()
+    };
+    let (left_types, right_types) = (types(left), types(right));
+    let placed: Vec<NodeRef> = current.into_iter().flat_map(refs).collect();
     let ids: BTreeSet<&String> = a.keys().chain(b.keys()).collect();
     for id in ids {
         let same = match (a.get(id), b.get(id)) {
             (Some(x), Some(y)) => content_equal(x, y),
             _ => false,
+        } && match (left_types.get(id), right_types.get(id)) {
+            (Some(x), Some(y)) => x == y,
+            _ => true,
         };
         if !same {
+            let of = |copies: &'_ [NodeRef]| {
+                copies
+                    .iter()
+                    .filter(|node| node.id == *id)
+                    .cloned()
+                    .collect::<Vec<_>>()
+            };
+            let (named, placed) = (of(&named), of(&placed));
+            let first = named.first();
             out.push(Part::Node {
                 id: id.clone(),
-                node_type: node_meta(&[left, right], id, "nodeType"),
-                display_name: node_meta(&[left, right], id, "displayName"),
+                node_type: first.or(placed.first()).map(|node| node.node_type.clone()),
+                display_name: named
+                    .iter()
+                    .chain(&placed)
+                    .find_map(|node| node.display_name.clone()),
+                page: placed.first().or(first).and_then(|node| node.page.clone()),
             });
         }
     }
@@ -184,30 +244,43 @@ pub fn node_ids(copy: &Value) -> BTreeSet<String> {
         .unwrap_or_default()
 }
 
-/// The nodes `copy`'s tree lists that its `nodes` map lacks — an export
-/// written by a pull that left unread nodes out. Comparing such a copy says
-/// nothing about those nodes.
+/// The nodes `copy` lists that its `nodes` map lacks — an export written by a
+/// pull that left unread nodes out, or by one that predates page children.
+/// Comparing such a copy says nothing about those nodes. "Lists" covers the
+/// tree's nodes and the children each held page config names.
 pub fn missing_nodes(copy: &Value) -> Vec<String> {
     let held = copy.get("nodes").and_then(Value::as_object);
-    node_ids(copy)
+    let mut missing: Vec<String> = refs(copy)
         .into_iter()
+        .map(|node| node.id)
         .filter(|id| !held.is_some_and(|nodes| nodes.contains_key(id)))
-        .collect()
+        .collect();
+    missing.sort();
+    missing
 }
 
 /// The other journeys that list a changed node. A node config is a realm
 /// object keyed by id, so pushing either journey rewrites it for both.
-/// `owners` maps node id to every journey listing it.
+/// `owners` maps node id to every journey whose tree lists it. A page's child
+/// is in no tree, so it is shared through its page: a child some other page
+/// lists directly is not seen.
 pub fn shared_with(
     owners: &std::collections::BTreeMap<String, Vec<String>>,
     journey: &str,
     part: &Part,
 ) -> Vec<String> {
     match part {
-        Part::Node { id, .. } => owners
-            .get(id)
-            .map(|names| names.iter().filter(|n| *n != journey).cloned().collect())
-            .unwrap_or_default(),
+        // A page's child is in no tree, so it is shared through its page.
+        Part::Node { id, page, .. } => {
+            let names: BTreeSet<&String> = [Some(id), page.as_ref()]
+                .into_iter()
+                .flatten()
+                .filter_map(|id| owners.get(id))
+                .flatten()
+                .filter(|n| *n != journey)
+                .collect();
+            names.into_iter().cloned().collect()
+        }
         Part::Tree => Vec::new(),
     }
 }
@@ -379,13 +452,13 @@ mod tests {
 
     #[test]
     fn changed_parts_name_the_node_from_its_tree_entry() {
-        let parts = changed_parts(&export("a", "s"), &export("b", "s"));
+        let parts = changed_parts(&export("a", "s"), &export("b", "s"), None);
         assert_eq!(parts.len(), 1);
         assert_eq!(parts[0].label(), "PageNode p (Page)");
         let mut retargeted = export("a", "s");
         retargeted["tree"]["entryNodeId"] = json!("c");
         assert_eq!(
-            changed_parts(&export("a", "s"), &retargeted),
+            changed_parts(&export("a", "s"), &retargeted, None),
             vec![Part::Tree]
         );
     }
@@ -442,6 +515,114 @@ mod tests {
         assert_eq!(missing_nodes(&partial), vec!["c"]);
     }
 
+    fn paged(with_children: bool) -> Value {
+        let mut nodes = json!({"p": {"_id": "p", "nodes": [
+            {"_id": "k", "nodeType": "UsernameCollectorNode", "displayName": "user"}]}});
+        if with_children {
+            nodes["k"] = json!({"_id": "k", "_rev": "1"});
+        }
+        json!({"tree": {"nodes": {"p": {"nodeType": "PageNode"}}}, "nodes": nodes})
+    }
+
+    #[test]
+    fn a_page_child_is_missing_when_the_copy_carries_the_page_alone() {
+        assert!(missing_nodes(&paged(true)).is_empty());
+        assert_eq!(missing_nodes(&paged(false)), vec!["k"]);
+    }
+
+    #[test]
+    fn a_changed_page_child_is_named_from_its_pages_listing() {
+        let mut remote = paged(true);
+        remote["nodes"]["k"]["x"] = json!(1);
+        let parts = changed_parts(&paged(true), &remote, None);
+        assert_eq!(
+            parts,
+            vec![Part::Node {
+                id: "k".into(),
+                node_type: Some("UsernameCollectorNode".into()),
+                display_name: Some("user".into()),
+                page: Some("p".into()),
+            }]
+        );
+        assert_eq!(parts[0].label(), "UsernameCollectorNode k (user) in page p");
+    }
+
+    /// Regression (review P1-3): any held config with a `nodes` array could
+    /// name a changed child. The discriminating input is a custom node whose
+    /// config sorts before the page and lists the child's id with unrelated
+    /// metadata.
+    #[test]
+    fn only_a_page_names_its_children() {
+        let decoy = |copy: &mut Value| {
+            copy["tree"]["nodes"]["a"] = json!({"nodeType": "CustomListNode"});
+            copy["nodes"]["a"] = json!({"nodes": [
+                {"_id": "k", "nodeType": "Unrelated", "displayName": "decoy"}]});
+        };
+        let (mut left, mut right) = (paged(true), paged(true));
+        decoy(&mut left);
+        decoy(&mut right);
+        right["nodes"]["k"]["x"] = json!(1);
+        let parts = changed_parts(&left, &right, None);
+        assert_eq!(parts.len(), 1);
+        assert_eq!(parts[0].label(), "UsernameCollectorNode k (user) in page p");
+        // Nor does such a config make its entries count as missing.
+        assert!(missing_nodes(&left).is_empty());
+    }
+
+    /// Regression (review round 2 P1-3): one malformed tree entry hid the
+    /// note for a valid missing body, and the problem itself was dropped.
+    #[test]
+    fn a_malformed_entry_is_a_problem_beside_the_valid_missing_one() {
+        let copy = json!({"tree": {"nodes": {
+            "bad": {"displayName": "no type"},
+            "missing": {"nodeType": "SetSuccessUrlNode"}
+        }}, "nodes": {}});
+        assert_eq!(missing_nodes(&copy), vec!["missing"]);
+        let problems = reference_problems(&copy);
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert!(problems[0].contains("\"bad\""), "{problems:?}");
+        assert!(reference_problems(&paged(true)).is_empty());
+    }
+
+    /// Regression (review round 2 P1-4): a child that moved between pages was
+    /// placed in its snapshot page, and its sharing read from that. The
+    /// discriminating input is `k`, under page `old` in the snapshot and under
+    /// `p` on the tenant.
+    #[test]
+    fn a_moved_child_is_placed_by_the_current_copy() {
+        let snapshot = json!({"tree": {"nodes": {"old": {"nodeType": "PageNode"}}},
+            "nodes": {"old": {"nodes": [{"_id": "k", "nodeType": "UsernameCollectorNode"}]},
+                      "k": {"x": 0}}});
+        let mut remote = paged(true);
+        remote["nodes"]["k"]["x"] = json!(1);
+        let page = |current| {
+            changed_parts(&snapshot, &remote, current)
+                .into_iter()
+                .find_map(|part| match part {
+                    Part::Node { id, page, .. } if id == "k" => Some(page),
+                    _ => None,
+                })
+                .expect("k changed")
+        };
+        assert_eq!(page(Some(&remote)).as_deref(), Some("p"));
+        // The control: with no current copy, the first of the pair decides.
+        assert_eq!(page(None).as_deref(), Some("old"));
+    }
+
+    /// Regression (review round 2 P3-1): the display name came only from the
+    /// first copy listing the node, so a name removed on one side was lost.
+    #[test]
+    fn a_display_name_falls_through_to_the_other_copy() {
+        let named = export("a", "s");
+        let mut unnamed = export("b", "s");
+        unnamed["tree"]["nodes"]["p"]
+            .as_object_mut()
+            .unwrap()
+            .remove("displayName");
+        let parts = changed_parts(&unnamed, &named, None);
+        assert_eq!(parts.last().unwrap().label(), "PageNode p (Page)");
+    }
+
     #[test]
     fn a_node_listed_by_another_journey_is_reported_as_shared() {
         let owners = std::collections::BTreeMap::from([
@@ -451,12 +632,18 @@ mod tests {
             ),
             ("c".to_string(), vec!["Login".to_string()]),
         ]);
-        let node = |id: &str| Part::Node {
+        let in_page = |id: &str, page: Option<&str>| Part::Node {
             id: id.into(),
             node_type: None,
             display_name: None,
+            page: page.map(str::to_string),
         };
+        let node = |id: &str| in_page(id, None);
         assert_eq!(shared_with(&owners, "Login", &node("p")), vec!["Register"]);
+        // Regression (review P2-4): a page's child is in no tree, so it was
+        // never found shared. It is shared through its page.
+        let child = in_page("k", Some("p"));
+        assert_eq!(shared_with(&owners, "Login", &child), vec!["Register"]);
         assert!(shared_with(&owners, "Login", &node("c")).is_empty());
         assert!(shared_with(&owners, "Login", &node("unknown")).is_empty());
         assert!(shared_with(&owners, "Login", &Part::Tree).is_empty());

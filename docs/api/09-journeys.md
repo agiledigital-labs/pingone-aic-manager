@@ -40,6 +40,50 @@ and a `SetSuccessUrlNode`). The tree's script survives and needs its own
 | Read      | `GET`  | `/am/json{realm-path}/realm-config/authentication/authenticationtrees/nodes/{nodeType}/{nodeId}`          |                                                                                                                                  |
 | Upsert    | `PUT`  | `/am/json{realm-path}/realm-config/authentication/authenticationtrees/nodes/{nodeType}/{nodeId}`          | Plain `PUT` works for create and update; no `If-Match` required. Create returned 201, update returned 200 (verified 2026-06-14). |
 
+### Page nodes and their children (verified 2026-11-25)
+
+A `PageNode` config lists its children — `nodes: [{_id, nodeType, nodeVersion,
+displayName}]` — and each child is an ordinary node object at
+`…/authenticationtrees/nodes/<nodeType>/<id>`. **The tree's own `nodes` map does
+not list them**, so a reader that walks only the tree sees the page and none of
+what it holds. Measured against the sandbox with a throwaway journey (a page of
+a username collector, a password collector and a scripted decision node):
+
+- A `PUT` of the page before its children exist is
+  `400 Invalid config: Node does not exist: <child id>`. Children are written
+  first, then the page, then the tree.
+- A page cannot hold a page: `400 Invalid config: Illegal child node type:
+  PageNode`.
+- Deleting a tree deletes the page **and its children** — all four answered
+  `404` afterwards, so `journey delete` needs no node deletes. Deleting a page
+  node likewise deleted the child it held.
+- `aic journey pull` before this was handled returned `(1 nodes)`, the page
+  alone; the children were in no export or snapshot, so a change to one was
+  invisible to `status`/`diff`/the §5 drift check and was never pushed.
+
+`aic journey` now treats a page's children as part of the journey: they are
+pulled into the same flat `nodes` map as every other node (the export layout is
+unchanged), pushed before the page that names them, compared by `status`/`diff`
+and found by `using-script`. An export written before this lists a page without
+its children; `status` notes that, and a `push` with anything to write refuses
+it before any write, naming each child it has no config for and saying to pull
+again (an export that otherwise matches the tenant writes nothing and records
+the tenant's copy as its snapshot). Writing the
+page anyway would either be the 400 above (child absent) or silently adopt
+whatever child config the tenant holds — neither is the export pushed. A page
+config read without its `nodes` key is an incomplete read and fails the pull,
+as in [23-promotion](23-promotion.md); one id listed under two node types, and
+a page inside a page, are refused by both pull and push. Before writing,
+`push` reads each node the export references and carries a body for that the
+tenant's journey does not reference at the same type and id, and refuses to
+replace one that exists with different content unless given `--force=reuse`:
+the drift check cannot vouch for such a node, and it may belong to another
+journey. A failed write is reported as not applied only when the agent
+refused it before dispatch (locked, or its production gate) or when AM gave a
+page `PUT` one of the two refusals above, the only answers measured as "not
+applied"; any other failure, on any node type, is reported as possibly
+landed.
+
 ### Redirect validation
 
 | Op                     | Method | Path                                                         | Notes                                                                                                                                       |
@@ -257,7 +301,9 @@ aic journey push <name>
 
 The workspace file is a JSON object with `{ "tree": object, "nodes": object }`.
 `tree` is the authentication tree document. `nodes` is a map keyed by node UUID,
-where each value is that node's separately fetched configuration.
+where each value is that node's separately fetched configuration. A page's
+children are in `nodes` too, though the tree does not list them (see
+[Page nodes and their children](#page-nodes-and-their-children-verified-2026-11-25)).
 
 To author a new node:
 
@@ -316,8 +362,22 @@ run:
 aic journey using-script <script-uuid> --realm alpha
 ```
 
-It lists journeys whose scripted nodes reference the script UUID in a top-level
-`script` or `scriptId` field.
+It lists journeys with a node whose config holds the script UUID in a top-level
+`script` or `scriptId` field, deciding on the config alone, not the type name.
+Each journey is searched on its own: its tree, every `PageNode` it reaches
+(the only way to find the children the tree does not list), and the config of
+every node, in the tree or a page, of a type that can hold a script —
+`ScriptedDecisionNode`, `DeviceMatchNode` (counted by its `script` field
+whether or not `useScript` is set), `ConfigProviderNode`, and any other type
+whose name contains `Script`. The order of those reads is not fixed. A journey's
+search stops at its first match, so some of its nodes may never be read, and
+a node two journeys share may be read again for the second. When a journey's
+answer is unknown — a read failed, or a reply (listing row, tree, page,
+config) could not be used — and no match settled it, the command still prints
+what it found but exits non-zero, and `--json` prints
+`{"journeys": [...], "incomplete": true, "unread": [...]}` instead of the plain
+array, because a missing journey is then not evidence the script is unused. A
+realm listing that fails outright is an error with no output.
 
 ## Object shape (real example from sandbox)
 
@@ -433,7 +493,8 @@ unsupported.
 
 A `ScriptedDecisionNode` (or any `*ScriptedNode`) holds the script's UUID in its
 config. To find which journeys reference a given script, walk every tree's
-`nodes` and inspect node configs. Useful for the "won't-break-anything" check
+`nodes` and inspect node configs — and read each `PageNode`, whose scripted
+children the tree does not list. Useful for the "won't-break-anything" check
 before deleting a script.
 
 ## Examples
@@ -930,6 +991,15 @@ it in the confirming-read comparison rather than normalizing it away.
 
 ## Verified against
 
+- Date: 2026-11-25 — page children, realm `alpha`: throwaway journey with a
+  `PageNode` holding a username collector, a password collector and a scripted
+  decision node. Page `PUT` before its children was a 400 naming the missing
+  child; a page inside a page was a 400; deleting the tree answered `404` for
+  the page and all three children; a pull with the fixed `aic` returned all
+  four nodes, a delete-then-push from that export recreated the journey and a
+  re-pull was identical modulo `_rev`, and a change to a child made on the
+  tenant showed in `status`/`diff` and blocked an unforced push. Objects
+  deleted afterwards. No reproduce script — scratch files only.
 - Date: 2026-11-03 — `goto` / success URL, realm `alpha`: throwaway tree
   (scripted decision → success, and scripted decision → `SetSuccessUrlNode` →
   success) driven with eleven `goto`/script combinations, then

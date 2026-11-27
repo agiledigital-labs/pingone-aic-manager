@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf, is_separator};
 use clap::Subcommand;
 use serde_json::Value;
 
-use crate::cli::force::OperationAndBackupForce;
+use crate::cli::force::{OperationAndBackupForce, OperationAndReuseForce};
 use crate::cli::{
     confirm_destructive, ensure_prod_confirmed, print_json, print_table, protected_pull_prompt,
     realm_arg, tenant_for,
@@ -43,8 +43,8 @@ pub enum JourneyCommand {
     Push {
         /// Journey (authentication tree) name.
         name: String,
-        #[arg(long)]
-        force: bool,
+        #[command(flatten)]
+        force: OperationAndReuseForce,
         #[arg(long)]
         realm: Option<String>,
         #[arg(long)]
@@ -203,6 +203,9 @@ enum PushBlockReason {
         tree_changed: bool,
         nodes_changed: usize,
     },
+    /// Existing nodes the push would newly attach, whose content differs
+    /// (`api::PushPreflight::reused`), as `type/id` labels.
+    Reuse(Vec<String>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -212,28 +215,32 @@ enum PushDecision {
     NothingToDo,
 }
 
+/// `force` overrides the snapshot checks (bare `--force`); `reuse`
+/// (`--force=reuse`) is the only override for `reused`, and is independent.
 fn push_decision(
     local: &Value,
     remote: &Value,
     snapshot: Option<&Value>,
     force: bool,
+    reuse: bool,
+    reused: &[String],
 ) -> PushDecision {
     if api::content_equal(local, remote) {
         return PushDecision::NothingToDo;
     }
-
-    let Some(snapshot) = snapshot else {
-        return if force {
-            PushDecision::Push
-        } else {
-            PushDecision::Blocked(PushBlockReason::MissingSnapshot)
-        };
-    };
-
-    if api::content_equal(remote, snapshot) || force {
+    if !force {
+        match snapshot {
+            None => return PushDecision::Blocked(PushBlockReason::MissingSnapshot),
+            Some(snapshot) if !api::content_equal(remote, snapshot) => {
+                return PushDecision::Blocked(remote_drift_reason(remote, snapshot));
+            }
+            Some(_) => {}
+        }
+    }
+    if reused.is_empty() || reuse {
         PushDecision::Push
     } else {
-        PushDecision::Blocked(remote_drift_reason(remote, snapshot))
+        PushDecision::Blocked(PushBlockReason::Reuse(reused.to_vec()))
     }
 }
 
@@ -298,6 +305,13 @@ fn push_block_message(name: &str, reason: &PushBlockReason) -> String {
                 "remote journey {name} changed since you last pulled ({changed}); re-pull or pass --force"
             )
         }
+        PushBlockReason::Reuse(nodes) => format!(
+            "journey {name} would overwrite existing node(s) {} — not referenced by this \
+             journey on the tenant, so its drift check cannot vouch for them, and different \
+             from the export. Another journey may use them. Pass --force=reuse to overwrite \
+             them",
+            nodes.join(", ")
+        ),
     }
 }
 
@@ -578,51 +592,193 @@ struct Row {
     notes: Vec<String>,
 }
 
-/// The note for a copy whose tree lists nodes it does not carry. Not a
+/// The notes for a copy that lists nodes it does not carry. Not a
 /// refusal: the tenant's copy is read strictly (only a 404 leaves a node out),
 /// so such a node is either deleted on the tenant — a dangling reference every
 /// copy then shares — or missing from a file an older `aic` wrote while
 /// skipping unread nodes, which the comparison against the tenant shows.
-fn missing_note(side: &str, copy: &Value) -> Option<String> {
+///
+/// A copy whose references are malformed is noted too
+/// ([`drift::reference_problems`]): it is compared on every reference that
+/// can be read, and the note says which could not.
+fn copy_notes(side: &str, copy: &Value) -> Vec<String> {
     let missing = drift::missing_nodes(copy);
-    (!missing.is_empty()).then(|| {
+    let problems = drift::reference_problems(copy);
+    let missing = (!missing.is_empty()).then(|| {
         format!(
             "the {side} lists node(s) it does not carry: {} — deleted on the tenant, or left \
              out by an older pull",
             missing.join(", ")
         )
-    })
+    });
+    let problems = (!problems.is_empty()).then(|| {
+        format!(
+            "the {side}'s node references are not all readable: {}",
+            problems.join("; ")
+        )
+    });
+    missing.into_iter().chain(problems).collect()
 }
 
 fn api_not_found(error: &Error) -> bool {
     matches!(error, Error::Api { status: 404, .. })
 }
 
-fn script_node_refs(tree: &Value) -> Vec<(String, String)> {
-    tree.get("nodes")
-        .and_then(Value::as_object)
-        .map(|nodes| {
-            nodes
-                .iter()
-                .filter_map(|(id, meta)| {
-                    let node_type = meta.get("nodeType").and_then(Value::as_str)?;
-                    node_type
-                        .contains("Script")
-                        .then(|| (id.clone(), node_type.to_string()))
-                })
-                .collect()
-        })
-        .unwrap_or_default()
+/// The tree's nodes worth reading when looking for a script — script-typed
+/// ones, and pages, whose children the tree does not list — and a
+/// shape-only note for whatever cannot be addressed: a `nodes` that is not
+/// an object, or an entry with no string `nodeType`. Either may hide a
+/// reference, so the search of that journey is not complete.
+fn script_search_refs(tree: &Value) -> (Vec<(String, String)>, Vec<String>) {
+    let Some(nodes) = tree.get("nodes").and_then(Value::as_object) else {
+        return (
+            Vec::new(),
+            vec![format!(
+                "its tree (`nodes` is {})",
+                api::shape(tree.get("nodes"))
+            )],
+        );
+    };
+    let mut refs = Vec::new();
+    let mut problems = Vec::new();
+    for (id, meta) in nodes {
+        match meta.get("nodeType").and_then(Value::as_str) {
+            Some(node_type) if may_reference_script(node_type) || node_type == "PageNode" => {
+                refs.push((id.clone(), node_type.to_string()));
+            }
+            Some(_) => {}
+            None => problems.push(format!(
+                "tree entry {id} (`nodeType` is {})",
+                api::shape(meta.get("nodeType"))
+            )),
+        }
+    }
+    (refs, problems)
 }
 
-fn node_config_references_script(node_type: &str, config: &Value, script_id: &str) -> bool {
-    node_type.contains("Script")
-        && ["script", "scriptId"].iter().any(|field| {
-            config
-                .get(*field)
-                .and_then(Value::as_str)
-                .is_some_and(|candidate| candidate == script_id)
-        })
+/// What a script search of one journey established.
+#[derive(Debug, Default, PartialEq)]
+struct ScriptSearch {
+    /// A node references the script.
+    found: bool,
+    /// What could not be read or listed, when nothing was found: the search
+    /// of this journey is incomplete, so "not found" is not an answer.
+    unread: Vec<String>,
+}
+
+/// Whether any node of `tree` references `script_id`, reading each node
+/// through `read`. A page's scripted children are in no tree, so a page is
+/// read too and its script-typed children join the search. A node that cannot
+/// be read, or a page entry that cannot be addressed, is warned about and
+/// passed over, and recorded in [`ScriptSearch::unread`] unless a match makes
+/// it moot.
+async fn journey_uses_script_with<F, Fut>(
+    tree: &Value,
+    script_id: &str,
+    mut read: F,
+) -> ScriptSearch
+where
+    F: FnMut(String, String) -> Fut,
+    Fut: std::future::Future<Output = Result<Value>>,
+{
+    let (mut queue, mut unread) = script_search_refs(tree);
+    for problem in &unread {
+        eprintln!("warning: skipped {problem}");
+    }
+    let mut seen: std::collections::HashSet<String> =
+        queue.iter().map(|(id, _)| id.clone()).collect();
+    while let Some((node_id, node_type)) = queue.pop() {
+        match read(node_type.clone(), node_id.clone()).await {
+            // A config this search cannot look inside — `null` (an empty
+            // success body decodes to it) or any non-object — says nothing
+            // about the script, so it is unread rather than a "no".
+            Ok(config) if !config.is_object() => {
+                eprintln!(
+                    "warning: journey node {node_type}/{node_id} came back as {}, not a config",
+                    api::shape(Some(&config))
+                );
+                unread.push(format!("{node_type}/{node_id}"));
+            }
+            Ok(config) => {
+                if node_config_references_script(&config, script_id) {
+                    return ScriptSearch {
+                        found: true,
+                        unread: Vec::new(),
+                    };
+                }
+                // Lenient: a read-only search warns about each entry it
+                // cannot address and keeps searching the page's others.
+                match api::page_listing(&node_id, &node_type, &config) {
+                    Ok((children, problems)) => {
+                        for problem in problems {
+                            eprintln!(
+                                "warning: skipped a child of {node_type}/{node_id}: {problem}"
+                            );
+                            unread.push(format!("a child of {node_type}/{node_id}"));
+                        }
+                        queue.extend(
+                            children
+                                .into_iter()
+                                .filter(|child| {
+                                    may_reference_script(&child.node_type)
+                                        && seen.insert(child.id.clone())
+                                })
+                                .map(|child| (child.id, child.node_type)),
+                        )
+                    }
+                    Err(error) => {
+                        eprintln!(
+                            "warning: could not list children of {node_type}/{node_id}: {error}"
+                        );
+                        unread.push(format!("the children of {node_type}/{node_id}"));
+                    }
+                }
+            }
+            Err(error) => {
+                eprintln!("warning: could not read journey node {node_type}/{node_id}: {error}");
+                unread.push(format!("{node_type}/{node_id}"));
+            }
+        }
+    }
+    ScriptSearch {
+        found: false,
+        unread,
+    }
+}
+
+/// The node types whose config is documented to hold a script id in
+/// `script`, so worth one read each when searching for a script:
+/// `ScriptedDecisionNode`, `DeviceMatchNode` (`script`, used when
+/// `useScript`; `docs/api/09-journeys.md`) and `ConfigProviderNode`
+/// (`docs/api/12-script-bindings-matrix.md`). The list is the filter, because
+/// reading every node of every journey to find out costs a read per node.
+const SCRIPT_NODE_TYPES: &[&str] = &[
+    "ScriptedDecisionNode",
+    "DeviceMatchNode",
+    "ConfigProviderNode",
+];
+
+/// Whether a node of `node_type` is read during a script search: a listed
+/// type, or any other type whose name says it is scripted (`*ScriptedNode`,
+/// `ClientScriptNode`, …) — a fallback for types the list does not know, kept
+/// so the list cannot narrow what the search found before it. Whether the
+/// node *uses* the script is decided by its config alone
+/// ([`node_config_references_script`]), never by its name.
+fn may_reference_script(node_type: &str) -> bool {
+    SCRIPT_NODE_TYPES.contains(&node_type) || node_type.contains("Script")
+}
+
+/// Whether a node config names `script_id` in a top-level `script` or
+/// `scriptId`, whatever the node's type. A `DeviceMatchNode` counts even with
+/// `useScript: false`: it still holds the reference, and the search exists to
+/// say what deleting the script could break.
+fn node_config_references_script(config: &Value, script_id: &str) -> bool {
+    ["script", "scriptId"].iter().any(|field| {
+        config
+            .get(*field)
+            .and_then(Value::as_str)
+            .is_some_and(|candidate| candidate == script_id)
+    })
 }
 
 pub async fn run(cmd: JourneyCommand) -> Result<()> {
@@ -707,11 +863,11 @@ pub async fn run(cmd: JourneyCommand) -> Result<()> {
             let path = export_path(&tenant, &realm, &name)?;
             let snapshot = snapshot_path(&tenant, &realm, &name)?;
             let (local_export, local_value) = read_export(&path, &name)?;
-            let remote_export = match api::pull(&tenant, &realm, &name).await {
-                Ok(export) => Some(export),
-                Err(error) if api_not_found(&error) => None,
-                Err(error) => return Err(error),
-            };
+            let api::PushPreflight {
+                remote: remote_export,
+                reused,
+            } = api::push_preflight(&tenant, &realm, &name, &local_export).await?;
+            let reused: Vec<String> = reused.iter().map(api::NodeRef::label).collect();
             let remote_value = remote_export
                 .as_ref()
                 .map(export_value)
@@ -719,7 +875,14 @@ pub async fn run(cmd: JourneyCommand) -> Result<()> {
                 .unwrap_or(Value::Null);
             let snapshot_value = read_snapshot(&snapshot)?;
 
-            match push_decision(&local_value, &remote_value, snapshot_value.as_ref(), force) {
+            match push_decision(
+                &local_value,
+                &remote_value,
+                snapshot_value.as_ref(),
+                force.operation(),
+                force.reuse(),
+                &reused,
+            ) {
                 PushDecision::NothingToDo => {
                     if let Some(remote_export) = remote_export.as_ref() {
                         write_snapshot(&tenant, &realm, &name, remote_export)?;
@@ -735,7 +898,13 @@ pub async fn run(cmd: JourneyCommand) -> Result<()> {
                 }
                 PushDecision::Push => {
                     let pushed =
-                        api::push(&tenant, &realm, &name, &local_export, ok.confirmed_prod).await?;
+                        api::push(&tenant, &realm, &name, &local_export, ok.confirmed_prod)
+                            .await
+                            .map_err(|error| {
+                                Error::Config(format!(
+                                    "push of journey {name} to {tenant}/{realm} stopped: {error}"
+                                ))
+                            })?;
                     let refreshed = api::pull(&tenant, &realm, &name).await.map_err(|error| {
                         Error::Config(format!(
                             "pushed journey {name} ({pushed} nodes) -> {tenant}/{realm}, but the \
@@ -788,7 +957,11 @@ pub async fn run(cmd: JourneyCommand) -> Result<()> {
                     ("tenant's copy", &remote),
                 ]
                 .into_iter()
-                .filter_map(|(side, copy)| copy.as_ref().and_then(|copy| missing_note(side, copy)))
+                .flat_map(|(side, copy)| {
+                    copy.as_ref()
+                        .map(|copy| copy_notes(side, copy))
+                        .unwrap_or_default()
+                })
                 .collect();
                 if !problems.is_empty() {
                     rows.push(Row {
@@ -802,15 +975,18 @@ pub async fn run(cmd: JourneyCommand) -> Result<()> {
                     continue;
                 }
                 let state = drift::state(local.as_ref(), snapshot.as_ref(), remote.as_ref());
-                let parts = |a: Option<&Value>, b: Option<&Value>| match (a, b) {
-                    (Some(a), Some(b)) => drift::changed_parts(a, b),
+                // The first copy names a changed node's type: the side that
+                // changed (local for local changes, the tenant's for remote
+                // ones). The tenant's copy places it in a page either way.
+                let parts = |changed: Option<&Value>, base: Option<&Value>| match (changed, base) {
+                    (Some(a), Some(b)) => drift::changed_parts(a, b, remote.as_ref()),
                     _ => Vec::new(),
                 };
                 rows.push(Row {
                     name: name.clone(),
                     state: Some(state),
                     local: parts(local.as_ref(), snapshot.as_ref()),
-                    remote: parts(snapshot.as_ref(), remote.as_ref()),
+                    remote: parts(remote.as_ref(), snapshot.as_ref()),
                     problems,
                     notes,
                 });
@@ -969,11 +1145,20 @@ pub async fn run(cmd: JourneyCommand) -> Result<()> {
                 )
             };
             for (label, copy) in [(left_label, &left), (right_label, &right)] {
-                if let Some(note) = missing_note(label, copy) {
+                for note in copy_notes(label, copy) {
                     eprintln!("note: journey {name}: {note}");
                 }
             }
-            let parts = drift::changed_parts(&left, &right);
+            // The right side is the tenant's copy unless only local and
+            // snapshot are compared.
+            let current = (!local_vs_snapshot).then_some(&right);
+            // Name a node by the newer side: the tenant's in a
+            // snapshot-vs-remote diff, otherwise the left (local) copy.
+            let parts = if snapshot_vs_remote {
+                drift::changed_parts(&right, &left, current)
+            } else {
+                drift::changed_parts(&left, &right, current)
+            };
             let shown = drift::shown_changes(&left, &right);
             if json {
                 print_json(&serde_json::json!({
@@ -1046,36 +1231,43 @@ pub async fn run(cmd: JourneyCommand) -> Result<()> {
             let tenant = tenant_for(tenant)?;
             let realm = realm_arg("journey", realm)?;
             let mut matches = Vec::new();
-            for name in api::list_trees(&tenant, &realm).await? {
+            let mut unread = Vec::new();
+            let (names, skipped) = api::list_trees_checked(&tenant, &realm).await?;
+            for row in &skipped {
+                eprintln!("warning: skipped {row}");
+            }
+            unread.extend(skipped);
+            for name in names {
                 let tree = match api::read_tree(&tenant, &realm, &name).await {
                     Ok(tree) => tree,
                     Err(error) => {
                         eprintln!("warning: could not read journey {name}: {error}");
+                        unread.push(format!("{name}: its tree"));
                         continue;
                     }
                 };
-                let mut found = false;
-                for (node_id, node_type) in script_node_refs(&tree) {
-                    match api::read_node(&tenant, &realm, &node_type, &node_id).await {
-                        Ok(config) => {
-                            if node_config_references_script(&node_type, &config, &script_id) {
-                                found = true;
-                                break;
-                            }
-                        }
-                        Err(error) => {
-                            eprintln!(
-                                "warning: could not read journey node {node_type}/{node_id}: {error}"
-                            );
-                        }
-                    }
-                }
-                if found {
+                let search = journey_uses_script_with(&tree, &script_id, |node_type, node_id| {
+                    let (tenant, realm) = (&tenant, &realm);
+                    async move { api::read_node(tenant, realm, &node_type, &node_id).await }
+                })
+                .await;
+                if search.found {
                     matches.push(name);
+                } else {
+                    unread.extend(
+                        search
+                            .unread
+                            .into_iter()
+                            .map(|what| format!("{name}: {what}")),
+                    );
                 }
             }
-            if json {
+            if json && unread.is_empty() {
                 print_json(&matches)?;
+            } else if json {
+                print_json(
+                    &serde_json::json!({"journeys": matches, "incomplete": true, "unread": unread}),
+                )?;
             } else {
                 let rows = matches
                     .iter()
@@ -1084,6 +1276,14 @@ pub async fn run(cmd: JourneyCommand) -> Result<()> {
                 print_table(&["JOURNEY"], &rows);
             }
             eprintln!("{} journeys reference script {script_id}", matches.len());
+            if !unread.is_empty() {
+                return Err(Error::Config(format!(
+                    "the search is incomplete: {} read(s) failed ({}), so a journey not listed \
+                     may still reference script {script_id}",
+                    unread.len(),
+                    unread.join("; ")
+                )));
+            }
             Ok(())
         }
         JourneyCommand::Nodes {
@@ -1445,7 +1645,7 @@ mod tests {
         let remote = export_with("same", "script-a", "remote-rev");
 
         assert_eq!(
-            push_decision(&local, &remote, None, false),
+            push_decision(&local, &remote, None, false, false, &[]),
             PushDecision::NothingToDo
         );
     }
@@ -1457,7 +1657,7 @@ mod tests {
         let local = export_with("new", "script-a", "local-rev");
 
         assert_eq!(
-            push_decision(&local, &remote, Some(&snapshot), false),
+            push_decision(&local, &remote, Some(&snapshot), false, false, &[]),
             PushDecision::Push
         );
     }
@@ -1469,7 +1669,7 @@ mod tests {
         let local = export_with("local-change", "script-a", "local-rev");
 
         assert_eq!(
-            push_decision(&local, &remote, Some(&snapshot), false),
+            push_decision(&local, &remote, Some(&snapshot), false, false, &[]),
             PushDecision::Blocked(PushBlockReason::RemoteDrift {
                 tree_changed: true,
                 nodes_changed: 1,
@@ -1484,7 +1684,7 @@ mod tests {
         let local = export_with("local-change", "script-a", "local-rev");
 
         assert_eq!(
-            push_decision(&local, &remote, Some(&snapshot), true),
+            push_decision(&local, &remote, Some(&snapshot), true, false, &[]),
             PushDecision::Push
         );
     }
@@ -1495,7 +1695,7 @@ mod tests {
         let local = export_with("new", "script-a", "local-rev");
 
         assert_eq!(
-            push_decision(&local, &remote, None, false),
+            push_decision(&local, &remote, None, false, false, &[]),
             PushDecision::Blocked(PushBlockReason::MissingSnapshot)
         );
     }
@@ -1506,7 +1706,7 @@ mod tests {
         let local = export_with("new", "script-a", "local-rev");
 
         assert_eq!(
-            push_decision(&local, &remote, None, true),
+            push_decision(&local, &remote, None, true, false, &[]),
             PushDecision::Push
         );
     }
@@ -1514,39 +1714,205 @@ mod tests {
     #[test]
     fn scripted_node_matcher_checks_script_fields() {
         assert!(node_config_references_script(
-            "ScriptedDecisionNode",
             &json!({"script": "script-a"}),
             "script-a"
         ));
         assert!(node_config_references_script(
-            "ScriptedDecisionNode",
             &json!({"scriptId": "script-a"}),
             "script-a"
         ));
         assert!(!node_config_references_script(
-            "ScriptedDecisionNode",
             &json!({"script": "script-b"}),
             "script-a"
         ));
-        assert!(!node_config_references_script(
-            "PageNode",
-            &json!({"script": "script-a"}),
-            "script-a"
-        ));
+        assert!(!node_config_references_script(&json!({}), "script-a"));
+    }
+
+    /// Regression (review round 5 P1-4): the search read only nodes whose
+    /// type name contains `Script`, so a `DeviceMatchNode` — documented to
+    /// hold its script in `script` — was never read and a journey using the
+    /// script through one was not found. The discriminating input is that
+    /// node, listed by the tree and, separately, by a page. The control is a
+    /// `SetSuccessUrlNode` that is never read.
+    #[tokio::test]
+    async fn a_device_match_node_using_the_script_is_found() {
+        for in_page in [false, true] {
+            let tree = if in_page {
+                json!({"nodes": {"page": {"nodeType": "PageNode"}, "plain": {"nodeType": "SetSuccessUrlNode"}}})
+            } else {
+                json!({"nodes": {"device": {"nodeType": "DeviceMatchNode"}, "plain": {"nodeType": "SetSuccessUrlNode"}}})
+            };
+            let reads = std::cell::RefCell::new(Vec::new());
+            let found = journey_uses_script_with(&tree, "used", |node_type, id| {
+                reads.borrow_mut().push(format!("{node_type}/{id}"));
+                async move {
+                    Ok(match id.as_str() {
+                        "page" => {
+                            json!({"nodes": [{"_id": "device", "nodeType": "DeviceMatchNode"}]})
+                        }
+                        "device" => json!({"useScript": true, "script": "used"}),
+                        _ => json!({}),
+                    })
+                }
+            })
+            .await
+            .found;
+            assert!(found, "in_page={in_page}");
+            let reads = reads.into_inner();
+            assert!(
+                reads.contains(&"DeviceMatchNode/device".to_string()),
+                "{reads:?}"
+            );
+            assert!(
+                !reads.iter().any(|read| read.contains("plain")),
+                "{reads:?}"
+            );
+        }
+    }
+
+    /// `--force=reuse` alone overrides the reuse refusal; bare `--force`
+    /// overrides the snapshot checks and nothing else.
+    #[test]
+    fn push_decision_refuses_reuse_unless_its_own_guard_is_given() {
+        let local = json!({"tree": {"name": "Login"}, "nodes": {"n": {"v": 2}}});
+        let remote = json!({"tree": {"name": "Login"}, "nodes": {}});
+        let reused = ["UsernameCollectorNode/n".to_string()];
+        let decide =
+            |force, reuse| push_decision(&local, &remote, Some(&remote), force, reuse, &reused);
+        assert_eq!(
+            decide(true, false),
+            PushDecision::Blocked(PushBlockReason::Reuse(reused.to_vec()))
+        );
+        assert_eq!(decide(false, true), PushDecision::Push);
+        assert_eq!(
+            push_decision(&local, &remote, Some(&remote), false, false, &[]),
+            PushDecision::Push
+        );
+        let message = push_block_message("Login", &PushBlockReason::Reuse(reused.to_vec()));
+        assert!(message.contains("UsernameCollectorNode/n"), "{message}");
+        assert!(message.contains("--force=reuse"), "{message}");
     }
 
     #[test]
-    fn script_node_refs_only_returns_script_node_types() {
-        let refs = script_node_refs(&json!({
+    fn script_search_refs_returns_script_nodes_and_pages_only() {
+        let (mut refs, problems) = script_search_refs(&json!({
             "nodes": {
                 "script": {"nodeType": "ScriptedDecisionNode"},
-                "page": {"nodeType": "PageNode"}
+                "page": {"nodeType": "PageNode"},
+                "plain": {"nodeType": "SetSuccessUrlNode"}
             }
         }));
+        refs.sort();
 
         assert_eq!(
             refs,
-            vec![("script".to_string(), "ScriptedDecisionNode".to_string())]
+            vec![
+                ("page".to_string(), "PageNode".to_string()),
+                ("script".to_string(), "ScriptedDecisionNode".to_string())
+            ]
         );
+        assert!(problems.is_empty(), "{problems:?}");
+    }
+
+    /// Drives the real search with a stub reader. The discriminating input
+    /// is a script used only by a page's child: a search that does not
+    /// queue a page's scripted children reads the page and stops.
+    #[tokio::test]
+    async fn a_script_used_only_inside_a_page_is_found() {
+        let tree = json!({"nodes": {
+            "page": {"nodeType": "PageNode"},
+            "plain": {"nodeType": "SetSuccessUrlNode"}
+        }});
+        let search = |script_id: &'static str| {
+            let tree = tree.clone();
+            async move {
+                let reads = std::cell::RefCell::new(Vec::new());
+                let found = journey_uses_script_with(&tree, script_id, |node_type, id| {
+                    reads.borrow_mut().push(format!("{node_type}/{id}"));
+                    async move {
+                        Ok(match id.as_str() {
+                            "page" => json!({"nodes": [
+                                {"_id": "user", "nodeType": "UsernameCollectorNode"},
+                                {"_id": "script", "nodeType": "ScriptedDecisionNode"}
+                            ]}),
+                            "script" => json!({"script": "used"}),
+                            _ => json!({}),
+                        })
+                    }
+                })
+                .await
+                .found;
+                (found, reads.into_inner())
+            }
+        };
+        let (found, reads) = search("used").await;
+        assert!(found);
+        // Only script-typed children are read; the plain tree node never is.
+        assert_eq!(reads, ["PageNode/page", "ScriptedDecisionNode/script"]);
+        let (found, _) = search("other").await;
+        assert!(!found, "the control: a script nothing uses");
+    }
+
+    /// Regression (review round 4 P1-2): one page entry without a `nodeType`
+    /// made the search skip the whole page, so a valid scripted sibling using
+    /// the script was never read and `using-script` answered "none". The
+    /// discriminating input is that malformed entry beside the scripted child.
+    #[tokio::test]
+    async fn a_malformed_page_entry_does_not_hide_a_scripted_sibling() {
+        let tree = json!({"nodes": {"page": {"nodeType": "PageNode"}}});
+        let found = journey_uses_script_with(&tree, "used", |_, id| async move {
+            Ok(match id.as_str() {
+                "page" => json!({"nodes": [
+                    {"_id": "bad"},
+                    {"_id": "script", "nodeType": "ScriptedDecisionNode"}
+                ]}),
+                "script" => json!({"script": "used"}),
+                _ => json!({}),
+            })
+        })
+        .await
+        .found;
+        assert!(found);
+    }
+
+    /// Regression (review round 6 P2-4): the candidate decisions the round-5
+    /// test left unpinned. Each case is a page whose only script reference is
+    /// one child: a `DeviceMatchNode` with `useScript: false` (still a
+    /// reference), a `ConfigProviderNode` (listed), and a `ClientScriptNode`
+    /// (read only through the `Script` name fallback). Each must be found
+    /// with exactly one read of that child after the page's.
+    #[tokio::test]
+    async fn every_candidate_kind_is_read_once_and_found() {
+        let tree = json!({"nodes": {"page": {"nodeType": "PageNode"}}});
+        for (node_type, config) in [
+            (
+                "DeviceMatchNode",
+                json!({"useScript": false, "script": "used"}),
+            ),
+            (
+                "ConfigProviderNode",
+                json!({"script": "used", "scriptInputs": ["*"]}),
+            ),
+            ("ClientScriptNode", json!({"script": "used"})),
+        ] {
+            let reads = std::cell::RefCell::new(Vec::new());
+            let search = journey_uses_script_with(&tree, "used", |read_type, id| {
+                reads.borrow_mut().push(format!("{read_type}/{id}"));
+                let config = config.clone();
+                async move {
+                    Ok(match id.as_str() {
+                        "page" => json!({"nodes": [{"_id": "child", "nodeType": node_type}]}),
+                        _ => config,
+                    })
+                }
+            })
+            .await;
+            assert!(search.found, "{node_type}");
+            assert_eq!(
+                reads.into_inner(),
+                ["PageNode/page".to_string(), format!("{node_type}/child")],
+                "{node_type}"
+            );
+        }
     }
 }

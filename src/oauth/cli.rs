@@ -10,6 +10,7 @@ use serde_json::Value;
 
 use crate::cli::diff::show_diff;
 use crate::cli::force::OperationAndBackupForce;
+use crate::cli::shell_quote;
 use crate::cli::{
     confirm_destructive, ensure_prod_confirmed, print_json, print_table, prod_hint,
     protected_pull_prompt, read_password_line, realm_arg, tenant_for,
@@ -712,22 +713,6 @@ fn nothing_to_compare(
             sides.right.label()
         )
     })
-}
-
-/// Quote a value for a command line we are telling someone to run.
-///
-/// Tenant names are not restricted to a safe character set — `tenant_file_name`
-/// maps the unsafe ones for paths rather than rejecting them — so a name with a
-/// space produces a suggestion that runs as two arguments when pasted.
-fn shell_quote(value: &str) -> String {
-    if !value.is_empty()
-        && value
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '/'))
-    {
-        return value.to_string();
-    }
-    format!("'{}'", value.replace('\'', r"'\''"))
 }
 
 /// The files a `pull` would destroy, named. The caller only asks in the branch

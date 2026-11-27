@@ -4791,6 +4791,11 @@ mod tests {
             WriteFailure::from_send(Error::AuthRequired, &[]).status,
             WriteStatus::Refused
         );
+        // The daemon answers `Locked` before dispatching (`do_api_call`).
+        assert_eq!(
+            WriteFailure::from_send(Error::AgentLocked, &[]).status,
+            WriteStatus::Refused
+        );
         assert_eq!(
             WriteFailure::from_send(Error::AgentProtocolMismatch, &[]).status,
             WriteStatus::Unknown

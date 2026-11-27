@@ -12,7 +12,7 @@
 //! allowed set in the field's type makes clap reject unsupported guard names
 //! during parsing, before dispatch or dry-run handling. Callers then ask the
 //! parsed value about one permission at a time (`operation()`,
-//! `syntax_check()`, or `backup()`).
+//! `syntax_check()`, `backup()`, or `reuse()`).
 
 use clap::builder::{PossibleValuesParser, TypedValueParser};
 use clap::{Arg, ArgAction, ArgMatches, Args, Command, Error, FromArgMatches};
@@ -20,6 +20,7 @@ use clap::{Arg, ArgAction, ArgMatches, Args, Command, Error, FromArgMatches};
 const OPERATION: u8 = 1 << 0;
 const SYNTAX_CHECK: u8 = 1 << 1;
 const BACKUP: u8 = 1 << 2;
+const REUSE: u8 = 1 << 3;
 
 /// Bit, clap value, one-line description. The single source for `bit`,
 /// possible-values, and help text; adding a guard is one row.
@@ -31,6 +32,11 @@ const GUARDS: &[(u8, &str, &str)] = &[
     ),
     (SYNTAX_CHECK, "syntax-check", "skip script syntax preflight"),
     (BACKUP, "backup", "skip backup"),
+    (
+        REUSE,
+        "reuse",
+        "overwrite an existing node the journey does not yet reference",
+    ),
 ];
 
 const fn known_guards() -> u8 {
@@ -66,6 +72,12 @@ pub type OperationAndSyntaxCheckForce = ForceFlags<{ OPERATION | SYNTAX_CHECK }>
 /// A command supporting its primary override and backup bypass.
 pub type OperationAndBackupForce = ForceFlags<{ OPERATION | BACKUP }>;
 
+/// `journey push`: its drift override, and `--force=reuse` to overwrite an
+/// existing node the journey does not yet reference. Bare `--force` does not
+/// imply `reuse`: the drift override is about this journey's own nodes, and
+/// reuse rewrites a node other journeys may hold.
+pub type OperationAndReuseForce = ForceFlags<{ OPERATION | REUSE }>;
+
 impl<const ALLOWED: u8> ForceFlags<ALLOWED> {
     /// Whether bare `--force` or explicit `--force=operation` was supplied.
     pub fn operation(&self) -> bool {
@@ -80,6 +92,11 @@ impl<const ALLOWED: u8> ForceFlags<ALLOWED> {
     /// Whether `--force=backup` was supplied.
     pub fn backup(&self) -> bool {
         self.requested & BACKUP != 0
+    }
+
+    /// Whether `--force=reuse` was supplied.
+    pub fn reuse(&self) -> bool {
+        self.requested & REUSE != 0
     }
 
     fn insert(&mut self, guard: ForceGuard) {
@@ -266,6 +283,7 @@ mod tests {
         assert!(force.operation());
         assert!(!force.syntax_check());
         assert!(!force.backup());
+        assert!(!force.reuse());
     }
 
     #[test]
@@ -355,12 +373,14 @@ mod tests {
             help_of::<SYNTAX_CHECK>(),
             help_of::<{ OPERATION | SYNTAX_CHECK }>(),
             help_of::<{ OPERATION | BACKUP }>(),
+            help_of::<{ OPERATION | REUSE }>(),
         ];
         let masks = [
             OPERATION,
             SYNTAX_CHECK,
             OPERATION | SYNTAX_CHECK,
             OPERATION | BACKUP,
+            OPERATION | REUSE,
         ];
 
         for (allowed, help) in masks.into_iter().zip(cases) {
