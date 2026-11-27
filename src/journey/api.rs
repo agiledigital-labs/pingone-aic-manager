@@ -842,6 +842,12 @@ pub struct PushError {
     status: WriteStatus,
     not_attempted: Vec<String>,
     source: Box<Error>,
+    lookup: Box<Lookup>,
+}
+
+/// Where to look for a stopped write in the tenant's logs.
+#[derive(Debug)]
+struct Lookup {
     /// The transaction id assigned to the stopped write's attempt — chosen
     /// here, never read back from the error, whose body is the server's. An
     /// unknown outcome does not say the request was dispatched (the agent
@@ -893,7 +899,7 @@ impl std::fmt::Display for PushError {
                 f,
                 "\n  this write was assigned transaction id {0}; if the request reached the \
                  tenant, `aic logs tx {0} --tenant {1}` finds it",
-                self.transaction, self.tenant
+                self.lookup.transaction, self.lookup.tenant
             )?;
         }
         let list = |writes: &[String]| {
@@ -962,8 +968,10 @@ where
             status: failure.status,
             not_attempted: pending.into(),
             source: Box::new(failure.source),
-            transaction,
-            tenant: tenant.to_owned(),
+            lookup: Box::new(Lookup {
+                transaction,
+                tenant: tenant.to_owned(),
+            }),
         }
     };
     for node in writes {
