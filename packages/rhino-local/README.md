@@ -2560,19 +2560,37 @@ rate}`; now is `virtual_origin + (real now - real_origin) * rate`, read once at
   actually served (`min(endTime, now)` at the first page), the highest record
   sequence that existed then, and the position after the last record returned.
   A retried cookie therefore returns the same page even if records have since
-  arrived inside the window; a fresh query sees them. A cookie presented with a
-  different query is a 400.
+  arrived inside the window, as long as the page's records are still retained;
+  once one passes retention a retry skips it (see Retention). A fresh query sees
+  new records. It also carries the window
+  the first page resolved, so with bounds omitted a continuation pages that same
+  last hour after the clock moves. A cookie presented with a different query (other
+  sources, filter, or explicit bounds) is a 400.
 - **Sources.** Comma-separated; `am-everything` / `idm-everything` expand to every
   `am-*` / `idm-*` stream (the doc does not say what the aggregates cover beyond
   "catch-all roll-ups", so all of them, `*-core` included). Each record keeps its
   own stream in `source`. Other sources the tenant lists (`ctsstore`,
   `userstore*`) are accepted and empty; anything else is a 400.
 - **`transactionId`** is a prefix match on `payload.transactionId`, as measured.
+- **`_queryFilter`** serves one form, `payload/transactionId eq "<id>"`
+  (docs/api/08-logs.md records it working). The emulator matches it **exactly**,
+  as CREST `eq` reads; the doc has no exact-versus-prefix control for this filter
+  (the `transactionId` parameter is the measured prefix match), so treat exactness
+  as the emulator's choice. The two filters doc 08 measured failing on `am-core`,
+  `payload/logger eq "…"` and `payload/message co "…"`, answer the tenant's `500`
+  there (status measured, body not), standalone and with a string literal JSON
+  reads. Every other filter, those two on any other source or with a malformed
+  literal, any filter combined with `transactionId`, any parameter given more than
+  once, and any parameter the server does not know is a `501` naming it: the
+  emulator's own refusal for what was never measured, rather than a page that
+  silently ignores it. The paging cookie is bound to the filter like the rest of
+  the query.
 - **Publication.** A record is visible once virtual now >= its timestamp (zero
   lag, which meets "published within two virtual minutes"). A record stamped in
   the future stays hidden until the clock reaches it.
 - **Retention.** 30 days of virtual time by default; expired records are dropped
-  lazily, so slightly older ones may linger, never younger ones lost.
+  lazily, on every write and every read of a source (an idle source included), so
+  slightly older ones may linger, never younger ones lost.
 - **Auth.** `x-api-key` / `x-api-secret`; anything else is `401` with a CREST-style
   body `{code, reason, message}` (the doc records the status, not the body).
 - **Rate limit.** 60 requests per real minute for the **whole environment**,
@@ -2586,7 +2604,7 @@ rate}`; now is `virtual_origin + (real now - real_origin) * rate`, read once at
   answer instead of the real reply. It runs after auth and the quota, so an
   injected 5xx still spends quota, as a real one does.
 
-Not served: `/monitoring/logs/sources`, `/monitoring/logs/tail`, `_queryFilter`.
+Not served: `/monitoring/logs/sources`, `/monitoring/logs/tail`, and any `_queryFilter` but the ones above.
 
 ## Artefacts
 
@@ -2875,8 +2893,9 @@ runs, since whether AM runs it is unmeasured. `ValidatedPasswordNode` (`validate
 transient password and transient objectAttributes. `nodeState.get` returns the
 whole transient value when present, otherwise shared; objectAttributes maps are
 never merged across these buckets. Extending that shadowing to other caller keys
-is labelled assumed. The shared `pageNodeCallbacks` value is assumed to be the
-merged wire array; doc 25 measures its presence/lifetime, not its contents.
+is labelled assumed. Every callback carries a top-level `_id` counting across the
+journey, and shared `pageNodeCallbacks` is the measured map of callback `_id` to
+child index, accumulating over re-sends and revisits (doc 25).
 Page discovery evaluates every script child once for real and retains its state
 effects, ignoring its goTo (measured); submission evaluates each child again.
 `withErrorMessage` in a discovery run, or alongside queued callbacks, is missing:
@@ -2973,7 +2992,9 @@ nodes.
 `ValidatedUsernameNode` (with `validateInput: false`), `MessageNode` and
 `GetAuthenticatorAppNode` run standalone and as `PageNode` children, as measured
 (doc 25, "Nodes as Page children"). A `MessageNode` must be the last child, and a
-display-only page leaves no `pageNodeCallbacks`.
+page whose only child is a display node, a one-time-password collector or a choice
+collector leaves no `pageNodeCallbacks`. An empty or blank answer to a
+`MessageNode` or `ChoiceCollectorNode` is `missing` (unmeasured), not index 0.
 
 ESV placeholders in node configuration (`&{esv.…}`, bare or wrapped as
 `{"$string": …}`, `{"$int": …}` or `{"$bool": …}`) resolve from
@@ -2984,8 +3005,37 @@ custom node properties"). An unconfigured ESV is `missing`.
 Custom Node Designer types: put the type definition in
 `JourneyConfigInput.customNodeTypes`, keyed `designer-<serviceName>`
 (`outcomes`, `errorOutcome`, `inputs`, `outputs`, `script`, `properties`). The
-script runs with `properties`, `nodeState` and `outcome` bound; a throw or
-unlisted outcome takes `Script Error` when `errorOutcome` is set. Not modelled:
+script runs as an ordinary top-level script in a scope of its own, with
+`properties`, `nodeState` (`get` and `putShared` only), `systemEnv`
+(`getProperty` only, reading `JourneyOptions.esv`) and `outcome` defined in
+it. A read of a next-gen Scripted Decision binding other than these
+(`openidm`, `httpClient`, `logger`, `action`, …, plus `existingSession`,
+`require`, `sharedState` and `transientState`) is `missing`, naming it
+(`custom node binding: openidm`), whether read bare or through `this`; so is a
+call to any other method the next-gen `nodeState` has
+(`custom node binding: nodeState.getObject`). The emulated `systemEnv` has no
+other member, so `systemEnv.getSecret` reads `undefined` and calling it is a
+`TypeError`; what the tenant's other members do is unmeasured. Anything else is ordinary
+JavaScript: an unknown global is a `ReferenceError`, and the legacy
+`nodeState.getShared` / `getTransient`, absent from the next-gen `nodeState`
+(doc 25), are a `TypeError` when called; both are throws like any other. A
+bare `typeof` of an unbound binding is `"undefined"`, as for any unbound name
+(`typeof this.httpClient` refuses), and `"logger" in this` is `false`. A name
+the script declares or assigns at its own top level (`var logger = …`) is its
+own and is never refused, and declarations hoist as in any script; a helper's
+locals and declaration-like text in a string or comment leave the refusal in
+place. Top-level `const` and `let` behave as in a Scripted Decision script (doc
+12). `outcome` routes by the string value the host reads when the script ends,
+computed (`'o' + suffix`) or literal; a `new String('ok')` object is not a
+string and is treated as unlisted. That is the host's read, not the script's: a
+script that reads back a top-level `outcome = 'o' + suffix` sees
+`typeof outcome === 'object'`, and `outcome === 'ok'` is false, while a
+`join` reads back as a primitive. Doc 12 measures the same top-level coercion
+in a Scripted Decision scope; a custom node's read-back and the routing of a
+boxed string are unmeasured. A throw or
+unlisted outcome takes `Script Error` when `errorOutcome` is set; without it the
+journey fails with `401` at the top level, and in an inner tree, which is
+unmeasured, it is `missing` (`inner tree script exception`). Not modelled:
 the `inputs` read restriction, and `outputs` (also unrestrictive on the tenant).
 The OTP expiry boundary, cookie expiry and `idleTimeout`, and `ValidatedPasswordNode`
 or Page children for the new nodes are unmeasured or unsupported.
@@ -3107,7 +3157,7 @@ It starts the logs server, then runs the driver on the shared clock until
 SIGINT. It runs journeys on Java 25 like the rest of the package; from a source
 checkout (not the packed tarball, which ships prebuilt classes) that has to be a
 JDK, since the runner classes are compiled on first use: point `JAVA_HOME` (or
-`AIC_SCRIPT_TESTER_JAVA_HOME`) at a JDK 25, or it fails with `spawn javac ENOENT`. It prints a status line every 30 s (journeys started, finished, lag).
+`AIC_SCRIPT_TESTER_JAVA_HOME`) at a JDK 25, or it fails with `spawn javac ENOENT`. It prints a status line every 30 s (journeys started, finished, errored, lag). On SIGINT or SIGTERM it prints the final report (journeys by outcome, errored by status) and exits `1` if any journey hit an engine `501` (an unmodelled behaviour) or `400`, else `0`.
 
 **Journeys file.** One JSON object: the `JourneyConfig` input (`realm`, `trees`,
 `nodes`, `scripts`) plus an optional `idm` key (an IDM config) for nodes that

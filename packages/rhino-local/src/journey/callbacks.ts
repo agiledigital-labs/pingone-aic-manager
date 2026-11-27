@@ -6,6 +6,8 @@ export type WireCallback = {
   type: string;
   output: { name: string; value: JsonValue }[];
   input?: { name: string; value: JsonValue }[];
+  /** AM numbers every callback a journey sends, counting up across the whole journey (doc 25). */
+  _id?: number;
 };
 const SUPPORTED = [
   "NameCallback",

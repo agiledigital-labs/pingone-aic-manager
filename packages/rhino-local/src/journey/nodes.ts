@@ -1,11 +1,12 @@
 /** Collector and identity nodes; managed policy and writes stay in the shared IDM core. */
 import type { CallbackEffect } from "../case/types.ts";
-import { EmulationFailure } from "../emulation.ts";
 import { isDocument, own, setOwn } from "../idm/document.ts";
 import type { IdmEmulator } from "../idm/emulator.ts";
 import type { Evidence } from "../idm/provenance.ts";
 import type { Document, PropertyConfig, RestResult } from "../idm/types.ts";
 import type { HostCall, JsonValue } from "../protocol.ts";
+import { mergeSharedAttributes } from "./attributes.ts";
+import { idmCall, loginFailure, lookupIdentities } from "./shared.ts";
 import { EXTRA_TYPES, ExtraNodes, type ExtraContext } from "./extra-nodes.ts";
 import type {
   AttributePolicy,
@@ -36,6 +37,11 @@ export type NodeResult = {
   header?: string;
   description?: string;
   stage?: string;
+  /**
+   * For a Page: the index of the child that sent each callback, in callback order. The engine
+   * records it in shared `pageNodeCallbacks` once it has numbered the callbacks.
+   */
+  pageChildren?: number[];
   abort?: Omit<AuthenticateResult, "provenance">;
   /**
    * The script's `auditEntryDetail` (string or map), for the node's completion record. A Page's
@@ -219,31 +225,8 @@ export class JourneyNodes {
     );
     return { outcome: "outcome", callbacks: [] };
   }
-  /** Shared objectAttributes a node merges into; a non-object one is unmeasured. */
-  private sharedAttributes(shared: Document, type: string): Document {
-    if (!Object.hasOwn(shared, "objectAttributes")) return {};
-    if (!isDocument(shared.objectAttributes))
-      this.missing(`${type} over non-object shared objectAttributes`);
-    return shared.objectAttributes;
-  }
-  private async call(
-    method: HostCall["method"],
-    args: JsonValue[],
-  ): Promise<RestResult> {
-    const response = await this.idm.hostRequest(
-      {
-        type: "call",
-        id: "journey-node",
-        seq: 0,
-        method,
-        args,
-      },
-      true,
-    );
-    for (const entry of response.provenance)
-      this.evidence.add(entry.kind, entry.behavior, entry.source);
-    if (response.emulation) throw new EmulationFailure(response.emulation);
-    return response;
+  private call(method: HostCall["method"], args: JsonValue[]): Promise<RestResult> {
+    return idmCall(this.idm, this.evidence, method, args, true);
   }
   private async find(
     resource: string,
@@ -254,18 +237,15 @@ export class JourneyNodes {
       this.missing("identity lookup with non-string value");
     if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(attribute))
       this.missing(`identity lookup attribute: ${attribute}`);
-    const result = await this.call("query", [
+    const matches = await lookupIdentities(this.idm, this.evidence, this.missing, {
       resource,
-      { _queryFilter: `${attribute} eq ${JSON.stringify(lookup)}` },
-    ]);
-    if (result.status >= 400)
-      this.missing(`identity lookup error: ${result.status}`);
-    if (!isDocument(result.body) || !Array.isArray(result.body.result))
-      this.missing("identity lookup result shape");
-    if (result.body.result.length > 1)
+      attribute,
+      value: lookup,
+      journey: true,
+    });
+    if (matches.length > 1)
       this.missing("identity lookup matched multiple records");
-    const first = result.body.result[0];
-    return isDocument(first) ? first : undefined;
+    return matches[0];
   }
   async run(
     type: string,
@@ -276,6 +256,7 @@ export class JourneyNodes {
     defaultResource: string,
     id: string,
     cookies?: Readonly<Record<string, string>>,
+    acceptLanguage = false,
   ): Promise<NodeResult> {
     if (EXTRA_TYPES.includes(type))
       return this.extra.run(
@@ -287,6 +268,7 @@ export class JourneyNodes {
         submitted,
         defaultResource,
         cookies,
+        acceptLanguage,
       );
     const done = (outcome: string): NodeResult => ({ outcome, callbacks: [] });
     if (
@@ -337,6 +319,10 @@ export class JourneyNodes {
       const answer = submitted[0].value;
       // Measured 2026-11-25: an empty answer re-sends the callback (alone or in a Page),
       // writing nothing; a whitespace-only answer is accepted. ValidatedPasswordNode is unmeasured.
+      if (answer === "" && type === "ValidatedPasswordNode")
+        this.evidence.assumed(
+          "ValidatedPasswordNode with validateInput false accepts an empty answer; its empty-answer behaviour is unmeasured",
+        );
       if (answer === "" && type !== "ValidatedPasswordNode") {
         this.evidence.measured(
           "UsernameCollectorNode and PasswordCollectorNode re-send their callback on an empty answer and write nothing",
@@ -402,7 +388,8 @@ export class JourneyNodes {
       if (!schema) this.missing(`AttributeCollectorNode schema: ${resource}`);
       const attrs: Document = {},
         callbacks: CallbackEffect[] = [];
-      let invalid = false;
+      let invalid = false,
+        blankRetry = false;
       if (
         submitted.length &&
         submitted.length !== config.attributesToCollect.length
@@ -436,7 +423,7 @@ export class JourneyNodes {
           );
         if (path.length > 1 && !isBoolean)
           this.evidence.assumed(
-            "AttributeCollectorNode treats a slash-path string attribute like a flat one; the path walk and nested storage were measured with a boolean property",
+            "AttributeCollectorNode stores a slash-path string attribute nested, as it does a boolean one; the path walk and nested storage were measured with a boolean property only",
           );
         const cb = submitted[index];
         const wireType = isBoolean
@@ -507,13 +494,15 @@ export class JourneyNodes {
                 policy.requirements.includes("REQUIRED")
               )
                 failedPolicies.push('{ "policyRequirement": "REQUIRED" }');
-            } else if (
-              policy.requirements.includes("VALID_EMAIL_ADDRESS_FORMAT") &&
-              !looksLikeEmail(String(answer))
-            )
-              failedPolicies.push(
-                '{ "policyRequirement": "VALID_EMAIL_ADDRESS_FORMAT" }',
+            } else if (policy.requirements.includes("VALID_EMAIL_ADDRESS_FORMAT")) {
+              this.evidence.assumed(
+                "AttributeCollectorNode's VALID_EMAIL_ADDRESS_FORMAT test is a guess (local@domain.tld); only \"not-an-email\" failing and an ordinary address passing were measured",
               );
+              if (!looksLikeEmail(String(answer)))
+                failedPolicies.push(
+                  '{ "policyRequirement": "VALID_EMAIL_ADDRESS_FORMAT" }',
+                );
+            }
           }
           if (cb?.validateOnly === true && !failedPolicies.length)
             this.missing(
@@ -522,8 +511,10 @@ export class JourneyNodes {
           if (failedPolicies.length) invalid = true;
         }
         setNested(attrs, path, answer);
-        if (config.required === true && answer === "") invalid = true;
-        else if (cb && answer === "")
+        if (config.required === true && answer === "") {
+          invalid = true;
+          if (cb) blankRetry = true;
+        } else if (cb && answer === "")
           this.evidence.measured(
             "AttributeCollectorNode writes a blank non-required answer as the empty string",
             "docs/api/25-journey-runtime.md (Attribute Collector, a non-required attribute left blank, 2026-11-04)",
@@ -544,12 +535,14 @@ export class JourneyNodes {
           "AttributeCollectorNode validateInputs true sends the attribute's policies, retries a failing page with the answers kept and failedPolicies as JSON text, and a validate-only submission is sent again with validateOnly true",
           VALIDATE_SOURCE,
         );
-      this.evidence.measured(
-        "AttributeCollectorNode callback fields, shared objectAttributes and required-empty retry with empty failedPolicies",
-        SOURCE,
-      );
+      this.evidence.measured("AttributeCollectorNode callback fields and shared objectAttributes", SOURCE);
+      // Only a submitted blank required answer is the measured blank retry; a policy failure is not.
+      if (blankRetry)
+        this.evidence.measured(
+          "AttributeCollectorNode required-empty retry with empty failedPolicies",
+          SOURCE,
+        );
       if (!submitted.length || invalid) return { outcome: null, callbacks };
-      const previous = this.sharedAttributes(shared, type);
       // Measured: the collected keys come out in alphabetical order whatever the collection order.
       const ordered: Document = {};
       for (const key of Object.keys(attrs).sort())
@@ -558,10 +551,10 @@ export class JourneyNodes {
         "AttributeCollectorNode stores a slash path as nested objectAttributes and orders the collected top-level keys alphabetically",
         "docs/api/25-journey-runtime.md (Attribute Collector slash paths, 2026-11-25)",
       );
-      setOwn(shared, "objectAttributes", { ...previous, ...ordered });
-      this.evidence.assumed(
-        "AttributeCollectorNode merges collected attributes into existing shared objectAttributes",
-      );
+      if (mergeSharedAttributes(shared, ordered, type, this.missing))
+        this.evidence.assumed(
+          "AttributeCollectorNode merges collected attributes into existing shared objectAttributes",
+        );
       return done("outcome");
     }
     const attrs = this.attributes(shared, transient);
@@ -674,6 +667,10 @@ export class JourneyNodes {
         this.missing(`${type} conflicting identity sources`);
       if (objectValue === null || username === null)
         this.missing(`${type} null identity source`);
+      if (username !== undefined && Object.hasOwn(transient, "username"))
+        this.evidence.assumed(
+          "PatchObjectNode reads a transient username before the shared one; only Identify Existing User's source was measured",
+        );
       lookup = objectValue ?? username;
     }
     if (lookup === undefined) {
@@ -698,10 +695,11 @@ export class JourneyNodes {
       const identifier = own(match, key) as string;
       setOwn(shared, "_id", match._id);
       setOwn(shared, "username", identifier);
-      setOwn(shared, "objectAttributes", {
-        ...this.sharedAttributes(shared, type),
-        [key]: identifier,
-      });
+      if (mergeSharedAttributes(shared, { [key]: identifier }, type, this.missing))
+        this.evidence.measured(
+          "IdentifyExistingUserNode adds the identifier to existing shared objectAttributes and rewrites no other key",
+          "docs/api/25-journey-runtime.md (split objectAttributes, 2026-11-25)",
+        );
       return done("true");
     }
     this.evidence.measured(
@@ -712,10 +710,7 @@ export class JourneyNodes {
       return {
         outcome: null,
         callbacks: [],
-        abort: {
-          status: 401,
-          body: { code: 401, reason: "Unauthorized", message: "Login failure" },
-        },
+        abort: loginFailure(),
       };
     if (!attrs) this.missing("PatchObjectNode missing objectAttributes");
     // Doc 25 (2026-11-25): a field named in ignoredFields ("sn" or "/sn", matched exactly and

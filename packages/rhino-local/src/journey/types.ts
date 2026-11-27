@@ -55,9 +55,11 @@ export type AuthenticateRequest = {
   readonly headers?: Readonly<Record<string, string[]>>;
   readonly cookies?: Readonly<Record<string, string>>;
   /**
-   * Only the log records read these four. `url` is the full URL as the caller sent it, and is
-   * what `http.request.path` carries; `transactionId` stands for the `x-forgerock-transactionid`
-   * header; this field wins over the header.
+   * The log records read these four, and `url` has one more reader. `url` is the URL as the
+   * caller sent it: `http.request.path` carries it, and its host is the persistent cookie's
+   * `Domain`, ahead of `JourneyOptions.origin` (`journeyHttp` passes it without the query).
+   * `transactionId` stands for the `x-forgerock-transactionid` header; this field wins over the
+   * header.
    */
   readonly url?: string;
   readonly clientIp?: string;
@@ -74,6 +76,11 @@ export type SetCookie = {
   readonly secure: boolean;
   readonly httpOnly: boolean;
   readonly sameSite: "lax" | "strict" | "none";
+  /**
+   * The tenant's host, which the engine sets as the persistent cookie's `Domain` (doc 25 measured
+   * "the tenant Domain"): the host of the request `url`, else of `JourneyOptions.origin`.
+   */
+  readonly domain?: string;
 };
 /** What a node asks of the session AM creates on success. */
 export type SessionDelta = {

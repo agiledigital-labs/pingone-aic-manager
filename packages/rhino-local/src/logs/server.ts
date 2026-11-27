@@ -70,6 +70,7 @@ const REASONS: Record<number, string> = {
   405: "Method Not Allowed",
   429: "Too Many Requests",
   500: "Internal Server Error",
+  501: "Not Implemented",
   502: "Bad Gateway",
   503: "Service Unavailable",
 };
@@ -85,7 +86,7 @@ function encodeCookie(query: CookieQuery, snapshot: Snapshot): string {
   if (snapshot.after === null) throw new Error("a cookie names a position");
   return Buffer.from(
     JSON.stringify({
-      v: 1,
+      v: 2,
       q: query,
       e: snapshot.effectiveEndNs.toString(),
       h: snapshot.highSeq.toString(),
@@ -95,9 +96,83 @@ function encodeCookie(query: CookieQuery, snapshot: Snapshot): string {
   ).toString("base64url");
 }
 
-type CookieQuery = { sources: string; begin: string; end: string; tx: string | null };
+/**
+ * What a cookie belongs to. `beginGiven`/`endGiven` are the caller's explicit bounds (null when
+ * omitted), which a continuation must repeat; `begin`/`end` are the window the first page resolved,
+ * which a continuation reuses rather than re-resolving, so implicit bounds do not move with the
+ * clock between pages (the emulator's own snapshot paging contract; tenant behaviour unmeasured).
+ */
+type CookieQuery = {
+  sources: string;
+  beginGiven: string | null;
+  endGiven: string | null;
+  begin: string;
+  end: string;
+  tx: string | null;
+  eq: string | null;
+};
+/** The query parameters the tenant was seen to honour (docs/api/08-logs.md, "Query params"). */
+const KNOWN_PARAMS = [
+  "source",
+  "beginTime",
+  "endTime",
+  "transactionId",
+  "_queryFilter",
+  "_pageSize",
+  "_pagedResultsCookie",
+];
+/** A CREST string literal, read the way JSON reads one; undefined when it is not one. */
+function literal(text: string | undefined): string | undefined {
+  if (text === undefined) return undefined;
+  try {
+    const value: unknown = JSON.parse(text);
+    return typeof value === "string" ? value : undefined;
+  } catch {
+    return undefined;
+  }
+}
+const STRING = '("(?:[^"\\\\]|\\\\.)*")';
+/** The one `_queryFilter` the tenant was seen to honour. */
+const TX_FILTER = new RegExp(`^payload/transactionId eq ${STRING}$`);
+/**
+ * The filters doc 08 measured failing (2026-08-12, `am-core`, 20 s and 6 h windows alike):
+ * `payload/logger eq "…"` and `payload/message co "…"` answer `500 Internal server error`. Only
+ * the status is recorded; the body here is the emulator's CREST-style one. Measured standalone and
+ * well formed, so a literal JSON cannot read, or either one beside a `transactionId`, is the 501.
+ */
+const MEASURED_500 = [
+  new RegExp(`^payload/logger eq ${STRING}$`),
+  new RegExp(`^payload/message co ${STRING}$`),
+];
+/**
+ * The id a `_queryFilter` selects. doc 08 records `payload/transactionId eq "…"` working, and the
+ * two `MEASURED_500` forms on `am-core` failing 500, which this answers too. Which other filters
+ * fail is unrecorded, so every other filter, and those two on any other source, is refused as the
+ * emulator's own 501, never answered unfiltered. Exact match is CREST `eq`; that the tenant does
+ * not prefix-match here, as it does for the `transactionId` parameter, is unmeasured.
+ */
+function filteredTransaction(filter: string, sources: readonly string[]): string {
+  const measured500 = MEASURED_500.map((r) => r.exec(filter)).find((m) => m !== null);
+  if (
+    measured500 &&
+    literal(measured500[1]) !== undefined &&
+    sources.length === 1 &&
+    sources[0] === "am-core"
+  )
+    throw new HttpError(500, "Internal server error");
+  const id = literal(TX_FILTER.exec(filter)?.[1]);
+  if (id === undefined)
+    throw new HttpError(
+      501,
+      `Not modelled by the emulator: _queryFilter ${filter} (only payload/transactionId eq "<id>" is)`,
+    );
+  return id;
+}
 
-function decodeCookie(cookie: string, expected: CookieQuery): Snapshot {
+function decodeCookie(
+  cookie: string,
+  expected: Omit<CookieQuery, "begin" | "end">,
+): { snapshot: Snapshot; beginNs: bigint; endNs: bigint } {
   const bad = new HttpError(400, "Invalid _pagedResultsCookie");
   let value: unknown;
   try {
@@ -109,20 +184,25 @@ function decodeCookie(cookie: string, expected: CookieQuery): Snapshot {
   const v = value as Record<string, unknown>;
   const q = v["q"] as Partial<CookieQuery> | undefined;
   if (
-    v["v"] !== 1 ||
+    v["v"] !== 2 ||
     q === undefined ||
     q.sources !== expected.sources ||
-    q.begin !== expected.begin ||
-    q.end !== expected.end ||
-    q.tx !== expected.tx
+    q.beginGiven !== expected.beginGiven ||
+    q.endGiven !== expected.endGiven ||
+    q.tx !== expected.tx ||
+    (q.eq ?? null) !== expected.eq
   ) {
     throw new HttpError(400, "_pagedResultsCookie does not belong to this query");
   }
   try {
     return {
-      effectiveEndNs: BigInt(v["e"] as string),
-      highSeq: BigInt(v["h"] as string),
-      after: { ts: BigInt(v["t"] as string), seq: BigInt(v["s"] as string) },
+      snapshot: {
+        effectiveEndNs: BigInt(v["e"] as string),
+        highSeq: BigInt(v["h"] as string),
+        after: { ts: BigInt(v["t"] as string), seq: BigInt(v["s"] as string) },
+      },
+      beginNs: BigInt(q.begin as string),
+      endNs: BigInt(q.end as string),
     };
   } catch {
     throw bad;
@@ -189,6 +269,20 @@ export async function startLogsServer(options: LogsServerOptions): Promise<LogsS
       throw new HttpError(401, "Unauthorized");
     }
     const param = (name: string): string | undefined => url.searchParams.get(name) ?? undefined;
+    const unknownParams = [...new Set(url.searchParams.keys())].filter(
+      (name) => !KNOWN_PARAMS.includes(name),
+    );
+    if (unknownParams.length > 0) {
+      throw new HttpError(501, `Not modelled by the emulator: query parameter ${unknownParams.join(", ")}`);
+    }
+    // What the tenant does with a parameter given twice is unmeasured, and reading only the first
+    // would answer a query nobody asked: refuse.
+    const repeated = [...new Set(url.searchParams.keys())].filter(
+      (name) => url.searchParams.getAll(name).length > 1,
+    );
+    if (repeated.length > 0) {
+      throw new HttpError(501, `Not modelled by the emulator: query parameter given more than once: ${repeated.join(", ")}`);
+    }
 
     const sourceParam = param("source");
     if (sourceParam === undefined || sourceParam === "") {
@@ -239,9 +333,11 @@ export async function startLogsServer(options: LogsServerOptions): Promise<LogsS
         throw new HttpError(400, `${name} must be an RFC 3339 timestamp`);
       }
     };
+    const endGiven = endText === undefined ? null : parse("endTime", endText);
+    const beginGiven = beginText === undefined ? null : parse("beginTime", beginText);
     // Unrecorded on the tenant: with neither bound, serve the last hour up to now.
-    const endNs = endText === undefined ? clock.nowNs() : parse("endTime", endText);
-    const beginNs = beginText === undefined ? endNs - 3600n * 1_000_000_000n : parse("beginTime", beginText);
+    let endNs = endGiven ?? clock.nowNs();
+    let beginNs = beginGiven ?? endNs - 3600n * 1_000_000_000n;
     if (endNs - beginNs > DAY_NS) {
       const days = (Number(endNs - beginNs) / Number(DAY_NS)).toFixed(2);
       throw new HttpError(
@@ -251,18 +347,31 @@ export async function startLogsServer(options: LogsServerOptions): Promise<LogsS
     }
 
     const transactionId = param("transactionId");
-    const cookieQuery: CookieQuery = {
+    const filterText = param("_queryFilter");
+    // Before the filter is read, so the unmodelled combination is never answered as a measured 500.
+    if (filterText !== undefined && transactionId !== undefined) {
+      throw new HttpError(501, "Not modelled by the emulator: transactionId together with _queryFilter");
+    }
+    const equals = filterText === undefined ? undefined : filteredTransaction(filterText, requested);
+    const asked = {
       sources: [...sources].sort().join(","),
-      begin: beginNs.toString(),
-      end: endNs.toString(),
+      beginGiven: beginGiven === null ? null : beginGiven.toString(),
+      endGiven: endGiven === null ? null : endGiven.toString(),
       tx: transactionId ?? null,
+      eq: equals ?? null,
     };
-    const snapshot = cookie === null ? undefined : decodeCookie(cookie, cookieQuery);
+    let snapshot: Snapshot | undefined;
+    if (cookie !== null) {
+      // A continuation pages the window its first page resolved, whatever the clock says now.
+      ({ snapshot, beginNs, endNs } = decodeCookie(cookie, asked));
+    }
+    const cookieQuery: CookieQuery = { ...asked, begin: beginNs.toString(), end: endNs.toString() };
     const page = store.page({
       sources,
       beginNs,
       endNs,
       transactionIdPrefix: transactionId,
+      transactionIdEquals: equals,
       pageSize,
       snapshot,
     });

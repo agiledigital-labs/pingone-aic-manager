@@ -1,7 +1,7 @@
 /** Journey-specific overlay over the existing AM binding runtime. Host work uses the runner bridge. */
 import { readFileSync } from "node:fs";
 import { casePreamble, type CasePreamble } from "../bindings/preamble.ts";
-import { generatedJsPath } from "../paths.ts";
+import { bindingsJsonPath, generatedJsPath } from "../paths.ts";
 import type { Given, CallbackEffect } from "../case/types.ts";
 import type { Document } from "../idm/types.ts";
 
@@ -27,6 +27,13 @@ export type ScriptState = {
   libraries?: Record<string, string>;
   /** The environment's ESVs, as `systemEnv.getProperty` reads them. */
   esv?: Record<string, string | null>;
+  /**
+   * A custom (node designer) node's script: it sees only the bindings doc 25 measured there
+   * (`properties`, `nodeState.get` / `putShared`, `systemEnv.getProperty` and the assigned
+   * `outcome`); reaching any other
+   * one is missing behaviour naming it.
+   */
+  customNode?: boolean;
 };
 
 /*
@@ -58,6 +65,80 @@ const MEASURED_UTILS = [
     (name) => `crypto.subtle.${name}`,
   ),
 ];
+/**
+ * The names a custom node's script must not reach: every next-gen decision binding but the
+ * `CUSTOM_VIEWS` ones, read from the binding list itself, plus the globals the harness adds beside
+ * them.
+ */
+let blockedCache: string[] | undefined;
+export function customBlocked(): string[] {
+  if (blockedCache) return blockedCache;
+  const list = JSON.parse(readFileSync(bindingsJsonPath, "utf8")) as {
+    bindings: { name: string }[];
+  };
+  const names = new Set(list.bindings.map((binding) => binding.name));
+  for (const name of ["existingSession", "require", "sharedState", "transientState"])
+    names.add(name);
+  for (const name of Object.keys(CUSTOM_VIEWS)) names.delete(name);
+  blockedCache = [...names].sort();
+  return blockedCache;
+}
+/**
+ * The bindings a custom node reaches beyond `properties` and `outcome`, and the methods each
+ * offers: `nodeState` `get` and `putShared` (doc 25, custom node types), and `systemEnv`
+ * `getProperty`, which `scripts/experiment-journey-esv-placeholders.sh` calls in a custom node
+ * (doc 25, ESV placeholders in custom node properties). Nothing else of either was measured there.
+ */
+/**
+ * Each allowed method maps to the number of arguments the view forwards, or `null` for all of them.
+ * `get(key)` and `putShared(key, value)` forward exactly those, as the view always has, so a call
+ * with extra arguments (`['realm'].map(nodeState.get)` passes value, index and array) behaves as
+ * before rather than meeting the binding's arity check. `getProperty` forwards what it is given, as
+ * the binding does in a Scripted Decision node; only its one-argument call is measured here, and
+ * its overloads in a custom node are assumed parity with doc 12, and its arity error is the local
+ * Scripted Decision binding's, whose arity basis runtime.cjs marks assumed (doc 25 says so).
+ */
+const CUSTOM_VIEWS: Readonly<Record<string, Readonly<Record<string, number | null>>>> = {
+  nodeState: { get: 1, putShared: 2 },
+  systemEnv: { getProperty: null },
+};
+/**
+ * A custom node's restricted views of those bindings, built in the decision scope where the bridge
+ * is reachable and handed to the custom node's own scope (java/CustomNodeScope.java). Every other
+ * method the binding has is a refusal naming it (`custom node binding: nodeState.<method>`); the
+ * emulated `systemEnv` has no other method, so there an unknown member is simply undefined. The
+ * legacy `nodeState.getShared` and `getTransient` are not among them -- the decision overlay deletes
+ * them first, as doc 25 measured -- so calling one is an ordinary TypeError, a throw like any other.
+ */
+const customNodeViews = `
+(function (host, views) {
+  var global = this, out = {};
+  Object.keys(views).forEach(function (name) {
+    var target = global[name], arity = views[name], view = {};
+    Object.keys(target).forEach(function (key) {
+      if (typeof target[key] === 'function' && !Object.prototype.hasOwnProperty.call(arity, key))
+        view[key] = host('refusal', 'custom node binding: ' + name + '.' + key);
+    });
+    Object.keys(arity).forEach(function (key) {
+      view[key] = function () {
+        // Fixed direct calls, as the view had before: nothing here reaches a prototype method the
+        // script can replace, so a plain read does not depend on the script's Array.prototype.
+        // getProperty's own arities (1..3) go direct too; only a longer call, which the binding
+        // refuses by arity, goes through apply.
+        var n = arity[key] === null ? arguments.length : arity[key], a = arguments;
+        var result = n === 0 ? target[key]()
+          : n === 1 ? target[key](a[0])
+          : n === 2 ? target[key](a[0], a[1])
+          : n === 3 ? target[key](a[0], a[1], a[2])
+          : target[key].apply(target, a);
+        return result === target ? view : result;
+      };
+    });
+    out[name] = view;
+  });
+  __rhinoLocalCustomViews = out;
+})(__rhinoLocalJourneyHost, ${JSON.stringify(CUSTOM_VIEWS)});
+`;
 const overlay = (roots: string[], maps: { shared: boolean; transient: boolean }) => `
 (function (host, roots, measuredUtils, maps) {
   host('install', __rhinoLocal, action);
@@ -178,6 +259,7 @@ export function journeyPreamble(state: ScriptState): CasePreamble {
     ...base,
     preamble:
       base.preamble +
-      overlay(stubRoots(), state.javaMaps ?? { shared: false, transient: false }),
+      overlay(stubRoots(), state.javaMaps ?? { shared: false, transient: false }) +
+      (state.customNode ? customNodeViews : ""),
   };
 }

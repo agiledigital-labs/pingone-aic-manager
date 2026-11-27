@@ -69,6 +69,15 @@ final class AmHostBridge extends BaseFunction {
     return state.fail(new EmulationFailure("protocol", message));
   }
 
+  EmulationFailure protocolFailure(String message) {
+    return protocol(message);
+  }
+
+  /** The refusal a {@code host('refusal', behavior)} function throws, for a Java-side binding. */
+  EmulationFailure refusal(String behavior) {
+    return missing(behavior, "not-mocked/" + behavior);
+  }
+
   private <T extends BaseFunction> T expose(T function) {
     function.setParentScope(top);
     function.setPrototype(ScriptableObject.getFunctionPrototype(top));
@@ -135,7 +144,7 @@ final class AmHostBridge extends BaseFunction {
 
     @Override
     public Object call(Context cx, Scriptable scope, Scriptable thisObj, Object[] args) {
-      throw missing(behavior, "not-mocked/" + behavior);
+      throw refusal(behavior);
     }
   }
 
@@ -1046,6 +1055,20 @@ final class AmHostBridge extends BaseFunction {
    * script exceptions.
    */
   String harvest(Context cx) {
+    return harvest(cx, false, null);
+  }
+
+  /**
+   * A custom node's harvest: the same effects, plus {@code customRoute}, the route
+   * {@link CustomNodeScope#route} decided, which the engine takes. No
+   * {@code auditEntryDetail} is read: AM's audit rule was measured for Scripted Decision only, and
+   * the custom script's variables live in a scope this bridge never sees.
+   */
+  String harvestCustom(Context cx, String route) {
+    return harvest(cx, true, route);
+  }
+
+  private String harvest(Context cx, boolean custom, String customRoute) {
     if (top == null) throw protocol("journey bridge used before install");
     Object queued = ScriptableObject.getProperty(runtime, "callbacks");
     if (!(queued instanceof NativeArray)) throw missing("journey callbacks container");
@@ -1096,6 +1119,10 @@ final class AmHostBridge extends BaseFunction {
     // AM reads the top-level variable `auditEntryDetail` after the node evaluates (measured
     // 2026-11-25, docs/api/25-journey-runtime.md). Absent, undefined and null mean no entry; a
     // string or a map is kept; anything else (an array, a number, a boolean) fails the tree.
+    if (custom) {
+      out.append(",\"customRoute\":").append(Json.quote(customRoute));
+      return out.append('}').toString();
+    }
     Object audit = ScriptableObject.getProperty(top, "auditEntryDetail");
     if (audit == Scriptable.NOT_FOUND || audit == Undefined.instance || audit == null) {
       // no entry
@@ -1108,7 +1135,10 @@ final class AmHostBridge extends BaseFunction {
           .append(new Encoder(cx, "auditEntryDetail value: ", "").write(audit, "").text())
           .append('}');
     } else {
-      out.append(",\"auditEntryDetail\":{\"invalid\":true}");
+      // Only a top-level array was measured rejected; the engine labels the other kinds assumed.
+      out.append(",\"auditEntryDetail\":{\"invalid\":")
+          .append(audit instanceof NativeArray ? "\"array\"" : "\"other\"")
+          .append('}');
     }
     return out.append('}').toString();
   }

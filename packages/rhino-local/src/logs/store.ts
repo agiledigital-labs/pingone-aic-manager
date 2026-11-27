@@ -52,6 +52,8 @@ export type Query = {
   /** Inclusive. */
   readonly endNs: bigint;
   readonly transactionIdPrefix?: string | undefined;
+  /** `_queryFilter=payload/transactionId eq "<id>"`: the whole id, not a prefix. */
+  readonly transactionIdEquals?: string | undefined;
   readonly pageSize: number;
   /** Absent on the first page. */
   readonly snapshot?: Snapshot | undefined;
@@ -157,6 +159,9 @@ export class LogStore implements LogSink {
     const heads = query.sources.flatMap((source) => {
       const entries = this.#bySource.get(source);
       if (entries === undefined) return [];
+      // Retention is lazy, so a source nobody writes to is pruned here too: otherwise an idle
+      // source serves records past retention to fresh queries and cookie continuations alike.
+      this.#prune(entries);
       const from =
         snapshot.after === null
           ? upperBoundTs(entries, query.beginNs)
@@ -165,6 +170,7 @@ export class LogStore implements LogSink {
     });
     const out: Entry[] = [];
     const prefix = query.transactionIdPrefix;
+    const equals = query.transactionIdEquals;
     let more = false;
     for (;;) {
       let best: (typeof heads)[number] | undefined;
@@ -177,8 +183,13 @@ export class LogStore implements LogSink {
             head.index = head.entries.length;
             break;
           }
-          const tx = prefix === undefined ? undefined : transactionIdOf(e.record);
-          if (e.seq > snapshot.highSeq || (prefix !== undefined && !(tx?.startsWith(prefix) ?? false))) {
+          const tx =
+            prefix === undefined && equals === undefined ? undefined : transactionIdOf(e.record);
+          if (
+            e.seq > snapshot.highSeq ||
+            (prefix !== undefined && !(tx?.startsWith(prefix) ?? false)) ||
+            (equals !== undefined && tx !== equals)
+          ) {
             head.index++;
             continue;
           }

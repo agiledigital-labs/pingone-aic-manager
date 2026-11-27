@@ -1,6 +1,6 @@
 /** Shared fixtures for the demo driver tests: a tiny generic tree and a recording sink. */
 import { IdmConfig, IdmEmulator } from "../../src/idm/index.ts";
-import { JourneyConfig, JourneyEmulator, type JourneyOptions } from "../../src/journey/index.ts";
+import { JourneyConfig, JourneyEmulator, type JourneyConfigInput, type JourneyOptions } from "../../src/journey/index.ts";
 import { SUCCESS_NODE_ID, FAILURE_NODE_ID } from "../../src/aic/constants.ts";
 import { Driver, manualPacer, type Report } from "../../src/demo/driver.ts";
 import { parseMix, type Mix } from "../../src/demo/mix.ts";
@@ -22,7 +22,11 @@ const script = (source: string) => ({
 
 /** `login` asks for a name, then routes on it; `check` is a second decision after it. */
 export function config(): JourneyConfig {
-  return new JourneyConfig({
+  return new JourneyConfig(configInput());
+}
+/** `config()`'s input, as a journeys file holds it. */
+export function configInput(): JourneyConfigInput {
+  return {
     realm: "alpha",
     trees: {
       "tree-a": {
@@ -45,7 +49,7 @@ export function config(): JourneyConfig {
       ),
       pass: script("action.goTo('true');"),
     },
-  });
+  };
 }
 
 export function makeEngineFor(runner: RhinoRunner, cfg: JourneyConfig): (options: JourneyOptions) => JourneyEmulator {
@@ -116,10 +120,11 @@ export type RunOptions = {
   start?: bigint;
   concurrency?: number;
   scale?: number;
+  config?: JourneyConfig;
 };
 
 export async function runDriver(runner: RhinoRunner, o: RunOptions = {}): Promise<{ records: LogRecord[]; report: Report; start: bigint; end: bigint }> {
-  const cfg = config();
+  const cfg = o.config ?? config();
   const sink = new Recording();
   const start = o.start ?? T0;
   const end = start + (o.duration ?? HOUR);

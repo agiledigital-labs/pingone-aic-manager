@@ -62,6 +62,12 @@ const REASONS: Readonly<Record<number, string>> = {
   500: "Internal Server Error",
 };
 
+/** The tenant the records and cookies name when the caller gives no `origin`. */
+export const DEFAULT_ORIGIN = "https://tenant.example.com";
+
+/** The script logger's levels; any other is an emulator fault, refused rather than dropped. */
+export const SCRIPT_LOG_LEVELS: readonly string[] = ["trace", "debug", "info", "warn", "error"];
+
 /** What the engine knows about a script that threw. */
 export type ScriptThrow = {
   readonly scriptName: string;
@@ -84,7 +90,7 @@ export class JourneyLogs {
   constructor(options: JourneyLogOptions) {
     this.sink = options.sink;
     this.now = options.now ?? realNow;
-    this.origin = options.origin ?? "https://tenant.example.com";
+    this.origin = options.origin ?? DEFAULT_ORIGIN;
     this.latencyMs = options.latencyMs;
   }
 
@@ -236,8 +242,10 @@ export class RequestLog {
   ): void {
     this.scripts += 1;
     for (const line of lines) {
+      if (!SCRIPT_LOG_LEVELS.includes(line.level))
+        throw new Error(`script logger level not modelled: ${JSON.stringify(line.level)}`);
+      if (line.level === "trace") continue;
       const level = line.level.toUpperCase();
-      if (line.level === "trace" || !["DEBUG", "INFO", "WARN", "ERROR"].includes(level)) continue;
       this.core(
         level,
         `scripts.AUTHENTICATION_TREE_DECISION_NODE.${scriptId}.(${scriptName})`,

@@ -18,13 +18,17 @@ import { SUCCESS_NODE_ID, FAILURE_NODE_ID } from "../aic/constants.ts";
 import { fromWire, toWire, type WireCallback } from "./callbacks.ts";
 import { JourneyNodes, EMULATED, type NodeResult } from "./nodes.ts";
 import { JourneyConfig } from "./config.ts";
-import { journeyPreamble } from "./script.ts";
-import { JourneyLogs, type JourneyLogOptions, type RequestLog } from "./emit.ts";
+import { customBlocked, journeyPreamble } from "./script.ts";
+import { SYSTEM_SESSION_PROPERTIES, localizedText } from "./shared.ts";
+import { DEFAULT_ORIGIN, JourneyLogs, SCRIPT_LOG_LEVELS, type JourneyLogOptions, type RequestLog } from "./emit.ts";
 import {
   EXTRA_OUTCOMES,
   STUB_TYPES,
-  customNodeSource,
+  ESV_PLACEHOLDER,
+  SCRIPT_ERROR_OUTCOME,
+  customNodeProperties,
   customOutcomes,
+  type CustomNodeType,
   extraOutcomes,
 } from "./extra-nodes.ts";
 import type {
@@ -63,6 +67,8 @@ type State = {
   session?: SessionDelta;
   /** Evidence gathered before a round trip; the eventual result depends on it too. */
   provenance?: Provenance[];
+  /** The `_id` the next callback sent in this journey carries (doc 25, callback `_id`). */
+  nextCallbackId?: number;
   /** The journey's log identity (`trackingIds[0]`), kept across every round trip of it. */
   tracking?: string;
 };
@@ -84,7 +90,8 @@ export type JourneyOptions = {
   /**
    * Where the AIC log records of each authenticate request go. Without a sink nothing is
    * emitted and nothing else changes. `origin` and `latencyMs` are the knobs of
-   * src/journey/emit.ts.
+   * src/journey/emit.ts; `origin` is also the host a persistent cookie's `Domain` names when the
+   * request carries no `url`, sink or not.
    */
   logSink?: JourneyLogOptions["sink"];
   /**
@@ -180,7 +187,7 @@ function libraryBodies(config: JourneyConfig): Record<string, string> {
   }
   return out;
 }
-const PLACEHOLDER = /&\{esv\.([^}|]+)(?:\|[^}]*)?\}/g;
+const PLACEHOLDER = new RegExp(ESV_PLACEHOLDER.source, "g");
 /**
  * A node's configuration with its ESV placeholders resolved from the configured ESVs. The tenant
  * wraps some fields as `{"$string": "&{esv.x}"}` / `{"$int": ...}` / `{"$bool": ...}` (docs/api/09-journeys.md): the
@@ -218,14 +225,28 @@ function resolveEsv(
   };
   return walk(config) as NodeDocument;
 }
-/** Session properties AM owns: measured for the first four, listed by SetSessionPropertiesNode's validation for the rest. */
+/** Of the session properties AM owns, the ones a script's putSessionProperty was measured to fail on. */
 const SESSION_OWNED_MEASURED = ["UserId", "AuthLevel", "Service", "Locale"];
-const SESSION_OWNED = [
-  ...SESSION_OWNED_MEASURED,
-  ...["clientType", "FullLoginURL", "Principals", "XUSRef", "amlbcookie", "loginURL", "logoutHooks"],
-  ...["HostName", "UserToken", "IndexType", "webhooks", "UserProfile", "CharSet", "authInstant"],
-  ...["Host", "AMCtxId", "OidcSid", "sun.am.UniversalIdentifier", "Organization", "Principal"],
-];
+/**
+ * Measured: a page whose only child is one of these nodes leaves no pageNodeCallbacks at all
+ * (doc 25, "Nodes as Page children"; the one-time password and choice nodes 2026-11-25).
+ */
+function lonePageChild(nodes: readonly unknown[]): boolean {
+  const only = nodes.length === 1 ? nodes[0] : undefined;
+  return (
+    isDocument(only) &&
+    [
+      "MessageNode",
+      "GetAuthenticatorAppNode",
+      "OneTimePasswordCollectorDecisionNode",
+      "ChoiceCollectorNode",
+    ].includes(String(only.nodeType))
+  );
+}
+/** Whether the request names a language, which makes a choice between locales unmeasured. */
+function acceptsLanguage(request: AuthenticateRequest): boolean {
+  return Object.keys(request.headers ?? {}).some((h) => h.toLowerCase() === "accept-language");
+}
 function mergeSession(before: SessionDelta | undefined, next: SessionDelta): SessionDelta {
   return {
     ...before,
@@ -235,6 +256,33 @@ function mergeSession(before: SessionDelta | undefined, next: SessionDelta): Ses
       : {}),
   };
 }
+const PAGE_CHILDREN_SOURCE = "docs/api/25-journey-runtime.md (Page header, no-callback pages and extra children, 2026-11-25)";
+const OTP_PAGE_SOURCE =
+  "docs/api/25-journey-runtime.md (One Time Password Collector Decision and Choice Collector as Page children, 2026-11-25)";
+/**
+ * What doc 25 measured about a Page re-sent for each kind of rejecting child, keyed by the child's
+ * type, and for an Attribute Collector by its rejection cause too: a blank required value (re-sent
+ * with empty failedPolicies, on a mixed page) differs from a policy failure (non-empty
+ * failedPolicies, measured only on a lone Attribute Collector).
+ */
+const PAGE_RETRY_EVIDENCE: Record<string, { readonly behavior: string; readonly source: string }> = {
+  AttributeCollectorNode: {
+    behavior: "required empty attribute re-sends the whole page with echoed values and empty failedPolicies",
+    source: SOURCE,
+  },
+  AcceptTermsAndConditionsNode: {
+    behavior: "a declined terms child re-sends the whole page with the collector's input echoed",
+    source: PAGE_CHILDREN_SOURCE,
+  },
+  OneTimePasswordCollectorDecisionNode: {
+    behavior: "an empty one-time password answer sends the same page again, with no outcome",
+    source: OTP_PAGE_SOURCE,
+  },
+};
+/** The rejection key for an Attribute Collector whose re-sent callbacks carry a failed policy. */
+const ATTRIBUTE_POLICY_FAILURE = "AttributeCollectorNode policy failure";
+const ECHO_MEASURED_WITH = new Set(["AttributeCollectorNode", "AcceptTermsAndConditionsNode"]);
+
 export class JourneyEmulator {
   readonly config: JourneyConfig;
   readonly idm: IdmEmulator;
@@ -599,7 +647,17 @@ export class JourneyEmulator {
                     ? { maxSessionTime: session.maxSessionTime }
                     : {}),
                 },
-                ...(session.cookie ? { cookies: [session.cookie] } : {}),
+                ...(session.cookie
+                  ? {
+                      cookies: [
+                        {
+                          ...session.cookie,
+                          domain: new URL(request.url ?? this.options.origin ?? DEFAULT_ORIGIN)
+                            .hostname,
+                        },
+                      ],
+                    }
+                  : {}),
               }
             : {}),
         };
@@ -640,7 +698,12 @@ export class JourneyEmulator {
         this.evidence.assumed(
           "basic callback wire envelopes reuse binding effect fields; input defaults use empty strings except HiddenValue id and TextInput defaultText",
         );
+        if (result.audit !== undefined)
+          this.evidence.assumed(
+            "an auditEntryDetail assigned by a script that queues callbacks is dropped, the node not having completed; unmeasured",
+          );
         const callbacks = toWire(result.callbacks, (name) => this.missing(name));
+        this.numberCallbacks(state, callbacks, result.pageChildren);
         state.pending = callbacks;
         return {
           status: 200,
@@ -701,6 +764,7 @@ export class JourneyEmulator {
     request: AuthenticateRequest,
     log?: RequestLog,
     synthetic?: ScriptDocument,
+    custom?: { def: CustomNodeType; properties: Record<string, JsonValue> },
   ): Promise<NodeResult> {
     const currentTree = this.tree(frame.tree),
       inner = state.frames.length > 1;
@@ -751,6 +815,15 @@ export class JourneyEmulator {
         timeoutMs: this.options.timeoutMs ?? 10000,
         source: Buffer.from(script.script, "base64").toString("utf8"),
         sourceName: script.name ?? config.script ?? "script",
+        // A custom node's script runs unmodified in its own scope (java/CustomNodeScope.java).
+        ...(custom
+          ? {
+              customProperties: JSON.stringify(custom.properties),
+              customBlocked: customBlocked(),
+              customOutcomes: [...custom.def.outcomes],
+              ...(custom.def.errorOutcome === true ? { customErrorRoute: SCRIPT_ERROR_OUTCOME } : {}),
+            }
+          : {}),
         classAllowList: decisionNodeClassAllowList(),
         ...journeyPreamble({
           shared: state.shared,
@@ -770,6 +843,7 @@ export class JourneyEmulator {
           },
           libraries: this.libraries,
           esv: { ...this.options.esv },
+          ...(synthetic ? { customNode: true } : {}),
           ...(request.headers ? { headers: { ...request.headers } } : {}),
           ...(request.cookies ? { cookies: { ...request.cookies } } : {}),
           parameters: Object.fromEntries(
@@ -788,7 +862,19 @@ export class JourneyEmulator {
     if (fatal) throw new EmulationFailure(fatal);
     if (response.outcome === "compile_error") this.missing("journey script compilation failure");
     const scriptName = script.name ?? config.script ?? "script";
+    for (const line of response.logs ?? [])
+      if (!SCRIPT_LOG_LEVELS.includes(line.level))
+        this.missing(`script logger level: ${line.level}`);
     log?.scriptLines(response.logs ?? [], String(config.script ?? "script"), scriptName);
+    // A custom node's route is decided in the runner before it harvests (CustomNodeScope.route): a
+    // throw carries a harvest only when its type routes it (Script Error), keeping what the script
+    // wrote before the throw (doc 25).
+    if (custom && response.outcome === "runtime_error" && typeof response.value === "string") {
+      const result = JSON.parse(response.value) as Harvest;
+      if (typeof result.customRoute !== "string") this.missing("custom node thrown harvest without a route");
+      this.applyEffects(result, state, frame);
+      return { outcome: result.customRoute, callbacks: [] };
+    }
     if (response.outcome !== "ok") {
       if (inner) this.missing("inner tree script exception");
       this.measured("thrown scripted decision error returns 401 Login failure");
@@ -807,22 +893,32 @@ export class JourneyEmulator {
     }
     // The runner's bridge serializes the harvest in Java and fails it as an emulation failure.
     if (typeof response.value !== "string") this.missing("journey harvest serialization");
-    const result = JSON.parse(response.value) as {
-      effects: {
-        sharedState: { final: Document };
-        transientState: { final: Document };
-        sessionProperties: Record<string, string>;
-        callbacks: CallbackEffect[];
-        outcome: string | null;
-        javaMapObjectAttributes: { shared: boolean; transient: boolean };
-      };
-      errorMessage: string | null;
-      auditEntryDetail?: { value?: JsonValue; invalid?: true };
-    };
+    const result = JSON.parse(response.value) as Harvest;
+    if (custom) {
+      // With a route the runner harvested; without one it serialized nothing, and nothing applies.
+      if (typeof result.customRoute === "string") {
+        this.applyEffects(result, state, frame);
+        return { outcome: result.customRoute, callbacks: [] };
+      }
+      // An outcome the type does not list, with no error outcome: fails like a throw (assumed above).
+      if (inner) this.missing("inner tree script exception");
+      if (log)
+        log.treeFailed(
+          state.frames[0]?.tree ?? frame.tree,
+          state.shared.authLevel,
+          log.scriptThrew({ scriptName, thrown: "custom node outcome", line: 1, column: 0 }),
+        );
+      return { outcome: null, callbacks: [], abort: this.error(401, "Login failure") };
+    }
     // AM fails the tree on an `auditEntryDetail` that is not a string or a map, and writes no node
     // record for it (measured 2026-11-25, docs/api/25-journey-runtime.md).
     if (result.auditEntryDetail?.invalid) {
-      this.measured("an auditEntryDetail that is not a string or a map fails the tree with 401");
+      if (result.auditEntryDetail.invalid === "array")
+        this.measured("an auditEntryDetail that is a top-level array fails the tree with 401");
+      else
+        this.evidence.assumed(
+          "an auditEntryDetail that is neither a string, a map nor an array (a number, a boolean, a Java Map) fails the tree with 401 like the measured array; only the array was measured",
+        );
       if (inner) this.missing("inner tree script exception");
       if (log)
         log.treeFailed(
@@ -841,10 +937,7 @@ export class JourneyEmulator {
       if (inner) this.missing("inner tree script exception");
       return { outcome: null, callbacks: [], abort: sessionAbort };
     }
-    state.shared = result.effects.sharedState.final;
-    frame.transient = result.effects.transientState.final;
-    state.javaMap = result.effects.javaMapObjectAttributes.shared;
-    frame.javaMap = result.effects.javaMapObjectAttributes.transient;
+    this.applyEffects(result, state, frame);
     if (result.errorMessage !== null) state.errorMessage = result.errorMessage;
     return {
       outcome: result.effects.outcome,
@@ -853,6 +946,13 @@ export class JourneyEmulator {
         ? {}
         : { audit: result.auditEntryDetail.value }),
     };
+  }
+  /** A script's state effects: shared and transient state, and which objectAttributes are Java maps. */
+  private applyEffects(result: Harvest, state: State, frame: Frame): void {
+    state.shared = result.effects.sharedState.final;
+    frame.transient = result.effects.transientState.final;
+    state.javaMap = result.effects.javaMapObjectAttributes.shared;
+    frame.javaMap = result.effects.javaMapObjectAttributes.transient;
   }
   /**
    * What a script's `putSessionProperty` / `removeSessionProperty` leave on the session the
@@ -878,7 +978,7 @@ export class JourneyEmulator {
         );
         return this.error(401, "Login failure");
       }
-      if (SESSION_OWNED.includes(key))
+      if (SYSTEM_SESSION_PROPERTIES.includes(key))
         this.missing(`putSessionProperty of a property AM owns: ${key}`);
       next[key] = value;
     }
@@ -910,21 +1010,30 @@ export class JourneyEmulator {
       const def = this.config.customNodeTypes[type];
       if (!def) this.missing(`custom node type: ${type}`);
       const resolved = resolveEsv(config, this.options.esv ?? {}, (name) => this.missing(name));
-      const built = customNodeSource(def, resolved, (name) => this.missing(name));
+      const built = customNodeProperties(def, resolved, (name) => this.missing(name));
       this.evidence.measured(
-        "a custom node runs its type's script with the instance's properties bound; a throw, or an outcome the type does not list, takes Script Error when the type has an error outcome, else fails the journey with 401 Login failure; a missing required property fails it with 401",
+        "a custom node runs its type's script with the instance's properties bound; a throw, an outcome the type does not list or an unset outcome takes Script Error when the type has an error outcome; without one a throw fails the journey with 401 Login failure; a missing required property fails it with 401; an outputs list does not restrict its writes",
         "docs/api/25-journey-runtime.md (custom node types, 2026-11-25)",
       );
       this.evidence.assumed(
-        "a custom node's outputs list does not restrict its writes and an undeclared outcome without an error outcome fails like a throw; unmeasured",
+        "a custom node's unlisted or unset outcome without an error outcome fails the journey with 401 like a throw; unmeasured",
       );
       if ("abort" in built)
         return { outcome: null, callbacks: [], abort: this.error(401, "Login failure") };
-      return this.scripted({ script: type }, state, frame, submitted, request, log, {
-        script: Buffer.from(built.source).toString("base64"),
-        evaluatorVersion: "2.0",
-        name: typeof def.displayName === "string" ? def.displayName : type,
-      });
+      return this.scripted(
+        { script: type },
+        state,
+        frame,
+        submitted,
+        request,
+        log,
+        {
+          script: Buffer.from(def.script).toString("base64"),
+          evaluatorVersion: "2.0",
+          name: typeof def.displayName === "string" ? def.displayName : type,
+        },
+        { def, properties: built.properties },
+      );
     }
     if (EMULATED.includes(type)) {
       const resolved = resolveEsv(config, this.options.esv ?? {}, (name) => this.missing(name));
@@ -938,6 +1047,7 @@ export class JourneyEmulator {
         this.tree(frame.tree).identityResource ?? `managed/${this.config.realm}_user`,
         id,
         request.cookies,
+        acceptsLanguage(request),
       );
       if (result.session) state.session = mergeSession(state.session, result.session);
       // Doc 25 probes: objectAttributes a node writes prints in Java-map form in the next script.
@@ -967,17 +1077,13 @@ export class JourneyEmulator {
     const map = config[field];
     if (map === undefined) return {};
     if (!isDocument(map)) this.missing(`PageNode ${field} shape`);
-    const keys = Object.keys(map);
-    if (!keys.length) return {};
-    const lang = Object.keys(request.headers ?? {}).some(
-      (h) => h.toLowerCase() === "accept-language",
+    const value = localizedText(
+      map,
+      `PageNode ${field}`,
+      (name) => this.missing(name),
+      acceptsLanguage(request),
     );
-    if (lang && keys.length > 1)
-      this.missing(`PageNode ${field} with several locales and Accept-Language`);
-    const key = Object.hasOwn(map, "en") ? "en" : keys.length === 1 ? keys[0] : undefined;
-    if (key === undefined) this.missing(`PageNode ${field} with several locales and no en`);
-    const value = map[key];
-    if (typeof value !== "string") this.missing(`PageNode ${field} value`);
+    if (value === undefined) return {};
     this.measured(
       "a PageNode sends pageHeader and pageDescription as header and description beside its callbacks: the en entry, else a sole entry, omitted when empty; a re-sent page repeats them",
     );
@@ -988,7 +1094,7 @@ export class JourneyEmulator {
     const stage = config.stage;
     if (stage === undefined || stage === "") return {};
     if (typeof stage !== "string") this.missing("PageNode stage shape");
-    this.measured("a PageNode sends its non-empty stage as a top-level stage beside callbacks; a re-sent page repeats it");
+    this.measured("a PageNode sends its non-empty stage as a top-level stage beside callbacks");
     return { stage };
   }
   private async page(
@@ -1057,20 +1163,14 @@ export class JourneyEmulator {
           this.measured("a throw in a Page child's discovery run fails the first POST with 401");
         return result;
       }
-      if (
-        previous &&
-        child.nodeType === "product-CaptchaNode" &&
-        own.some((cb) => cb.type === "ReCaptchaCallback" && cb.value === "")
-      ) {
-        this.measured(
-          "a Page whose product-CaptchaNode child is submitted with an empty token fails with 401 Login failure",
-        );
-        return { outcome: null, callbacks: [], abort: this.error(401, "Login failure") };
-      }
       // Discovery ignores the child's Action (doc 25); whether a message set there survives is unmeasured.
       if (!previous && state.errorMessage !== message)
         this.missing("action.withErrorMessage in a PageNode discovery run");
       if (previous && result.callbacks.length) rejected = true;
+      if (result.audit !== undefined)
+        this.evidence.assumed(
+          "a Page child's auditEntryDetail is dropped (no node record for the child); assignment inside a Page child is unmeasured",
+        );
       counts.push(result.callbacks.length);
       collected.push(...result.callbacks);
       outcome = result.outcome;
@@ -1089,28 +1189,20 @@ export class JourneyEmulator {
         return { outcome, callbacks: [] };
       }
       state.page = { counts, effects: structuredClone(collected) };
-      // Measured: a page whose only child is one of these nodes leaves no pageNodeCallbacks at all
-      // (doc 25, "Nodes as Page children"; the one-time password and choice nodes 2026-11-25).
-      const display = config.nodes.length === 1 && isDocument(config.nodes[0]) &&
-        [
-          "MessageNode",
-          "GetAuthenticatorAppNode",
-          "OneTimePasswordCollectorDecisionNode",
-          "ChoiceCollectorNode",
-        ].includes(String(config.nodes[0].nodeType));
-      if (!display) {
-        state.shared.pageNodeCallbacks = toWire(collected, (name) => this.missing(name)) as JsonValue;
-        this.evidence.assumed(
-          "pageNodeCallbacks stores the merged callback wire array; only shared presence and lifetime are measured (the tenant's value reads as a map of callback index to child index)",
-        );
-      }
+      const display = lonePageChild(config.nodes);
+      const children = counts.flatMap((count, index) => Array<number>(count).fill(index));
       if (
         config.nodes.some((child) => isDocument(child) && child.nodeType === "ScriptedDecisionNode")
       )
         this.measured(
           "PageNode discovery runs every scripted child once, with real effects and retained state, and ignores its goTo; submission runs it again",
         );
-      return { outcome: null, callbacks: collected, ...texts };
+      return {
+        outcome: null,
+        callbacks: collected,
+        ...texts,
+        ...(display ? {} : { pageChildren: children }),
+      };
     }
     if (collected.length) {
       // Doc 25 measured a re-send only for collectors; what a script's effects do
@@ -1119,26 +1211,36 @@ export class JourneyEmulator {
       // A rejected collector re-sends the entire page. Doc 25 (out-coll page
       // step 2): a StringAttributeInputCallback echoes its submitted value; a
       // PasswordCallback goes out as first sent, prompt only, never the value.
-      const retry: CallbackEffect[] = [];
+      const retry: CallbackEffect[] = [],
+        children: number[] = [];
       let start = 0,
-        firstShape = false;
+        firstShape = false,
+        echoed = false;
+      const rejecting = new Set<string>();
       for (const [index, count] of previous.counts.entries()) {
         const sent = previous.effects.slice(start, start + count);
         const answered = submitted.slice(start, start + count);
         if (counts[index]) {
           if (counts[index] !== count)
             this.missing("PageNode callback count changes on resubmission");
-          retry.push(...collected.splice(0, count));
+          const again = collected.splice(0, count);
+          retry.push(...again);
+          const child = config.nodes[index];
+          const type = isDocument(child) ? String(child.nodeType) : "unknown";
+          const failedPolicy = again.some((cb) => Array.isArray(cb.failedPolicies) && cb.failedPolicies.length > 0);
+          rejecting.add(type === "AttributeCollectorNode" && failedPolicy ? ATTRIBUTE_POLICY_FAILURE : type);
         } else if (
           answered.every(
             (cb) => cb.type === "StringAttributeInputCallback" || cb.type === "NameCallback",
           )
         ) {
           retry.push(...answered.map((cb) => ({ ...cb })));
+          echoed = true;
         } else {
           if (sent.some((cb) => cb.type !== "PasswordCallback")) firstShape = true;
           retry.push(...structuredClone(sent));
         }
+        children.push(...Array<number>(count).fill(index));
         start += count;
       }
       if (firstShape)
@@ -1146,16 +1248,77 @@ export class JourneyEmulator {
           "a re-sent Page repeats an accepted sibling's callbacks as first sent; measured for PasswordCallback only",
         );
       state.page = previous;
-      state.shared.pageNodeCallbacks = toWire(retry, (name) => this.missing(name)) as JsonValue;
-      this.evidence.assumed(
-        "pageNodeCallbacks stores the merged callback wire array; only shared presence and lifetime are measured",
-      );
-      this.measured(
-        "required empty attribute re-sends the whole page with echoed values and empty failedPolicies",
-      );
-      return { outcome: null, callbacks: retry, ...texts };
+      // Doc 25's inner-page probe re-sent only a page with a header and description; every page it
+      // gave a stage was answered first time.
+      if (texts.stage !== undefined)
+        this.evidence.assumed(
+          "a re-sent page repeats its stage, as it does its header and description; the stage's repetition is unmeasured",
+        );
+      // A re-sent lone child (a one-time password collector after an empty answer): doc 25's table
+      // measured the re-send itself, but the probe stopped at the first answer, so what the shared
+      // map holds after it is assumed to keep the first send's rule.
+      if (lonePageChild(config.nodes)) {
+        if (config.nodes.some((c) => isDocument(c) && c.nodeType === "OneTimePasswordCollectorDecisionNode"))
+        {
+          const otp = PAGE_RETRY_EVIDENCE.OneTimePasswordCollectorDecisionNode!;
+          this.evidence.measured(otp.behavior, otp.source);
+        }
+        this.evidence.assumed(
+          "a Page whose only child is re-sent leaves no pageNodeCallbacks, as on its first send; the map after a re-send is unmeasured",
+        );
+        return { outcome: null, callbacks: retry, ...texts };
+      }
+      // Each rejecting child's own measurement, never another node's wire shape.
+      for (const type of rejecting) {
+        const tag = PAGE_RETRY_EVIDENCE[type];
+        if (tag) this.evidence.measured(tag.behavior, tag.source);
+        else if (type === ATTRIBUTE_POLICY_FAILURE)
+          this.evidence.assumed(
+            "a Page re-sent for an attribute that failed a policy keeps its siblings as for a blank required attribute; the policy failure's re-send (every answer kept, the failed policy named) was measured on a lone Attribute Collector only",
+          );
+        else
+          this.evidence.assumed(
+            `a Page re-sent for a rejected ${type} child; a page re-send is measured for the attribute collector, terms and one-time password children only`,
+          );
+      }
+      // Doc 25 measured a rejected page's echoed NameCallback beside a rejected attribute and a declined
+      // terms child; with any other rejecting child the echo is carried over, not measured.
+      if (echoed && [...rejecting].some((type) => !ECHO_MEASURED_WITH.has(type)))
+        this.evidence.assumed(
+          "a re-sent Page echoes an accepted sibling's submitted values; measured beside a rejected attribute or declined terms child only",
+        );
+      return { outcome: null, callbacks: retry, ...texts, pageChildren: children };
     }
     return { outcome, callbacks: [] };
+  }
+  /**
+   * Numbers the callbacks a response sends and, for a Page, records which child sent each in
+   * shared `pageNodeCallbacks`, a map of callback `_id` to child index that accumulates across
+   * every visit and re-send (doc 25, "Callback `_id` and `pageNodeCallbacks`", 2026-11-25).
+   */
+  private numberCallbacks(
+    state: State,
+    callbacks: WireCallback[],
+    pageChildren: number[] | undefined,
+  ): void {
+    const first = state.nextCallbackId ?? 0;
+    for (const [index, callback] of callbacks.entries()) callback._id = first + index;
+    state.nextCallbackId = first + callbacks.length;
+    this.measured(
+      "every callback a journey sends carries a top-level numeric _id counting up across the whole journey (an uncommitted run: the committed probe's callback view drops _id)",
+    );
+    if (!pageChildren) return;
+    if (pageChildren.length !== callbacks.length) throw new Error("page callback invariant");
+    const existing = Object.hasOwn(state.shared, "pageNodeCallbacks")
+      ? state.shared.pageNodeCallbacks
+      : {};
+    if (!isDocument(existing)) this.missing("pageNodeCallbacks that is not a map");
+    const map: Document = { ...existing };
+    for (const [index, child] of pageChildren.entries()) map[String(first + index)] = child;
+    state.shared.pageNodeCallbacks = map;
+    this.measured(
+      "shared pageNodeCallbacks maps each page callback's _id to the index of the child that sent it, accumulating over every visit and re-send",
+    );
   }
   private outcomes(type: string, config: NodeDocument): readonly string[] | undefined {
     return listOutcomes(this.config, type, config, (name) => this.missing(name));
@@ -1281,6 +1444,21 @@ export class JourneyEmulator {
   }
 }
 
+/** What the runner's bridge harvests after a journey script (java/AmHostBridge.java, harvest). */
+type Harvest = {
+  effects: {
+    sharedState: { final: Document };
+    transientState: { final: Document };
+    sessionProperties: Record<string, string>;
+    callbacks: CallbackEffect[];
+    outcome: string | null;
+    javaMapObjectAttributes: { shared: boolean; transient: boolean };
+  };
+  errorMessage: string | null;
+  auditEntryDetail?: { value?: JsonValue; invalid?: "array" | "other" };
+  /** A custom node's route as the runner decided it (CustomNodeScope.route); null for none. */
+  customRoute?: string | null;
+};
 /**
  * Rhino's own text for a throw, `<thrown value> (<script>#<line>)`: the tenant's ScriptException
  * message carries exactly that (`Error: boom (name#1)`; a thrown string reads `str (name#1)`).

@@ -22,7 +22,7 @@ function make(input: JourneyConfigInput) {
     new JourneyConfig(input),
     runner,
     new IdmEmulator(new IdmConfig({ sync: { mappings: [] }, managed: { objects: [] } }), runner),
-    {},
+    { now: () => BigInt(EPOCH_S) * 1_000_000_000n },
   );
 }
 const run = (emu: JourneyEmulator, tree: string, body: JsonValue = {}) =>
@@ -115,7 +115,10 @@ const dumps = {
   dT: { nodeType: "ScriptedDecisionNode", connections: { true: SUCCESS } },
   dF: { nodeType: "ScriptedDecisionNode", connections: { true: SUCCESS } },
 };
-const SEED = `nodeState.putShared('oneTimePassword','123456');nodeState.putShared('oneTimePasswordTimestamp',Math.floor(new Date().getTime()/1000));action.goTo('true');`;
+// Review round 10 P2-2: a fixed epoch second, with the same instant as the emulator's clock. Read
+// from each JVM's wall clock, the seed differed across the paired lanes on a second boundary.
+const EPOCH_S = 1_795_000_000;
+const SEED = `nodeState.putShared('oneTimePassword','123456');nodeState.putShared('oneTimePasswordTimestamp',${EPOCH_S});action.goTo('true');`;
 const SCRIPTS = { seed: SEED, dA: dumpOf("alpha"), dB: dumpOf("beta"), dG: dumpOf("gamma"), dT: dumpOf("T"), dF: dumpOf("F"), outer: OUTER, inner: INNER, check: CHECK, mid: MID };
 
 describe("a Page inside an inner tree (doc 25, 2026-11-25)", () => {
@@ -326,6 +329,25 @@ describe("a Page's stage (doc 25, 2026-11-25)", () => {
       expect((resent.body as Wire).stage).toBe(expected);
     }
   });
+  // Review round 2 P2-4: the committed probe answered its stage pages first time, and re-sent only
+  // a page with header and description, so the stage's repetition is the emulator's assumption.
+  it("measures the stage's presence and assumes its repetition", async () => {
+    const emu = tree("S1");
+    const first = await run(emu, "page");
+    const resent = await run(emu, "page", answer(first.body, { 0: "", 1: "" }));
+    const of = (r: typeof first, kind: string) =>
+      (r.provenance ?? []).filter((e) => e.kind === kind).map((e) => e.behavior).join("\n");
+    expect(of(first, "measured")).toContain("sends its non-empty stage");
+    expect(of(first, "measured")).not.toContain("repeats it");
+    expect(of(resent, "assumed")).toContain("a re-sent page repeats its stage");
+    // Review round 3 P2-4: the re-send itself must not claim the repetition as measured either.
+    expect(of(resent, "measured")).not.toMatch(/repeat[^\n]*stage/);
+  });
+  it("says the callback _id numbering came from an uncommitted run", async () => {
+    const first = await run(tree("S1"), "page");
+    const id = (first.provenance ?? []).find((e) => e.behavior.includes("top-level numeric _id"));
+    expect(id?.behavior).toContain("uncommitted");
+  });
 });
 
 // E42: OneTimePasswordCollectorDecisionNode and ChoiceCollectorNode as Page children (doc 25, 2026-11-25).
@@ -366,6 +388,49 @@ describe("one-time password and choice nodes as Page children", () => {
     }
   });
 
+  // Review round 1 P2-1: a re-send keeps the lone-child rule (assumed; the probe stops at the first answer).
+  it("a lone one-time password child re-sent after an empty answer still leaves no pageNodeCallbacks", async () => {
+    const emu = otp(["o"]);
+    const first = await run(emu, "page");
+    const resent = await run(emu, "page", answer(first.body, { 0: "" }));
+    expect(types(resent.body)).toEqual(["PasswordCallback"]);
+    const done = dump((await run(emu, "page", answer(resent.body, { 0: "123456" }))).body);
+    expect(done).toMatchObject({ branch: "T", pageNodeCallbacks: null });
+  });
+
+  // Review round 2 P2-3: the re-send is measured for this node (doc 25's table); the Attribute
+  // Collector's echo-and-failedPolicies measurement is another node's wire shape and must not ride it.
+  it("a lone one-time password re-send carries its own evidence, not the attribute collector's", async () => {
+    const emu = otp(["o"]);
+    const first = await run(emu, "page");
+    const resent = await run(emu, "page", answer(first.body, { 0: "" }));
+    const kinds = (kind: string) =>
+      (resent.provenance ?? []).filter((e) => e.kind === kind).map((e) => e.behavior).join("\n");
+    expect(kinds("measured")).not.toContain("failedPolicies");
+    expect(kinds("measured")).toContain("an empty one-time password answer sends the same page again");
+    expect(kinds("assumed")).toContain("leaves no pageNodeCallbacks");
+    // Review round 5 P2-2: the section, not only the date.
+    const tag = (resent.provenance ?? []).find((e) => e.behavior.includes("an empty one-time password answer"));
+    expect(tag?.source).toContain("(One Time Password Collector Decision and Choice Collector as Page children, 2026-11-25)");
+  });
+
+  // Review round 3 P2-3: beside a username child, the page is re-sent for the one-time password child
+  // (doc 25's pageU row), so it carries that node's evidence; the attribute collector's never applies.
+  it("a mixed page re-sent for its empty one-time password carries the rejecting child's evidence", async () => {
+    const emu = otp(["u", "o"]);
+    const first = await run(emu, "page");
+    const resent = await run(emu, "page", answer(first.body, { 0: "kdemo-user", 1: "" }));
+    expect(types(resent.body)).toEqual(["NameCallback", "PasswordCallback"]);
+    const kinds = (kind: string) =>
+      (resent.provenance ?? []).filter((e) => e.kind === kind).map((e) => e.behavior).join("\n");
+    expect(kinds("measured")).not.toContain("failedPolicies");
+    expect(kinds("measured")).toContain("an empty one-time password answer sends the same page again");
+    expect(kinds("assumed")).toContain("echoes an accepted sibling's submitted values");
+    // Review round 4 P2-1: the tag cites the Nov 25 measurement it comes from.
+    const tag = (resent.provenance ?? []).find((e) => e.behavior.includes("an empty one-time password answer"));
+    expect(tag?.source).toContain("(One Time Password Collector Decision and Choice Collector as Page children, 2026-11-25)");
+  });
+
   it("after a username collector the one-time password input is IDToken2, and the page records both callbacks", async () => {
     const emu = otp(["u", "o"]);
     const first = await run(emu, "page");
@@ -373,8 +438,9 @@ describe("one-time password and choice nodes as Page children", () => {
     expect((first.body as Wire).callbacks[1]?.input[0]?.name).toBe("IDToken2");
     const done = dump((await run(emu, "page", answer(first.body, { 0: "kdemo-user", 1: "123456" }))).body);
     expect(done).toMatchObject({ branch: "T", username: "kdemo-user" });
-    // Present with a collector beside it (its value is the emulator's wire array, the tenant's a map: assumed).
-    expect(done.pageNodeCallbacks).not.toBeNull();
+    // Present with a collector beside it. This dump String()s it: the measured map reads as one
+    // "[object Object]" (the wire array it once was read as two); prereview.test.ts checks content.
+    expect(done.pageNodeCallbacks).toBe("[object Object]");
   });
 
   it("an empty one-time password re-sends the whole page", async () => {
@@ -404,8 +470,9 @@ describe("one-time password and choice nodes as Page children", () => {
     expect((first.body as Wire).callbacks[1]?.input[0]?.name).toBe("IDToken2");
     const done = dump((await run(emu, "page", answer(first.body, { 0: "kdemo-user", 1: 2 }))).body);
     expect(done).toMatchObject({ branch: "gamma", username: "kdemo-user" });
-    // Present with a collector beside it (its value is the emulator's wire array, the tenant's a map: assumed).
-    expect(done.pageNodeCallbacks).not.toBeNull();
+    // Present with a collector beside it. This dump String()s it: the measured map reads as one
+    // "[object Object]" (the wire array it once was read as two); prereview.test.ts checks content.
+    expect(done.pageNodeCallbacks).toBe("[object Object]");
   });
 });
 

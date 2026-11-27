@@ -5,13 +5,20 @@
  * (docs/api/25-journey-runtime.md, "Built-in node types", 2026-11-25).
  */
 import { randomInt } from "node:crypto";
+import { mergeSharedAttributes } from "./attributes.ts";
+import {
+  SYSTEM_SESSION_PROPERTIES,
+  answerIndex,
+  localizedText,
+  loginFailure,
+  lookupIdentities,
+} from "./shared.ts";
 import { mintCookie, readCookie } from "./cookie.ts";
 import type { CallbackEffect } from "../case/types.ts";
-import { EmulationFailure } from "../emulation.ts";
 import { isDocument, own, setOwn } from "../idm/document.ts";
 import type { IdmEmulator } from "../idm/emulator.ts";
 import type { Evidence } from "../idm/provenance.ts";
-import type { Document, RestResult } from "../idm/types.ts";
+import type { Document } from "../idm/types.ts";
 import type { JsonValue } from "../protocol.ts";
 import type { NodeResult } from "./nodes.ts";
 import type { NodeDocument, SessionDelta, TermsAndConditions } from "./types.ts";
@@ -93,40 +100,24 @@ const APP_MESSAGE = "Get the app from the {{appleLink}} or on {{googleLink}}";
 const APPLE_LINK = "https://apps.apple.com/app/pingid/id891247102";
 const GOOGLE_LINK = "https://play.google.com/store/apps/details?id=prod.com.pingidentity.pingid";
 const COOKIE_SOURCE = "docs/api/25-journey-runtime.md (Persistent cookie value, 2026-11-25)";
-const SYSTEM_PROPERTIES = [
-  "clientType",
-  "FullLoginURL",
-  "Principals",
-  "XUSRef",
-  "Locale",
-  "amlbcookie",
-  "UserId",
-  "loginURL",
-  "logoutHooks",
-  "Service",
-  "HostName",
-  "UserToken",
-  "IndexType",
-  "webhooks",
-  "UserProfile",
-  "AuthLevel",
-  "CharSet",
-  "authInstant",
-  "Host",
-  "AMCtxId",
-  "OidcSid",
-  "sun.am.UniversalIdentifier",
-  "Organization",
-  "Principal",
-];
-const LOGIN_FAILURE = {
-  status: 401,
-  body: { code: 401, reason: "Unauthorized", message: "Login failure" },
-} as const;
+
+/** An ESV placeholder, `&{esv.<name>}` or `&{esv.<name>|<default>}`: a name before any pipe. */
+export const ESV_PLACEHOLDER = /&\{esv\.([^}|]+)(?:\|[^}]*)?\}/;
 
 /** A node configuration the tenant refuses at write time; the emulator refuses it when the config loads. */
 export function validateExtraNode(type: string, node: NodeDocument): void {
+  // UNMEASURED: whether the tenant accepts an ESV-backed length (`{"$int": "&{esv.…}"}`, as it
+  // does for retryLimit) was never tried; the emulator refuses it as not modelled. Only a real
+  // placeholder is that form: a literal `{"$int": "7"}` is not a number, and keeps the number refusal.
   if (type === "OneTimePasswordGeneratorNode" && node.length !== undefined) {
+    if (
+      isDocument(node.length) &&
+      typeof node.length.$int === "string" &&
+      ESV_PLACEHOLDER.test(node.length.$int)
+    )
+      throw new RangeError(
+        "Not modelled by the emulator: OneTimePasswordGeneratorNode length as an ESV placeholder (whether the tenant accepts one is unmeasured)",
+      );
     if (typeof node.length !== "number" || !Number.isInteger(node.length) || node.length < 6)
       throw new RangeError(
         "400 Data validation failed for the attribute, One Time Password Length",
@@ -154,9 +145,9 @@ export function validateExtraNode(type: string, node: NodeDocument): void {
       throw new RangeError(
         "400 Invalid config: At least one of the following properties must be set: properties, maxSessionTime, maxIdleTime",
       );
-    if (named.some((key) => SYSTEM_PROPERTIES.includes(key)))
+    if (named.some((key) => SYSTEM_SESSION_PROPERTIES.includes(key)))
       throw new RangeError(
-        `400 Invalid config: Provided properties cannot include system session properties: [${SYSTEM_PROPERTIES.join(", ")}]`,
+        `400 Invalid config: Provided properties cannot include system session properties: [${SYSTEM_SESSION_PROPERTIES.join(", ")}]`,
       );
   }
 }
@@ -176,27 +167,15 @@ export class ExtraNodes {
     this.ctx = ctx;
   }
 
-  private async query(resource: string, attribute: string, value: string): Promise<Document[]> {
-    const response: RestResult = await this.ctx.idm.hostRequest({
-      type: "call",
-      id: "journey-node",
-      seq: 0,
-      method: "query",
-      args: [
-        resource,
-        {
-          _queryFilter: `${attribute} eq ${JSON.stringify(value)}`,
-          _fields: "_id,userName,password,accountStatus",
-        },
-      ],
+  /** Records by exact attribute value, through IDM's internal view (Data Store reads the password). */
+  private query(resource: string, attribute: string, value: string): Promise<Document[]> {
+    return lookupIdentities(this.ctx.idm, this.ctx.evidence, this.ctx.missing, {
+      resource,
+      attribute,
+      value,
+      fields: "_id,userName,password,accountStatus",
+      journey: false,
     });
-    for (const entry of response.provenance)
-      this.ctx.evidence.add(entry.kind, entry.behavior, entry.source);
-    if (response.emulation) throw new EmulationFailure(response.emulation);
-    if (response.status >= 400) this.ctx.missing(`identity lookup error: ${response.status}`);
-    if (!isDocument(response.body) || !Array.isArray(response.body.result))
-      this.ctx.missing("identity lookup result shape");
-    return response.body.result.filter(isDocument);
   }
 
   private async dataStore(
@@ -219,7 +198,7 @@ export class ExtraNodes {
       return {
         outcome: null,
         callbacks: [],
-        abort: structuredClone(LOGIN_FAILURE),
+        abort: loginFailure(),
       };
     if (typeof username !== "string" || typeof password !== "string")
       this.ctx.missing("DataStoreDecisionNode with a non-string username or password");
@@ -277,10 +256,22 @@ export class ExtraNodes {
     return { outcome: "outcome", callbacks: [], session: delta };
   }
 
+  /** The configured persistent cookie name, else the node's documented default (assumed). */
+  private cookieName(config: NodeDocument, type: string): string {
+    if (typeof config.persistentCookieName === "string") return config.persistentCookieName;
+    this.ctx.evidence.assumed(
+      `${type} with no persistentCookieName configured uses "session-jwt" (the node's documented default)`,
+    );
+    return "session-jwt";
+  }
+
   private persistentCookie(config: NodeDocument, shared: Document): NodeResult {
     const { evidence } = this.ctx;
-    const name =
-      typeof config.persistentCookieName === "string" ? config.persistentCookieName : "session-jwt";
+    const name = this.cookieName(config, "SetPersistentCookieNode");
+    if (typeof config.maxLife !== "number")
+      evidence.assumed(
+        "SetPersistentCookieNode with no maxLife configured uses 5 hours (the node's documented default)",
+      );
     const maxLife = typeof config.maxLife === "number" ? config.maxLife : 5;
     const sameSite = typeof config.sameSite === "string" ? config.sameSite.toLowerCase() : "lax";
     if (!["lax", "strict", "none"].includes(sameSite))
@@ -302,10 +293,13 @@ export class ExtraNodes {
         abort: { status: 500, body: null, rawBody: "" },
       };
     }
+    // A cookie minted with no user names nobody; what the tenant does then is unmeasured.
+    if (typeof shared.username !== "string" || shared.username === "")
+      this.ctx.missing("SetPersistentCookieNode with no shared username");
     const now = this.ctx.now();
     const value = mintCookie(
       {
-        sub: typeof shared.username === "string" ? shared.username : null,
+        sub: shared.username,
         iat: Math.floor(now / 1000),
         exp: Math.floor(now / 1000) + Math.round(maxLife * 3600),
       },
@@ -319,8 +313,11 @@ export class ExtraNodes {
       "SetPersistentCookieNode idleTimeout has no measured effect and is not modelled",
     );
     evidence.measured(
-      "SetPersistentCookieNode sets a cookie named persistentCookieName expiring maxLife hours ahead, always Secure, HttpOnly per useHttpOnlyCookie, SameSite as configured",
+      "SetPersistentCookieNode sets a cookie named persistentCookieName expiring maxLife hours ahead, Path=/, the tenant's Domain, always Secure, HttpOnly per useHttpOnlyCookie, SameSite as configured",
       SOURCE,
+    );
+    evidence.assumed(
+      "SetPersistentCookieNode's Domain is the tenant host exactly; doc 25 records the tenant Domain, not its spelling",
     );
     return {
       outcome: "outcome",
@@ -349,7 +346,7 @@ export class ExtraNodes {
       return {
         outcome: null,
         callbacks: [],
-        abort: structuredClone(LOGIN_FAILURE),
+        abort: loginFailure(),
       };
     let digits = "";
     for (let i = 0; i < length; i++) digits += String(randomInt(10));
@@ -461,10 +458,7 @@ export class ExtraNodes {
       return {
         outcome: null,
         callbacks: [],
-        abort: {
-          status: 401,
-          body: { code: 401, reason: "Unauthorized", message: "Login failure" },
-        },
+        abort: loginFailure(),
       };
     }
     const outcome = this.ctx.declared?.(id);
@@ -534,22 +528,39 @@ export class ExtraNodes {
     return { outcome: level >= amount ? "true" : "false", callbacks: [] };
   }
 
-  private message(config: NodeDocument, submitted: CallbackEffect[]): NodeResult {
-    const text = (key: string, fallback: string): string => {
-      const map = config[key];
-      if (map === undefined) return fallback;
-      if (!isDocument(map)) this.ctx.missing(`MessageNode ${key} configuration`);
-      const first = Object.values(map)[0];
-      if (first === undefined) return fallback;
-      if (typeof first !== "string") this.ctx.missing(`MessageNode ${key} value type`);
-      return first;
-    };
+  /**
+   * A node's localized text: one entry was measured for MessageNode and GetAuthenticatorAppNode;
+   * with several, the Page header's measured rule (en, else refuse) is assumed to carry over.
+   */
+  private localized(
+    config: NodeDocument,
+    type: string,
+    key: string,
+    fallback: string,
+    acceptLanguage: boolean,
+  ): string {
+    const map = config[key];
+    if (map === undefined) return fallback;
+    if (!isDocument(map)) this.ctx.missing(`${type} ${key} configuration`);
+    if (Object.keys(map).length > 1)
+      this.ctx.evidence.assumed(
+        `${type} with several locales shows the en entry, as a Page header does; measured with one locale only`,
+      );
+    return (
+      localizedText(map, `${type} ${key}`, this.ctx.missing, acceptLanguage) ?? fallback
+    );
+  }
+
+  private message(
+    config: NodeDocument,
+    submitted: CallbackEffect[],
+    acceptLanguage: boolean,
+  ): NodeResult {
+    const text = (key: string, fallback: string): string =>
+      this.localized(config, "MessageNode", key, fallback, acceptLanguage);
     this.ctx.evidence.measured(
       'MessageNode sends a TextOutputCallback (messageType "0") and a ConfirmationCallback (options yes then no, default option 1); answer 0 takes true, any other index false; no state is written',
       SOURCE,
-    );
-    this.ctx.evidence.assumed(
-      "MessageNode uses the first entry of each language map; only single-entry maps were measured",
     );
     if (!submitted.length)
       return {
@@ -573,7 +584,7 @@ export class ExtraNodes {
     const answer = submitted.length === 2 ? submitted[1] : undefined;
     if (answer?.type !== "ConfirmationCallback")
       this.ctx.missing("MessageNode callback submission");
-    const index = typeof answer.value === "string" ? Number(answer.value) : answer.value;
+    const index = answerIndex(answer.value, "MessageNode", this.ctx.missing);
     if (typeof index !== "number" || !Number.isInteger(index))
       this.ctx.missing(`MessageNode answer: ${JSON.stringify(answer.value)}`);
     return { outcome: index === 0 ? "true" : "false", callbacks: [] };
@@ -584,16 +595,13 @@ export class ExtraNodes {
    * TextOutputCallback of type "4" (a script) holding the message, then a ConfirmationCallback with the one
    * continue option; any answer takes the one outcome and no state is written.
    */
-  private getAuthenticatorApp(config: NodeDocument, submitted: CallbackEffect[]): NodeResult {
-    const first = (key: string, fallback: string): string => {
-      const map = config[key];
-      if (map === undefined) return fallback;
-      if (!isDocument(map)) this.ctx.missing(`GetAuthenticatorAppNode ${key} configuration`);
-      const value = Object.values(map)[0];
-      if (value === undefined) return fallback;
-      if (typeof value !== "string") this.ctx.missing(`GetAuthenticatorAppNode ${key} value type`);
-      return value;
-    };
+  private getAuthenticatorApp(
+    config: NodeDocument,
+    submitted: CallbackEffect[],
+    acceptLanguage: boolean,
+  ): NodeResult {
+    const first = (key: string, fallback: string): string =>
+      this.localized(config, "GetAuthenticatorAppNode", key, fallback, acceptLanguage);
     const link = (key: "appleLink" | "googleLink", fallback: string): string => {
       const value = config[key] === undefined ? fallback : config[key];
       if (typeof value !== "string" || /['"\\\s]/.test(value))
@@ -611,7 +619,7 @@ export class ExtraNodes {
       PAGE_CHILD_SOURCE,
     );
     this.ctx.evidence.assumed(
-      "GetAuthenticatorAppNode uses the first entry of each language map; the {{appleLabel}} and {{googleLabel}} wildcards are unmeasured",
+      "GetAuthenticatorAppNode's {{appleLabel}} and {{googleLabel}} wildcards are unmeasured",
     );
     if (!submitted.length)
       return {
@@ -648,7 +656,7 @@ export class ExtraNodes {
       SOURCE,
     );
     if (typeof config.prompt !== "string")
-      return { outcome: null, callbacks: [], abort: structuredClone(LOGIN_FAILURE) };
+      return { outcome: null, callbacks: [], abort: loginFailure() };
     if (!submitted.length) {
       const preferred =
         typeof config.defaultChoice === "string" ? list.indexOf(config.defaultChoice) : -1;
@@ -667,9 +675,9 @@ export class ExtraNodes {
     const answer = submitted.length === 1 ? submitted[0] : undefined;
     if (answer?.type !== "ChoiceCallback")
       this.ctx.missing("ChoiceCollectorNode callback submission");
-    const index = typeof answer.value === "string" ? Number(answer.value) : answer.value;
+    const index = answerIndex(answer.value, "ChoiceCollectorNode", this.ctx.missing);
     if (typeof index !== "number" || !Number.isInteger(index) || index < 0 || index >= list.length)
-      return { outcome: null, callbacks: [], abort: structuredClone(LOGIN_FAILURE) };
+      return { outcome: null, callbacks: [], abort: loginFailure() };
     return { outcome: list[index] ?? null, callbacks: [] };
   }
 
@@ -705,7 +713,18 @@ export class ExtraNodes {
       this.ctx.missing("ValidatedUsernameNode callback submission");
     if (answer.value !== "") {
       setOwn(shared, "username", answer.value);
-      setOwn(shared, "objectAttributes", { userName: answer.value });
+      // Over existing keys, merge versus replace is unmeasured; merging is what every sibling does.
+      if (
+        mergeSharedAttributes(
+          shared,
+          { userName: answer.value },
+          "ValidatedUsernameNode",
+          this.ctx.missing,
+        )
+      )
+        this.ctx.evidence.assumed(
+          "ValidatedUsernameNode merges userName into existing shared objectAttributes",
+        );
     }
     return { outcome: "outcome", callbacks: [] };
   }
@@ -763,8 +782,7 @@ export class ExtraNodes {
     const { evidence } = this.ctx;
     if (config.enforceClientIp === true)
       this.ctx.missing("PersistentCookieDecisionNode enforceClientIp: true");
-    const name =
-      typeof config.persistentCookieName === "string" ? config.persistentCookieName : "session-jwt";
+    const name = this.cookieName(config, "PersistentCookieDecisionNode");
     const key =
       typeof config.hmacSigningKey === "string" && config.hmacSigningKey !== ""
         ? config.hmacSigningKey
@@ -784,7 +802,7 @@ export class ExtraNodes {
     if (reading.kind === "unmeasured")
       this.ctx.missing(`PersistentCookieDecisionNode over ${reading.what}`);
     if (reading.kind === "abort")
-      return { outcome: null, callbacks: [], abort: structuredClone(LOGIN_FAILURE) };
+      return { outcome: null, callbacks: [], abort: loginFailure() };
     if (reading.kind === "false") return { outcome: "false", callbacks: [] };
     const claims = reading.claims;
     if (claims.sub === null) return { outcome: "false", callbacks: [] };
@@ -824,6 +842,7 @@ export class ExtraNodes {
     submitted: CallbackEffect[],
     defaultResource: string,
     cookies?: Readonly<Record<string, string>>,
+    acceptLanguage = false,
   ): Promise<NodeResult> {
     if (PURE_STUBS.includes(type)) return this.stub(type, id);
     switch (type) {
@@ -838,9 +857,9 @@ export class ExtraNodes {
       case "AuthLevelDecisionNode":
         return this.authLevel(config, shared, true);
       case "MessageNode":
-        return this.message(config, submitted);
+        return this.message(config, submitted, acceptLanguage);
       case "GetAuthenticatorAppNode":
-        return this.getAuthenticatorApp(config, submitted);
+        return this.getAuthenticatorApp(config, submitted, acceptLanguage);
       case "ChoiceCollectorNode":
         return this.choice(config, submitted);
       case "ValidatedUsernameNode":
@@ -894,15 +913,16 @@ export function customOutcomes(def: CustomNodeType): readonly string[] {
   return def.errorOutcome === true ? [...def.outcomes, SCRIPT_ERROR_OUTCOME] : def.outcomes;
 }
 /**
- * The decision script a custom node runs as: its script with `properties` bound from the instance and the
- * assigned `outcome` routed. Absent properties follow the measured shape: a multivalued one is an empty array,
- * any other is undefined. A missing required property is `undefined` here and is the caller's 401.
+ * The `properties` a custom node's script sees, from the instance. Absent properties follow the measured
+ * shape: a multivalued one is an empty array, any other is undefined. A missing required property is
+ * `{ abort: true }`, the caller's 401. The script itself runs unmodified in its own scope
+ * (java/CustomNodeScope.java), and its `outcome` is routed in the runner (CustomNodeScope.route).
  */
-export function customNodeSource(
+export function customNodeProperties(
   def: CustomNodeType,
   node: NodeDocument,
   missing: (name: string) => never,
-): { source: string } | { abort: true } {
+): { properties: Record<string, JsonValue> } | { abort: true } {
   const inputs = def.inputs ?? [];
   if (inputs.some((name) => name !== "*"))
     missing(
@@ -925,23 +945,5 @@ export function customNodeSource(
       missing(`custom node property ${name} typed ${String(spec.type)} holding a ${given}`);
     properties[name] = value as JsonValue;
   }
-  const allowed = JSON.stringify(def.outcomes);
-  const failure =
-    def.errorOutcome === true ? `outcome = ${JSON.stringify(SCRIPT_ERROR_OUTCOME)};` : "throw e;";
-  const source = [
-    `var properties = ${JSON.stringify(properties)};`,
-    "var outcome;",
-    "try {",
-    def.script,
-    "} catch (e) {",
-    failure,
-    "}",
-    `if (${allowed}.indexOf(outcome) < 0 && outcome !== ${JSON.stringify(SCRIPT_ERROR_OUTCOME)}) {`,
-    def.errorOutcome === true
-      ? `  outcome = ${JSON.stringify(SCRIPT_ERROR_OUTCOME)};`
-      : '  throw "custom node outcome";',
-    "}",
-    "action.goTo(outcome);",
-  ].join("\n");
-  return { source };
+  return { properties };
 }

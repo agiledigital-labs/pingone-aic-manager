@@ -24,6 +24,9 @@ export function journeyHttp(
     const result = await engine.request({
       method: request.method as "POST",
       path: url.pathname,
+      // The host the caller reached, which the persistent cookie's Domain names; without a query,
+      // because a log record carries the query parameters separately.
+      url: `${url.origin}${url.pathname}`,
       query: {
         ...Object.fromEntries(
           [...new Set(url.searchParams.keys())].map((key) => [key, url.searchParams.getAll(key)]),
@@ -45,6 +48,7 @@ export function journeyHttp(
             `${cookie.name}=${cookie.value}`,
             `Expires=${cookie.expires}`,
             `Path=${cookie.path}`,
+            ...(cookie.domain === undefined ? [] : [`Domain=${cookie.domain}`]),
             ...(cookie.secure ? ["Secure"] : []),
             ...(cookie.httpOnly ? ["HttpOnly"] : []),
             `SameSite=${cookie.sameSite}`,

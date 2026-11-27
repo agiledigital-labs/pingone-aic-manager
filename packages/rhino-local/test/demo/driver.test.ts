@@ -1,6 +1,8 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { RhinoRunner } from "../../src/runner.ts";
 import { parseBreaks } from "../../src/demo/breaks.ts";
+import { Arrivals } from "../../src/demo/driver.ts";
+import { Rng } from "../../src/demo/rng.ts";
 import { parseMix } from "../../src/demo/mix.ts";
 import { formatRfc3339Ns } from "../../src/logs/time.ts";
 import { canon, HOUR, MINUTE, mixJson, payload, runDriver, T0, ts } from "./rig.ts";
@@ -48,13 +50,15 @@ describe("handoff", () => {
     expect(records.every((r) => ts(r) > start)).toBe(true);
   }, 60_000);
 
-  it("holds even for a break whose window opens exactly at the start", async () => {
-    const breaks = parseBreaks(
-      JSON.stringify([{ from: iso(T0), to: iso(T0 + 10n * MINUTE), kind: "template", stream: "am-core", text: "x <*>", per_hour: 600000 }]),
-    );
-    const { records, start } = await runDriver(runner, { mix: parseMix(requestsOnly()), breaks, duration: 10n * MINUTE });
-    expect(records.filter((r) => r.source === "am-core").length).toBeGreaterThan(1000);
-    expect(records.some((r) => ts(r) <= start)).toBe(false);
+  // Review round 3 P2-5: the gap floor, driven directly. An exponential draw below half a
+  // nanosecond rounds to a zero gap, which would put an arrival on the start instant; the
+  // one-nanosecond floor is the only thing that keeps it off. Deterministic and small, where the
+  // break-at-the-start run it replaces needed ~100,000 records and still missed this case.
+  it("never puts an arrival on the start instant, even when a gap rounds to zero", () => {
+    const zero = Object.create(Rng.prototype) as Rng;
+    zero.exponential = () => 0.4;
+    const arrivals = new Arrivals(zero, () => 1e9, T0, T0 + 3n);
+    expect([arrivals.next(), arrivals.next(), arrivals.next()]).toEqual([T0 + 1n, T0 + 2n, undefined]);
   });
 });
 

@@ -545,6 +545,7 @@ it("AcceptTermsAndConditionsNode sends the realm's terms with a false input", as
         { name: "createDate", value: "2020-01-02T03:04:05.678Z" },
       ],
       input: [{ name: "IDToken1", value: false }],
+      _id: 0,
     },
   ]);
 });
@@ -610,6 +611,7 @@ it("product-CaptchaNode sends a ReCaptchaCallback built from the node", async ()
         { name: "disableSubmission", value: true },
       ],
       input: [{ name: "IDToken1", value: "" }],
+      _id: 0,
     },
   ]);
 });
@@ -819,6 +821,7 @@ it("MessageNode sends the text and a Yes/No confirmation, and answer 0 is true",
         { name: "message", value: "Hello" },
         { name: "messageType", value: "0" },
       ],
+      _id: 0,
     },
     {
       type: "ConfirmationCallback",
@@ -830,6 +833,7 @@ it("MessageNode sends the text and a Yes/No confirmation, and answer 0 is true",
         { name: "defaultOption", value: 1 },
       ],
       input: [{ name: "IDToken2", value: 0 }],
+      _id: 1,
     },
   ]);
   const yes = await request(emu, answersAt(first.body, 1, 0));
@@ -863,6 +867,7 @@ it("ChoiceCollectorNode sends the choices with the default's index", async () =>
         { name: "defaultChoice", value: 1 },
       ],
       input: [{ name: "IDToken1", value: 1 }],
+      _id: 0,
     },
   ]);
 });
@@ -928,12 +933,15 @@ it("ValidatedUsernameNode with validation is missing unless its outcome is decla
   expect(dump((await request(declared)).body).branch).toBe("outcome");
 });
 
-// OneTimePasswordCollectorDecisionNode.
+// OneTimePasswordCollectorDecisionNode. The seed's timestamp is a fixed epoch second and the
+// emulator's clock (OTP_NOW) the same instant, so the paired JVM lanes seed identical state.
+const OTP_EPOCH_S = 1_795_000_000;
+const OTP_NOW = { now: () => BigInt(OTP_EPOCH_S) * 1_000_000_000n };
 const otpSeed = (otp: string | null, agoSeconds: number | null) =>
   (otp === null ? "" : `nodeState.putShared('oneTimePassword','${otp}');`) +
   (agoSeconds === null
     ? ""
-    : `nodeState.putShared('oneTimePasswordTimestamp',Math.floor(new Date().getTime()/1000)-${agoSeconds});`);
+    : `nodeState.putShared('oneTimePasswordTimestamp',${OTP_EPOCH_S - agoSeconds});`);
 it.each([
   ["the right password", "123456", 10, "123456", "true"],
   ["a wrong password", "123456", 10, "654321", "false"],
@@ -949,6 +957,7 @@ it.each([
       "true",
       "false",
     ]),
+    OTP_NOW,
   );
   const first = await request(emu);
   expect(wire(first.body)).toEqual([
@@ -956,6 +965,7 @@ it.each([
       type: "PasswordCallback",
       output: [{ name: "prompt", value: "One Time Password" }],
       input: [{ name: "IDToken1", value: "" }],
+      _id: 0,
     },
   ]);
   expect(dump((await request(emu, answerWith(first.body, answer))).body).branch).toBe(branch);
@@ -966,6 +976,7 @@ it("OneTimePasswordCollectorDecisionNode re-sends on an empty answer and honours
       "true",
       "false",
     ]),
+    OTP_NOW,
   );
   const first = await request(emu);
   const empty = await request(emu, answerWith(first.body, ""));

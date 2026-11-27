@@ -1021,6 +1021,15 @@ describe("G9: Terms and Conditions as a page child", () => {
       "TermsAndConditionsCallback",
     ]);
     expect(cbs[0]?.input[0]?.value).toBe("u");
+    // Review round 3 P2-3: the re-send carries the declined terms child's own evidence.
+    const behaviors = (kind: string) =>
+      (again.provenance ?? []).filter((e) => e.kind === kind).map((e) => e.behavior).join("\n");
+    expect(behaviors("measured")).toContain("a declined terms child re-sends the whole page");
+    expect(behaviors("measured")).not.toContain("failedPolicies");
+    expect(behaviors("assumed")).not.toContain("echoes an accepted sibling");
+    // Review round 4 P2-1: the tag cites the Nov 25 measurement it comes from.
+    const tag = (again.provenance ?? []).find((e) => e.behavior.includes("a declined terms child"));
+    expect(tag?.source).toContain("(Page header, no-callback pages and extra children, 2026-11-25)");
   });
 });
 
@@ -1519,16 +1528,18 @@ describe("G17: AttributeCollectorNode validateInputs: true", () => {
   const build = (
     config: Record<string, unknown>,
     options: JourneyOptions = { attributePolicies: POLICIES as never },
+    // A Page holding a Username Collector, then the Attribute Collector.
+    inPage = false,
   ) =>
     new JourneyEmulator(
       new JourneyConfig({
         realm: "alpha",
         trees: {
           invented: {
-            entryNodeId: "at",
+            entryNodeId: inPage ? "page" : "at",
             nodes: {
-              at: {
-                nodeType: "AttributeCollectorNode",
+              [inPage ? "page" : "at"]: {
+                nodeType: inPage ? "PageNode" : "AttributeCollectorNode",
                 connections: { outcome: "dump" },
               },
               dump: {
@@ -1539,6 +1550,19 @@ describe("G17: AttributeCollectorNode validateInputs: true", () => {
           },
         },
         nodes: {
+          ...(inPage
+            ? {
+                PageNode: {
+                  page: {
+                    nodes: [
+                      { _id: "user", nodeType: "UsernameCollectorNode" },
+                      { _id: "at", nodeType: "AttributeCollectorNode" },
+                    ],
+                  },
+                },
+                UsernameCollectorNode: { user: {} },
+              }
+            : {}),
           AttributeCollectorNode: {
             at: {
               identityResource: "managed/widget",
@@ -1606,6 +1630,29 @@ describe("G17: AttributeCollectorNode validateInputs: true", () => {
     return copy as unknown as JsonValue;
   };
 
+  // Review round 4 P2-1: on a mixed page the retry evidence follows the rejection cause. A policy
+  // failure was measured on a lone Attribute Collector only, so beside a username it is assumed, and
+  // the blank-value tag (empty failedPolicies) must not ride it. The blank value is the control.
+  it("tags a mixed page's attribute retry by its rejection cause", async () => {
+    const tags = async (values: string[]) => {
+      const emu = build({}, undefined, true);
+      const first = await post(emu);
+      const retry = await post(emu, submit(first.body as JsonValue, values));
+      const of = (kind: string) =>
+        (retry.provenance ?? []).filter((e) => e.kind === kind).map((e) => e.behavior).join("\n");
+      return { measured: of("measured"), assumed: of("assumed"), out: outputs(retry.body as JsonValue) };
+    };
+    const policy = await tags(["kdemo-user", "Zz", "not-an-email"]);
+    expect(policy.out.mail?.failedPolicies).toEqual(['{ "policyRequirement": "VALID_EMAIL_ADDRESS_FORMAT" }']);
+    expect(policy.assumed).toContain("an attribute that failed a policy");
+    // Review round 5 P2-1: neither the page nor the collector claims the blank retry here.
+    expect(policy.measured).not.toContain("empty failedPolicies");
+    const blank = await tags(["kdemo-user", "Zz", ""]);
+    expect(blank.out.mail?.failedPolicies).toEqual([]);
+    expect(blank.measured).toContain("required empty attribute re-sends the whole page");
+    expect(blank.measured).toContain("AttributeCollectorNode required-empty retry with empty failedPolicies");
+    expect(blank.assumed).not.toContain("an attribute that failed a policy");
+  });
   it("sends the supplied policies with each attribute", async () => {
     const first = outputs((await post(build({}))).body as JsonValue);
     expect(first.mail?.policies).toEqual(POLICIES.mail.policies);
