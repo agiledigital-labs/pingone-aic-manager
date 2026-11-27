@@ -1842,12 +1842,6 @@ mod tests {
         .found;
         assert!(found);
     }
-}
-
-#[cfg(test)]
-mod script_candidate_tests {
-    use super::*;
-    use serde_json::json;
 
     /// Regression (review round 6 P2-4): the candidate decisions the round-5
     /// test left unpinned. Each case is a page whose only script reference is
