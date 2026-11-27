@@ -382,6 +382,18 @@ describe("fault injection", () => {
     expect(second.body.resultCount).toBe(1);
   });
 
+  // Astra review P2-3: attempts are kept only while a hook is installed, so the count starts there
+  // (and a server with no hook keeps nothing per cookie). Discriminating: counting every request
+  // made the hooked request attempt 2, and this 503-on-first-attempt hook let it through.
+  it("counts attempts from the hook's installation", async () => {
+    const r = await rig();
+    r.store.emit(record("am-access", T0 + SECOND));
+    expect((await get(r, window({ source: "am-access" }))).status).toBe(200);
+    r.server.setFault(({ attempt }) => (attempt === 1 ? { status: 503 } : undefined));
+    expect((await get(r, window({ source: "am-access" }))).status).toBe(503);
+    expect((await get(r, window({ source: "am-access" }))).status).toBe(200);
+  });
+
   it("applies the option hook and can be cleared", async () => {
     const r = await rig({ fault: () => ({ status: 500 }) });
     expect((await get(r, window())).status).toBe(500);

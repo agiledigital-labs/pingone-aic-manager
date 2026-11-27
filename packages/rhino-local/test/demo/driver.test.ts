@@ -1,11 +1,11 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { RhinoRunner } from "../../src/runner.ts";
 import { parseBreaks } from "../../src/demo/breaks.ts";
-import { Arrivals } from "../../src/demo/driver.ts";
+import { Arrivals, Driver, manualPacer } from "../../src/demo/driver.ts";
 import { Rng } from "../../src/demo/rng.ts";
 import { parseMix } from "../../src/demo/mix.ts";
 import { formatRfc3339Ns } from "../../src/logs/time.ts";
-import { canon, HOUR, MINUTE, mixJson, payload, runDriver, T0, ts } from "./rig.ts";
+import { canon, config, HOUR, makeEngineFor, MINUTE, mixJson, payload, Recording, runDriver, T0, ts } from "./rig.ts";
 import type { LogRecord } from "../../src/logs/record.ts";
 
 let runner: RhinoRunner;
@@ -86,6 +86,43 @@ describe("a stream with no end", () => {
     while (arrivals.next() !== undefined) n++;
     expect(n).toBe(24);
   });
+});
+
+// Astra review P2-2 and P2-3.
+describe("driver bounds", () => {
+  const driver = (concurrency: number) => {
+    const cfg = config();
+    return new Driver({
+      mix: parseMix(traffic()),
+      config: cfg,
+      makeEngine: makeEngineFor(runner, cfg),
+      sink: new Recording(),
+      pacer: manualPacer(T0),
+      seed: "bounds",
+      concurrency,
+    });
+  };
+  it.each([0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY])("refuses concurrency %s", (n) => {
+    expect(() => driver(n)).toThrow(/concurrency must be a positive integer/);
+  });
+  it("removes each wait's abort listener when the wait ends", async () => {
+    const controller = new AbortController();
+    let added = 0;
+    let removed = 0;
+    const add = controller.signal.addEventListener.bind(controller.signal);
+    const remove = controller.signal.removeEventListener.bind(controller.signal);
+    controller.signal.addEventListener = ((...args: Parameters<typeof add>) => {
+      added++;
+      add(...args);
+    }) as typeof add;
+    controller.signal.removeEventListener = ((...args: Parameters<typeof remove>) => {
+      removed++;
+      remove(...args);
+    }) as typeof remove;
+    await driver(1).run({ until: T0 + 5n * MINUTE, signal: controller.signal });
+    expect(added).toBeGreaterThan(10);
+    expect(removed).toBe(added);
+  }, 60_000);
 });
 
 describe("rates", () => {

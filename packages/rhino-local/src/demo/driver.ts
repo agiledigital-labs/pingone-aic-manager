@@ -45,6 +45,8 @@ export function clockPacer(clock: Clock, maxSleepMs = 40): Pacer {
   return {
     nowNs: () => clock.nowNs(),
     async waitUntil(t, wake) {
+      // One reaction on `wake` for the whole wait, not one per poll.
+      const woken = wake.then(() => "wake" as const);
       for (;;) {
         const now = clock.nowNs();
         if (now >= t) return;
@@ -56,7 +58,7 @@ export function clockPacer(clock: Clock, maxSleepMs = 40): Pacer {
         const slept = new Promise<"slept">((resolve) => {
           timer = setTimeout(() => resolve("slept"), ms);
         });
-        const woke = await Promise.race([slept, wake.then(() => "wake" as const)]);
+        const woke = await Promise.race([slept, woken]);
         clearTimeout(timer);
         if (woke === "wake") return;
       }
@@ -173,6 +175,27 @@ export class Arrivals {
       this.#cursor = hourEnd;
     }
   }
+}
+
+/**
+ * One wait's wakeup: settles on abort or when any task in flight settles. The abort listener is
+ * removed by `dispose` once the wait is over, so a run that waits many times does not accumulate
+ * listeners or reactions on a promise that only settles at the end of the run; the reactions on the
+ * tasks go when the tasks settle.
+ */
+function wakeup(
+  signal: AbortSignal | undefined,
+  inflight: ReadonlySet<Promise<unknown>>,
+): { promise: Promise<void>; dispose: () => void } {
+  let wake!: () => void;
+  const promise = new Promise<void>((resolve) => {
+    wake = resolve;
+  });
+  const onAbort = (): void => wake();
+  signal?.addEventListener("abort", onAbort, { once: true });
+  if (signal?.aborted === true) wake();
+  for (const task of inflight) task.then(onAbort, onAbort);
+  return { promise, dispose: () => signal?.removeEventListener("abort", onAbort) };
 }
 
 type Ev = {
@@ -325,6 +348,7 @@ export class Driver {
   #report: Report;
   #lag: { overall: LagReport; byTag: Map<string, LagReport> };
   #lastBehindCall = 0;
+  readonly #concurrency: number;
 
   constructor(options: DriverOptions) {
     this.#o = options;
@@ -343,6 +367,9 @@ export class Driver {
       throw new Error(`mix realm ${JSON.stringify(this.#realm)} differs from the journeys' realm ${JSON.stringify(options.config.realm)}`);
     }
     if (!(this.#scale > 0) || !Number.isFinite(this.#scale)) throw new Error("scale must be a positive number");
+    this.#concurrency = options.concurrency ?? 8;
+    if (!Number.isSafeInteger(this.#concurrency) || this.#concurrency < 1)
+      throw new Error(`concurrency must be a positive integer, not ${String(options.concurrency)}`);
     this.#report = this.#blank(0n);
     this.#lag = { overall: { maxNs: 0n, over: 0, events: 0 }, byTag: new Map() };
   }
@@ -386,8 +413,8 @@ export class Driver {
     this.#report = this.#blank(start);
     this.#schedule(start, options.until);
     const real0 = performance.now();
-    const concurrency = this.#o.concurrency ?? 8;
-    const aborted = new Promise<void>((resolve) => options.signal?.addEventListener("abort", () => resolve(), { once: true }));
+    const concurrency = this.#concurrency;
+    const signal = options.signal;
     while (options.signal?.aborted !== true) {
       const head = this.#queue.peek();
       if (head === undefined || (options.until !== undefined && head.t >= options.until)) {
@@ -397,11 +424,21 @@ export class Driver {
       }
       const now = this.#o.pacer.nowNs();
       if (head.t > now) {
-        await this.#o.pacer.waitUntil(head.t, Promise.race([aborted, ...(this.#inflight.size > 0 ? [Promise.race(this.#inflight)] : [])]));
+        const wake = wakeup(signal, this.#inflight);
+        try {
+          await this.#o.pacer.waitUntil(head.t, wake.promise);
+        } finally {
+          wake.dispose();
+        }
         continue;
       }
       if (this.#inflight.size >= concurrency) {
-        await Promise.race([aborted, ...this.#inflight]);
+        const wake = wakeup(signal, this.#inflight);
+        try {
+          await wake.promise;
+        } finally {
+          wake.dispose();
+        }
         continue;
       }
       this.#queue.pop();
