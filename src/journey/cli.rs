@@ -642,11 +642,27 @@ fn script_search_refs(tree: &Value) -> Vec<(String, String)> {
         .unwrap_or_default()
 }
 
+/// What a script search of one journey established.
+#[derive(Debug, Default, PartialEq)]
+struct ScriptSearch {
+    /// A node references the script.
+    found: bool,
+    /// What could not be read or listed, when nothing was found: the search
+    /// of this journey is incomplete, so "not found" is not an answer.
+    unread: Vec<String>,
+}
+
 /// Whether any node of `tree` references `script_id`, reading each node
 /// through `read`. A page's scripted children are in no tree, so a page is
 /// read too and its script-typed children join the search. A node that cannot
-/// be read is warned about and passed over.
-async fn journey_uses_script_with<F, Fut>(tree: &Value, script_id: &str, mut read: F) -> bool
+/// be read, or a page entry that cannot be addressed, is warned about and
+/// passed over, and recorded in [`ScriptSearch::unread`] unless a match makes
+/// it moot.
+async fn journey_uses_script_with<F, Fut>(
+    tree: &Value,
+    script_id: &str,
+    mut read: F,
+) -> ScriptSearch
 where
     F: FnMut(String, String) -> Fut,
     Fut: std::future::Future<Output = Result<Value>>,
@@ -654,11 +670,15 @@ where
     let mut queue = script_search_refs(tree);
     let mut seen: std::collections::HashSet<String> =
         queue.iter().map(|(id, _)| id.clone()).collect();
+    let mut unread = Vec::new();
     while let Some((node_id, node_type)) = queue.pop() {
         match read(node_type.clone(), node_id.clone()).await {
             Ok(config) => {
                 if node_config_references_script(&config, script_id) {
-                    return true;
+                    return ScriptSearch {
+                        found: true,
+                        unread: Vec::new(),
+                    };
                 }
                 // Lenient: a read-only search warns about each entry it
                 // cannot address and keeps searching the page's others.
@@ -668,6 +688,7 @@ where
                             eprintln!(
                                 "warning: skipped a child of {node_type}/{node_id}: {problem}"
                             );
+                            unread.push(format!("a child of {node_type}/{node_id}"));
                         }
                         queue.extend(
                             children
@@ -679,17 +700,24 @@ where
                                 .map(|child| (child.id, child.node_type)),
                         )
                     }
-                    Err(error) => eprintln!(
-                        "warning: could not list children of {node_type}/{node_id}: {error}"
-                    ),
+                    Err(error) => {
+                        eprintln!(
+                            "warning: could not list children of {node_type}/{node_id}: {error}"
+                        );
+                        unread.push(format!("the children of {node_type}/{node_id}"));
+                    }
                 }
             }
             Err(error) => {
                 eprintln!("warning: could not read journey node {node_type}/{node_id}: {error}");
+                unread.push(format!("{node_type}/{node_id}"));
             }
         }
     }
-    false
+    ScriptSearch {
+        found: false,
+        unread,
+    }
 }
 
 /// The node types whose config is documented to hold a script id in
@@ -1177,25 +1205,38 @@ pub async fn run(cmd: JourneyCommand) -> Result<()> {
             let tenant = tenant_for(tenant)?;
             let realm = realm_arg("journey", realm)?;
             let mut matches = Vec::new();
+            let mut unread = Vec::new();
             for name in api::list_trees(&tenant, &realm).await? {
                 let tree = match api::read_tree(&tenant, &realm, &name).await {
                     Ok(tree) => tree,
                     Err(error) => {
                         eprintln!("warning: could not read journey {name}: {error}");
+                        unread.push(format!("{name}: its tree"));
                         continue;
                     }
                 };
-                let found = journey_uses_script_with(&tree, &script_id, |node_type, node_id| {
+                let search = journey_uses_script_with(&tree, &script_id, |node_type, node_id| {
                     let (tenant, realm) = (&tenant, &realm);
                     async move { api::read_node(tenant, realm, &node_type, &node_id).await }
                 })
                 .await;
-                if found {
+                if search.found {
                     matches.push(name);
+                } else {
+                    unread.extend(
+                        search
+                            .unread
+                            .into_iter()
+                            .map(|what| format!("{name}: {what}")),
+                    );
                 }
             }
-            if json {
+            if json && unread.is_empty() {
                 print_json(&matches)?;
+            } else if json {
+                print_json(
+                    &serde_json::json!({"journeys": matches, "incomplete": true, "unread": unread}),
+                )?;
             } else {
                 let rows = matches
                     .iter()
@@ -1204,6 +1245,14 @@ pub async fn run(cmd: JourneyCommand) -> Result<()> {
                 print_table(&["JOURNEY"], &rows);
             }
             eprintln!("{} journeys reference script {script_id}", matches.len());
+            if !unread.is_empty() {
+                return Err(Error::Config(format!(
+                    "the search is incomplete: {} read(s) failed ({}), so a journey not listed \
+                     may still reference script {script_id}",
+                    unread.len(),
+                    unread.join("; ")
+                )));
+            }
             Ok(())
         }
         JourneyCommand::Nodes {
@@ -1675,7 +1724,8 @@ mod tests {
                     })
                 }
             })
-            .await;
+            .await
+            .found;
             assert!(found, "in_page={in_page}");
             let reads = reads.into_inner();
             assert!(
@@ -1758,7 +1808,8 @@ mod tests {
                         })
                     }
                 })
-                .await;
+                .await
+                .found;
                 (found, reads.into_inner())
             }
         };
@@ -1787,7 +1838,55 @@ mod tests {
                 _ => json!({}),
             })
         })
-        .await;
+        .await
+        .found;
         assert!(found);
+    }
+}
+
+#[cfg(test)]
+mod script_candidate_tests {
+    use super::*;
+    use serde_json::json;
+
+    /// Regression (review round 6 P2-4): the candidate decisions the round-5
+    /// test left unpinned. Each case is a page whose only script reference is
+    /// one child: a `DeviceMatchNode` with `useScript: false` (still a
+    /// reference), a `ConfigProviderNode` (listed), and a `ClientScriptNode`
+    /// (read only through the `Script` name fallback). Each must be found
+    /// with exactly one read of that child after the page's.
+    #[tokio::test]
+    async fn every_candidate_kind_is_read_once_and_found() {
+        let tree = json!({"nodes": {"page": {"nodeType": "PageNode"}}});
+        for (node_type, config) in [
+            (
+                "DeviceMatchNode",
+                json!({"useScript": false, "script": "used"}),
+            ),
+            (
+                "ConfigProviderNode",
+                json!({"script": "used", "scriptInputs": ["*"]}),
+            ),
+            ("ClientScriptNode", json!({"script": "used"})),
+        ] {
+            let reads = std::cell::RefCell::new(Vec::new());
+            let search = journey_uses_script_with(&tree, "used", |read_type, id| {
+                reads.borrow_mut().push(format!("{read_type}/{id}"));
+                let config = config.clone();
+                async move {
+                    Ok(match id.as_str() {
+                        "page" => json!({"nodes": [{"_id": "child", "nodeType": node_type}]}),
+                        _ => config,
+                    })
+                }
+            })
+            .await;
+            assert!(search.found, "{node_type}");
+            assert_eq!(
+                reads.into_inner(),
+                ["PageNode/page".to_string(), format!("{node_type}/child")],
+                "{node_type}"
+            );
+        }
     }
 }

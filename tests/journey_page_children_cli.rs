@@ -122,9 +122,10 @@ struct Tenant {
     fail_put: Option<(&'static str, Value, bool)>,
     /// Other journeys' trees, by name, for the realm listing.
     others: Map<String, Value>,
-    /// A node id whose GET answers with this agent reply instead.
+    /// A node id, or a journey name, whose GET answers with this agent reply
+    /// instead.
     fail_get: Option<(&'static str, Value)>,
-    /// A body that replaces the realm's journey listing.
+    /// An agent reply that replaces the realm's journey listing.
     listing: Option<Value>,
     calls: Vec<(String, String)>,
 }
@@ -152,7 +153,15 @@ impl Tenant {
         };
         match (method, rest.split('/').collect::<Vec<_>>().as_slice()) {
             ("GET", ["", "trees?_queryFilter=true&_pageSize=1000"]) if self.listing.is_some() => {
-                found(self.listing.as_ref())
+                self.listing.clone().unwrap()
+            }
+            ("GET", ["", "trees", id] | ["", "nodes", _, id])
+                if self
+                    .fail_get
+                    .as_ref()
+                    .is_some_and(|(failing, _)| failing == id) =>
+            {
+                self.fail_get.clone().unwrap().1
             }
             ("GET", ["", "trees?_queryFilter=true&_pageSize=1000"]) => {
                 let names = std::iter::once("Login").chain(self.others.keys().map(String::as_str));
@@ -161,10 +170,7 @@ impl Tenant {
             }
             ("GET", ["", "trees", "Login"]) => found(Some(&self.state["tree"])),
             ("GET", ["", "trees", name]) => found(self.others.get(*name)),
-            ("GET", ["", "nodes", _, id]) => match &self.fail_get {
-                Some((failing, reply)) if failing == id => reply.clone(),
-                _ => found(self.state["nodes"].get(*id)),
-            },
+            ("GET", ["", "nodes", _, id]) => found(self.state["nodes"].get(*id)),
             ("PUT", ["", kind @ ("nodes" | "trees"), .., id]) => {
                 let failure = self.fail_put.clone().filter(|(failing, ..)| failing == id);
                 if let Some((_, reply, false)) = failure {
@@ -769,7 +775,7 @@ fn a_malformed_journey_listing_is_described_by_shape() {
     let mut remote = journey();
     remote["nodes"]["user"]["validateInput"] = json!(true);
     let mut tenant = Tenant::new(remote);
-    tenant.listing = Some(json!({"result": {"secretKey": SECRET}}));
+    tenant.listing = Some(json!({"type": "json", "value": {"result": {"secretKey": SECRET}}}));
 
     let (output, _) = project.journey(tenant, &["status", "Login", "--json"]);
     let both = format!(
@@ -782,5 +788,177 @@ fn a_malformed_journey_listing_is_described_by_shape() {
     assert!(
         both.contains("secretKey"),
         "the shape names the field: {both}"
+    );
+}
+
+/// What the transport appends to a non-JSON 5xx body (`aic::trace_gateway_body`,
+/// whose own unit test pins the format): the server's text first, then the
+/// locally generated lookup naming every transaction id, retries included.
+fn gateway_body(marker: &str) -> String {
+    format!(
+        "<html>{marker}</html>\n\na non-JSON 503 Service Unavailable answer (server: gw), the \
+         shape a gateway gives rather than AM or IDM. `aic logs tx tx-first`, `aic logs tx \
+         tx-retry` shows whether AM or IDM recorded the request."
+    )
+}
+
+fn streams(output: &Output) -> String {
+    format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    )
+}
+
+/// Regression (review round 6 P1-1): a change to a page child alone makes
+/// `status` read the realm listing to mark sharing, and a failed listing
+/// printed its raw body. The discriminating input is a 500 body carrying a
+/// marker; the diagnostic must name the status and the listing instead.
+#[test]
+fn a_failed_listing_read_for_sharing_withholds_its_body() {
+    const MARKER: &str = "SYNTHETIC-LISTING-BODY-7d1e";
+    let project = Project::new();
+    project.write_snapshot(&journey());
+    project.write_export(&journey());
+    let mut remote = journey();
+    remote["nodes"]["user"]["validateInput"] = json!(true);
+    let mut tenant = Tenant::new(remote);
+    tenant.listing = Some(json!({
+        "type": "api_error",
+        "status": 500,
+        "body": format!(r#"{{"detail":{{"tree":{{"description":"{MARKER}"}}}}}}"#),
+    }));
+
+    let (output, _) = project.journey(tenant, &["status", "Login", "--json"]);
+    let both = streams(&output);
+    assert!(!both.contains(MARKER), "{both}");
+    assert!(
+        both.contains("500") && both.contains("journey list"),
+        "{both}"
+    );
+}
+
+/// Regression (review round 6 P2-1): withholding the body also dropped the
+/// transport's `aic logs tx` lookup — local text, and the one way to learn
+/// whether a write that "may have landed" did. The discriminating input is a
+/// gateway 503 on a child's PUT (push) and on a child's GET (status): the
+/// server's text must go, both transaction ids must stay.
+#[test]
+fn a_gateway_error_keeps_its_transaction_lookup_and_drops_the_body() {
+    const MARKER: &str = "SYNTHETIC-GATEWAY-BODY-30af";
+    let error = json!({"type": "api_error", "status": 503, "body": gateway_body(MARKER)});
+    for (case, args, put) in [
+        ("push", &["push", "Login", "--yes"][..], true),
+        ("status", &["status", "Login", "--json"][..], false),
+    ] {
+        let project = Project::new();
+        project.write_snapshot(&journey());
+        let mut local = journey();
+        local["nodes"]["user"]["validateInput"] = json!(true);
+        project.write_export(&local);
+        let mut tenant = Tenant::new(journey());
+        if put {
+            tenant.fail_put = Some(("user", error.clone(), false));
+        } else {
+            tenant.fail_get = Some(("user", error.clone()));
+        }
+        let (output, _) = project.journey(tenant, args);
+        let both = streams(&output);
+        assert!(!both.contains(MARKER), "{case}: {both}");
+        assert!(
+            both.contains("`aic logs tx tx-first`, `aic logs tx tx-retry`"),
+            "{case}: {both}"
+        );
+        assert!(
+            both.contains("UsernameCollectorNode/user"),
+            "{case}: {both}"
+        );
+    }
+}
+
+/// Regression (review round 6 P2-2): a failed tree read in pull, push's
+/// preflight and a remote diff reached the operator before anything named
+/// the journey, so the diagnostic said "500, body withheld" and nothing
+/// else. Each must name the journey and its tree endpoint.
+#[test]
+fn a_failed_tree_read_names_the_journey_and_its_endpoint() {
+    const MARKER: &str = "SYNTHETIC-TREE-BODY-5c29";
+    for args in [
+        &["pull", "Login", "--force"][..],
+        &["push", "Login", "--yes"][..],
+        &["diff", "Login", "--snapshot-vs-remote"][..],
+    ] {
+        let project = Project::new();
+        project.write_snapshot(&journey());
+        let mut local = journey();
+        local["nodes"]["user"]["validateInput"] = json!(true);
+        project.write_export(&local);
+        let mut tenant = Tenant::new(journey());
+        tenant.fail_get = Some((
+            "Login",
+            json!({"type": "api_error", "status": 500, "body": MARKER}),
+        ));
+        let (output, _) = project.journey(tenant, args);
+        let both = streams(&output);
+        assert!(!output.status.success(), "{args:?}: {both}");
+        assert!(!both.contains(MARKER), "{args:?}: {both}");
+        assert!(
+            both.contains("journey `Login`'s tree (`trees/Login`)"),
+            "{args:?}: {both}"
+        );
+    }
+}
+
+/// Regression (review round 6 P2-3): a failed read during `using-script`
+/// was a warning, so `--json` printed `[]` and exited 0 — the same answer as
+/// a complete search that found nothing. The discriminating input is a 503
+/// on the only node using the script (a page child) and, separately, on a
+/// journey's tree (the pre-branch case); the control reads everything.
+#[test]
+fn an_incomplete_script_search_says_so_and_fails() {
+    const SCRIPT: &str = "00000000-0000-0000-0000-000000000000";
+    let args = ["using-script", SCRIPT, "--json"];
+    let project = Project::new();
+
+    let (output, _) = project.journey(Tenant::new(journey()), &args);
+    assert!(output.status.success(), "{}", streams(&output));
+    let stdout: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(stdout, json!(["Login"]), "the control: a complete search");
+
+    for (failing, unread) in [
+        ("script", "Login: ScriptedDecisionNode/script"),
+        ("Login", "Login: its tree"),
+    ] {
+        let mut tenant = Tenant::new(journey());
+        tenant.fail_get = Some((
+            failing,
+            json!({"type": "api_error", "status": 503, "body": "gateway"}),
+        ));
+        let (output, _) = project.journey(tenant, &args);
+        assert!(!output.status.success(), "{failing}: {}", streams(&output));
+        let stdout: Value = serde_json::from_slice(&output.stdout)
+            .unwrap_or_else(|error| panic!("{error}: {}", streams(&output)));
+        assert_eq!(
+            stdout,
+            json!({"journeys": [], "incomplete": true, "unread": [unread]}),
+            "{failing}"
+        );
+    }
+
+    // A match survives another journey's failed read; the run still fails.
+    let mut tenant = Tenant::new(journey());
+    tenant
+        .others
+        .insert("Register".into(), json!({"_id": "Register", "nodes": {}}));
+    tenant.fail_get = Some((
+        "Register",
+        json!({"type": "api_error", "status": 503, "body": "gateway"}),
+    ));
+    let (output, _) = project.journey(tenant, &args);
+    assert!(!output.status.success(), "{}", streams(&output));
+    let stdout: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        stdout,
+        json!({"journeys": ["Login"], "incomplete": true, "unread": ["Register: its tree"]})
     );
 }
