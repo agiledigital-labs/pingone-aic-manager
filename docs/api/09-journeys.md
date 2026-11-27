@@ -78,8 +78,10 @@ a page inside a page, are refused by both pull and push. Before writing,
 tenant's journey does not reference at the same type and id, and refuses to
 replace one that exists with different content unless given `--force=reuse`:
 the drift check cannot vouch for such a node, and it may belong to another
-journey. The two page refusals above are the only `400`s measured as "not
-applied"; a failed write to any other node type is reported as possibly
+journey. A failed write is reported as not applied only when the agent
+refused it before dispatch (locked, or its production gate) or when AM gave a
+page `PUT` one of the two refusals above, the only answers measured as "not
+applied"; any other failure, on any node type, is reported as possibly
 landed.
 
 ### Redirect validation

@@ -1398,7 +1398,8 @@ Realm-scoped. Journeys pull/push as JSON exports (tree + all its nodes) under
 the workspace. A page node's child nodes are part of the journey: they sit in
 the export's `nodes` map beside the page, `push` writes them before the page
 (AM refuses a page naming a child that does not exist), `status`/`diff` compare
-them, `using-script` looks inside pages, and `delete` removes them with the tree.
+them, `using-script` looks inside pages (warning about, and searching past, a
+page entry it cannot read), and `delete` removes them with the tree.
 An export pulled by an older `aic` holds the page without its children: a
 `push` that has anything to write refuses it before writing and says to pull
 again. When the export otherwise matches the tenant there is nothing to write,
@@ -1409,14 +1410,14 @@ types, or a page inside a page (which AM refuses) — naming the nodes.
 
 `push` writes each node, then the tree, as separate requests. When one fails,
 the error sorts the writes into three groups: those the tenant acknowledged
-(they stay on the tenant), the one that failed — refused and not applied only
-when AM gave a refusal measured for that endpoint (a page's `400 Node does not
-exist` / `Illegal child node type`), or the agent was locked and sent nothing;
-otherwise it **may have landed**, since a lost reply says nothing about the
-write — and those not attempted. The snapshot is not updated. `status` reads
-only the nodes the tenant's current tree and pages reference, so a node written
-above that no landed write attached does not show there; check the listed
-writes before pushing again.
+(they stay on the tenant), the one that failed, and those not attempted. The
+failed write is **refused and not applied** in two cases only: the agent
+refused it before dispatch (an explicit locked reply, or the daemon's
+production gate), or AM answered a page `PUT` with one of its two measured
+refusals (`400 Node does not exist` / `Illegal child node type`). Otherwise it
+**may have landed**, since a lost reply says nothing about the write. The
+snapshot is not updated. `status` reads what the tenant's current tree and
+pages reference; run it, and check the listed writes, before pushing again.
 
 Before any write, `push` also reads every node the export references and
 carries a body for — in the tree or in a page — that the tenant's copy of the
@@ -1471,13 +1472,19 @@ They compare the way `push` does, ignoring `_rev` everywhere.
   the command exits non-zero. A node that answers 404 is deleted on the
   tenant, and is compared as absent. A copy that lists a node it does not carry
   — in its tree, or in a page's `nodes` — is noted under its row (and in `notes` in `--json`) but still
-  compared, as is an entry whose reference cannot be read (a tree entry or page
-  child with no `nodeType`, a page with no readable `nodes`); every other
-  reference in that copy, including the page's other children, is kept. With no
+  compared. In the local export or the snapshot, an entry whose reference
+  cannot be read (a tree entry or page child with no `nodeType`, a page with no
+  readable `nodes`) is noted the same way, by id or position and field names
+  only, never its value, and every other reference in that copy, including the
+  page's other children, is kept. The tenant's copy is read strictly: such an
+  entry there makes the journey `not compared`. With no
   names it covers every journey that has an export or a snapshot in the realm.
   Under each row it lists the parts that moved — `tree`, or a node by type, id
   and display name, plus `in page <id>` for a page's child — on the `local` side (export vs snapshot) and the `remote`
-  side (snapshot vs tenant).
+  side (snapshot vs tenant). A node's type is the one on the side that changed
+  (the export's for a local change, the tenant's for a remote one), so a local
+  retype names the endpoint a push writes; its page comes from the tenant's
+  copy when that lists it.
 - **Shared nodes.** A node's config is a realm object keyed by its id, so two
   journeys listing the same id share it, and pushing either rewrites it for
   both. When any node moved, `status` reads every tree in the realm once and
@@ -1496,7 +1503,8 @@ They compare the way `push` does, ignoring `_rev` everywhere.
   `sharing_unknown_for` lists the trees that could not be read while looking
   for shared nodes, so a node shared only with one of them is not marked.
 - `diff` notes on stderr a side that lists a node it does not carry, in its
-  tree or in a page's `nodes`, or holds a reference it cannot read.
+  tree or in a page's `nodes`, or — for the export or snapshot — holds a
+  reference it cannot read; a tenant copy holding one fails the read.
   It prints each difference as a JSON pointer under the part it belongs to,
   local against remote by default; `--local-vs-snapshot` shows your edits
   only, `--snapshot-vs-remote` remote drift only. It exits non-zero when the
