@@ -54,6 +54,11 @@ a username collector, a password collector and a scripted decision node):
   first, then the page, then the tree.
 - A page cannot hold a page: `400 Invalid config: Illegal child node type:
   PageNode`.
+- Both refusals carry the diagnostic in the body's top-level `message`, with
+  `reason` set to `Bad Request` and no other diagnostic field (verified
+  2026-11-28: `PUT` of a fresh page id naming an absent child, then naming a
+  `PageNode` child; the page id read `404` afterwards). `aic`'s write classifier
+  reads only `message` for these.
 - Deleting a tree deletes the page **and its children** — all four answered
   `404` afterwards, so `journey delete` needs no node deletes. Deleting a page
   node likewise deleted the child it held.
