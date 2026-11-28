@@ -1871,7 +1871,7 @@ afterwards. `identity.getAttributes()` was never called.
 | Binding | Present | Notes |
 | --- | --- | --- |
 | `accessToken` | yes | `AccessTokenScriptWrapper`. Getters return JS strings and numbers: `getClientId() === "<id>"` is `true`. |
-| `identity` | yes | `ScriptedIdentityScriptWrapper`: `getName`, `getUniversalId`, `exists()`, `getAttributeValues` (a list; `[]` for an attribute it lacks). `getAttribute` and `isExists` are `Cannot find function`. `setAttribute` stages values. On `password`, `store()` persists the user write (verified 2026-11-14 and rechecked 2026-11-15); `authorization_code` behaves the same (verified 2026-11-28). On `client_credentials`, `store()` throws a catchable `IdentityUpdateException` and no write persists (verified 2026-11-15). See the [identity persistence probes below](#clientagent-identity-persistence-verified-2026-11-15). For other grants the emulator raises `oauth2-token-unmeasured/identity.store()`. |
+| `identity` | yes | `ScriptedIdentityScriptWrapper`: `getName`, `getUniversalId`, `exists()`, `getAttributeValues` (a list; `[]` for an attribute it lacks). `getAttribute` and `isExists` are `Cannot find function`. `setAttribute` stages values. On `password`, `store()` persists the user write (verified 2026-11-14 and rechecked 2026-11-15); `authorization_code`, `refresh_token`, implicit and `device_code` behave the same (verified 2026-11-28). On `client_credentials`, `store()` throws a catchable `IdentityUpdateException` and no write persists (verified 2026-11-15). See the [identity persistence probes below](#clientagent-identity-persistence-verified-2026-11-15). For other grants the emulator raises `oauth2-token-unmeasured/identity.store()`. |
 | `session` | **no** | Not bound at all: reading it is `ReferenceError: "session" is not defined.`, where legacy binds `null`. |
 | `scopes` | yes | A Java list: `size()`, `contains()`, `scopes[0]` and `length` work, and `add()` mutates it. |
 | `requestProperties` | yes | Four entries (`size()` is 4): `realm`, `requestHeaders`, `requestParams`, `requestUri`. Param and header values are lists; headers answer to lower and Title case. `requestParams` renders as JSON (`{ "grant_type": [ … ] }`). |
@@ -2001,6 +2001,28 @@ identity is the resource-owner user and `store()` behaves as on `password`.
 
 The client, both scripts, the journey and the user were deleted (HTTP 200) and
 each re-read as HTTP 404.
+
+#### `refresh_token`, implicit and `device_code` identity persistence (verified 2026-11-28)
+
+The same setup with throwaway `zzr4gr-…` objects, the client's grant and
+response types changed for each grant, and the scripts also reading
+`accessToken.getGrantType()`:
+
+| Grant | How the token was obtained | `getGrantType()` | `requestParams` `grant_type` |
+| --- | --- | --- | --- |
+| `refresh_token` | Code issued and exchanged under the caught script, the description reset to the baseline, then `grant_type=refresh_token` | `refresh_token` | `[refresh_token]` |
+| implicit | `/authorize` with `response_type=token`; the token read from the redirect fragment | `token` | `null` |
+| `device_code` | `/device/code`, then `/device/user` with the session and `decision=allow`, then polling `/access_token` | `urn:ietf:params:oauth:grant-type:device_code` | `[urn:ietf:params:oauth:grant-type:device_code]` |
+
+For all three, caught and uncaught alike, `identity.exists()` was `true`, the
+name was the user's 36-character id, `store()` returned, the wrapper and a
+fresh managed read both showed the stored value, and the token was issued (HTTP
+200 at `/access_token`; implicit a 302 carrying the token). So each is the
+resource-owner user, and `store()` behaves as on `password`. Every object was
+deleted and re-read as HTTP 404.
+
+Still unmeasured: token exchange, JWT and SAML2 bearer, CIBA and UMA. The
+emulator keeps raising `oauth2-token-unmeasured/identity.store()` for them.
 
 #### `identity.setAttribute` and `identity.store` (verified 2026-11-14)
 

@@ -39,6 +39,15 @@ var __rhinoLocalAtReserved = [
 ];
 
 __rhinoLocalCtx.prefix = "oauth2-token-unmeasured";
+// accessToken.getGrantType() values whose identity is the resource-owner user
+// and persists on store(), each measured on AIC.
+var __rhinoLocalAtUserGrants = [
+  "password",
+  "authorization_code",
+  "refresh_token",
+  "token",
+  "urn:ietf:params:oauth:grant-type:device_code",
+];
 __rhinoLocalCtx.noun = "access-token modification";
 
 // The issued aud claim lives in the field map, so expect.accessToken.fields
@@ -463,6 +472,11 @@ function __rhinoLocalAtDefaults(given) {
     scope: [scope.join(" ")],
     client_id: [clientId],
   };
+  // Implicit: getGrantType() is "token" and the /authorize request carries no
+  // grant_type parameter (measured 2026-11-28).
+  if (token.grantType === "token") {
+    delete params.grant_type;
+  }
   if (scope.length === 0) {
     delete params.scope;
   }
@@ -500,13 +514,14 @@ function __rhinoLocalSeedAccessToken(given) {
   }
   accessToken = __rhinoLocalAtBuildToken(d.token);
   // Only these grants establish the identity kind: client_credentials is
-  // the client's agent; password and authorization_code (measured
-  // 2026-11-28) are the resource-owner user. Other grants (including
-  // refresh/token exchange) need their own evidence.
+  // the client's agent; the rest are the resource-owner user, each measured
+  // persisting on store() (password 2026-11-14, the others 2026-11-28; the
+  // strings are what getGrantType() returned). Other grants (token
+  // exchange, JWT/SAML bearer, CIBA, UMA) need their own evidence.
   identity = __rhinoLocalCtxBuildIdentity(d.identity, {
     writes: true,
     kind: d.token.grantType === "client_credentials" ? "agent"
-      : d.token.grantType === "password" || d.token.grantType === "authorization_code" ? "user" : null,
+      : __rhinoLocalAtUserGrants.indexOf(d.token.grantType) >= 0 ? "user" : null,
   });
   scopes = __rhinoLocalCtxBuildScopes(d.scopes);
   requestProperties = __rhinoLocalCtxBuildRequest(d.request, d.token.realm, null);

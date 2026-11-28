@@ -427,7 +427,7 @@ describe("access-token modification matches the live capture", () => {
       name: "zzemur4emu unmeasured grant",
       context: "OAUTH2_ACCESS_TOKEN_MODIFICATION",
       script: 'identity.setAttribute("description", ["example"]); try { identity.store(); } catch(e) {}',
-      given: { engine, accessToken: { grantType: "refresh_token" } },
+      given: { engine, accessToken: { grantType: "urn:ietf:params:oauth:grant-type:jwt-bearer" } },
       expect: {},
     }))).rejects.toThrow(/identity.store.*unmeasured/);
   }, 60_000);
@@ -440,8 +440,16 @@ describe("access-token modification matches the live capture", () => {
     identity: { name: "user-1", attributes: { description: ["baseline"] } },
   };
 
-  // authorization_code measured 2026-11-28: the user, persisting like password.
-  it.each(["password", "authorization_code"])("zzemur4emu user (%s) setAttribute is invisible until store, which records the write", async (grantType) => {
+  // The other user grants measured 2026-11-28, persisting like password. The
+  // strings are what AIC's getGrantType() returned; implicit is "token".
+  const USER_GRANTS = [
+    "password",
+    "authorization_code",
+    "refresh_token",
+    "token",
+    "urn:ietf:params:oauth:grant-type:device_code",
+  ];
+  it.each(USER_GRANTS)("zzemur4emu user (%s) setAttribute is invisible until store, which records the write", async (grantType) => {
     const { effects, verdict } = await runCase(runner, defineCase({
       name: "identity store",
       context: "OAUTH2_ACCESS_TOKEN_MODIFICATION",
@@ -463,6 +471,25 @@ describe("access-token modification matches the live capture", () => {
     expect(effects.identityWrites).toEqual([
       { identity: "user-1", attribute: "description", values: ["stored"] },
     ]);
+  }, 60_000);
+
+  // Implicit: AIC's getGrantType() is "token" and the request carries no
+  // grant_type (AIC read it as null, 2026-11-28). An absent key's get() stays
+  // an unmeasured fault here, so the implicit case reads only the token.
+  it("implicit (token) drops grant_type from the default request; refresh echoes it", async () => {
+    const probe = (grantType: string, script: string) => runCase(runner, defineCase({
+      name: "grant request params",
+      context: "OAUTH2_ACCESS_TOKEN_MODIFICATION",
+      script,
+      given: { ...owner, accessToken: { ...owner.accessToken, grantType } },
+      expect: {},
+    }));
+    const implicit = await probe("token",
+      'accessToken.setField("probe", String(accessToken.getGrantType()) + "|" + requestProperties.requestParams.size());');
+    expect(implicit.effects.accessToken!.final.fields.probe).toBe("token|1");
+    const refresh = await probe("refresh_token",
+      'accessToken.setField("probe", String(accessToken.getGrantType()) + "|" + String(requestProperties.requestParams.get("grant_type")));');
+    expect(refresh.effects.accessToken!.final.fields.probe).toBe("refresh_token|[refresh_token]");
   }, 60_000);
 
   it("setAttribute without store leaves the attribute and records no write", async () => {
