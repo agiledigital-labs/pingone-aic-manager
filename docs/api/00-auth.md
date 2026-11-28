@@ -72,8 +72,10 @@ a JWK at account creation).
   life from the agent's `expires_at` using a later timestamp. A floor at the
   token's full issued lifetime can fall short by the time the CLI checks it, so
   a slightly lower floor accommodates elapsed time. If a short reply came from
-  an older daemon, the CLI recommends `aic session stop`. Remeasurement of raw
-  token-endpoint lifetimes is pending.
+  an older daemon, the CLI recommends `aic session stop`. Raw token-endpoint
+  lifetime, verified 2026-11-28: five `whoami --min-ttl 900` calls each made the
+  agent mint, and each refusal named the endpoint's `expires_in` as `899s`;
+  `whoami --json` straight after fresh mints reported 898–899 s remaining.
 - `scope` may be a re-ordered subset of requested scopes — compare as a set.
 
 ## Who the service-account token is inside IDM (verified 2026-11-14)

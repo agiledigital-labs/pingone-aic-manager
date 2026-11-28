@@ -905,6 +905,15 @@ type falls under `genericMapping."managed/*"` (`dnTemplate
 `properties {}`) left an existing record and its generic link readable and new
 records creatable; mapping the pair then behaved as in the table.
 
+**Deleting the type leaves its per-type entry (2026-11-28).** Two throwaway
+types, `relationship set … --wait-activation --force --probe-prefix`, then
+`relationship delete --remove-mapping --force` and `object delete` of both:
+`config/managed` matched its pre-test backup, but `repo.ds` still held
+`genericMapping."managed/<obj>"` with `properties {}`. `relationship repair`
+refuses an object `config/managed` does not declare, so no `aic` verb removes
+it; it was removed by a whole-document `PUT ?waitForCompletion=true` from a
+fresh read, and `repo.ds` then matched its backup.
+
 **Reported from a client tenant (2026-11-03), not reproduced here:** a record
 created *immediately* after a new per-type entry went in landed in the old
 generic store; once the entry activated the record could no longer be read, and

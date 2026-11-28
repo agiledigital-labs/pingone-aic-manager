@@ -1871,7 +1871,7 @@ afterwards. `identity.getAttributes()` was never called.
 | Binding | Present | Notes |
 | --- | --- | --- |
 | `accessToken` | yes | `AccessTokenScriptWrapper`. Getters return JS strings and numbers: `getClientId() === "<id>"` is `true`. |
-| `identity` | yes | `ScriptedIdentityScriptWrapper`: `getName`, `getUniversalId`, `exists()`, `getAttributeValues` (a list; `[]` for an attribute it lacks). `getAttribute` and `isExists` are `Cannot find function`. `setAttribute` stages values. On `password`, `store()` persists the user write (verified 2026-11-14 and rechecked 2026-11-15). On `client_credentials`, `store()` throws a catchable `IdentityUpdateException` and no write persists (verified 2026-11-15). See the [identity persistence probes below](#clientagent-identity-persistence-verified-2026-11-15). For other grants the emulator raises `oauth2-token-unmeasured/identity.store()`. |
+| `identity` | yes | `ScriptedIdentityScriptWrapper`: `getName`, `getUniversalId`, `exists()`, `getAttributeValues` (a list; `[]` for an attribute it lacks). `getAttribute` and `isExists` are `Cannot find function`. `setAttribute` stages values. On `password`, `store()` persists the user write (verified 2026-11-14 and rechecked 2026-11-15); `authorization_code` behaves the same (verified 2026-11-28). On `client_credentials`, `store()` throws a catchable `IdentityUpdateException` and no write persists (verified 2026-11-15). See the [identity persistence probes below](#clientagent-identity-persistence-verified-2026-11-15). For other grants the emulator raises `oauth2-token-unmeasured/identity.store()`. |
 | `session` | **no** | Not bound at all: reading it is `ReferenceError: "session" is not defined.`, where legacy binds `null`. |
 | `scopes` | yes | A Java list: `size()`, `contains()`, `scopes[0]` and `length` work, and `add()` mutates it. |
 | `requestProperties` | yes | Four entries (`size()` is 4): `realm`, `requestHeaders`, `requestParams`, `requestUri`. Param and header values are lists; headers answer to lower and Title case. `requestParams` renders as JSON (`{ "grant_type": [ … ] }`). |
@@ -1979,6 +1979,28 @@ All created scripts, clients and the user were deleted (HTTP 200), each then
 re-read as HTTP 404. An initial user create using a non-UUID `_id` was rejected
 with HTTP 400; the successful create used a UUID and the prefixed `userName`.
 No realm configuration was changed; only throwaway clients had overrides.
+
+#### `authorization_code` identity persistence (verified 2026-11-28)
+
+Same method on sandbox `alpha`, with throwaway `zzr4ac-…` objects: a
+confidential client (`authorization_code` only, implied consent, stateless
+tokens, per-client scripted override), two next-gen access-token modification
+scripts, a managed user, and a journey of a username/password page and a data
+store decision. The user signed in through the journey's `authenticate`
+callbacks, `/authorize` was posted with that session and `decision=allow`, and
+the code was exchanged at `/access_token`.
+
+`requestProperties.requestParams.get("grant_type")` read `[authorization_code]`.
+`identity.exists()` was `true` and the name was 36 characters (the user's id).
+Before the write, `getAttributeValues("description")` was the seeded baseline.
+`setAttribute` and `store()` both returned. Afterwards the same wrapper read the
+stored value, and a fresh managed read (`_fields=description`) showed it
+persisted. That held both when `store()` was caught and when it was not; both
+token requests returned HTTP 200 with the script's control claim. So the
+identity is the resource-owner user and `store()` behaves as on `password`.
+
+The client, both scripts, the journey and the user were deleted (HTTP 200) and
+each re-read as HTTP 404.
 
 #### `identity.setAttribute` and `identity.store` (verified 2026-11-14)
 

@@ -782,7 +782,8 @@ export interface AccessTokenSeed {
   /**
    * Default `"client_credentials"`: identity.store() throws the measured
    * catchable client/agent IdentityUpdateException, with no write.
-   * `"password"` selects measured user persistence. Other grants fault as
+   * `"password"` and `"authorization_code"` select measured user
+   * persistence. Other grants fault as
    * unmeasured on store(), including when caught; identity.name alone does
    * not establish a user identity.
    */

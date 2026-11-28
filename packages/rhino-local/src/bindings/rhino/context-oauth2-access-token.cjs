@@ -500,12 +500,13 @@ function __rhinoLocalSeedAccessToken(given) {
   }
   accessToken = __rhinoLocalAtBuildToken(d.token);
   // Only these grants establish the identity kind: client_credentials is
-  // the client's agent; password authenticates the resource-owner user.
-  // Other grants (including refresh/token exchange) need their own evidence.
+  // the client's agent; password and authorization_code (measured
+  // 2026-11-28) are the resource-owner user. Other grants (including
+  // refresh/token exchange) need their own evidence.
   identity = __rhinoLocalCtxBuildIdentity(d.identity, {
     writes: true,
     kind: d.token.grantType === "client_credentials" ? "agent"
-      : d.token.grantType === "password" ? "user" : null,
+      : d.token.grantType === "password" || d.token.grantType === "authorization_code" ? "user" : null,
   });
   scopes = __rhinoLocalCtxBuildScopes(d.scopes);
   requestProperties = __rhinoLocalCtxBuildRequest(d.request, d.token.realm, null);

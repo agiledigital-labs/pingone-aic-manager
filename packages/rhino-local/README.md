@@ -159,10 +159,10 @@ without setting `given.accessToken.grantType`. Omitting it still defaults to
 identity exception and records no `identityWrites`.
 
 For tests of user persistence, set `given.accessToken.grantType` to `"password"`
-and set `given.accessToken.resourceOwnerId` and `given.identity.name` to the
+(or `"authorization_code"`, which persists the same way) and set `given.accessToken.resourceOwnerId` and `given.identity.name` to the
 same user ID. Seed that user's starting attributes in `given.identity.attributes`.
 If a test needs to exercise any other grant, keep its actual grant. Outside
-`password` and `client_credentials`, calling `store()` raises
+`password`, `authorization_code` and `client_credentials`, calling `store()` raises
 `oauth2-token-unmeasured/identity.store()` even if the script catches it.
 Setting `given.request.params.grant_type` only changes what the script reads
 from the request. `given.accessToken.grantType` selects persistence behavior.
@@ -1125,7 +1125,8 @@ custom `fields`, nonce, auth level, claims); by default it is a
 whose custom fields are AM's `subname` and `expires_in`. `identity` is the
 identity fixture (name, universal id, `exists`, attributes). Its persistence
 kind comes from `accessToken.grantType`: `client_credentials` (the default)
-is the client/agent; `password` is the resource-owner user. A fixture name or
+is the client/agent; `password` and `authorization_code` are the
+resource-owner user. A fixture name or
 universal id does not override the grant's kind. Other grants have unmeasured
 persistence and `store()` raises `oauth2-token-unmeasured/identity.store()`
 even if the script catches it. For a user write, seed e.g.
