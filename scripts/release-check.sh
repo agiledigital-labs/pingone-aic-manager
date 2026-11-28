@@ -152,6 +152,7 @@ CI_STEPS_SETUP=(
   "Install TypeScript"
   "Install Java (Temurin)"
   "Install rhino-local dependencies"
+  "Cache the pinned Rhino jar"
   "Pull the reference JVM image"
   "Record the JVM builds"
   "Read the pinned toolchain"

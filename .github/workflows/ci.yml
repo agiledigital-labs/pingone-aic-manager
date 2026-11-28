@@ -326,6 +326,16 @@ jobs:
       - name: Install rhino-local dependencies
         run: npm ci --no-audit --no-fund
 
+      # The harness downloads its pinned Rhino jar from Maven Central on first
+      # use, and Maven Central rate-limits runners (429 turned two runs red on
+      # 2026-11-28). Keyed on jvm.ts, which holds the pin and its sha256; the
+      # harness re-verifies the hash of whatever this restores.
+      - name: Cache the pinned Rhino jar
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/aic-script-tester/jars
+          key: rhino-jar-${{ hashFiles('packages/rhino-local/src/jvm.ts') }}
+
       # Read from jvm.ts so CI pulls the image the harness will run, not a
       # second copy of the tag that can drift from it.
       - name: Pull the reference JVM image
