@@ -159,10 +159,13 @@ without setting `given.accessToken.grantType`. Omitting it still defaults to
 identity exception and records no `identityWrites`.
 
 For tests of user persistence, set `given.accessToken.grantType` to `"password"`
-(or `"authorization_code"`, which persists the same way) and set `given.accessToken.resourceOwnerId` and `given.identity.name` to the
+(or `"authorization_code"`, `"refresh_token"`, `"token"` for implicit, or
+`"urn:ietf:params:oauth:grant-type:device_code"`, which persist the same way;
+these are the strings AIC's `getGrantType()` returns) and set `given.accessToken.resourceOwnerId` and `given.identity.name` to the
 same user ID. Seed that user's starting attributes in `given.identity.attributes`.
 If a test needs to exercise any other grant, keep its actual grant. Outside
-`password`, `authorization_code` and `client_credentials`, calling `store()` raises
+those grants and `client_credentials` (token exchange, JWT and SAML bearer,
+CIBA, UMA), calling `store()` raises
 `oauth2-token-unmeasured/identity.store()` even if the script catches it.
 Setting `given.request.params.grant_type` only changes what the script reads
 from the request. `given.accessToken.grantType` selects persistence behavior.
