@@ -440,7 +440,8 @@ describe("access-token modification matches the live capture", () => {
     identity: { name: "user-1", attributes: { description: ["baseline"] } },
   };
 
-  it("zzemur4emu user setAttribute is invisible until store, which records the write", async () => {
+  // authorization_code measured 2026-11-28: the user, persisting like password.
+  it.each(["password", "authorization_code"])("zzemur4emu user (%s) setAttribute is invisible until store, which records the write", async (grantType) => {
     const { effects, verdict } = await runCase(runner, defineCase({
       name: "identity store",
       context: "OAUTH2_ACCESS_TOKEN_MODIFICATION",
@@ -452,7 +453,7 @@ describe("access-token modification matches the live capture", () => {
         "var after = identity.getAttributeValues(\"description\");",
         "accessToken.setField(\"probe\", [typeof setRet, typeof storeRet, before[0], mid[0], after[0]].join(\"|\"));",
       ].join("\n"),
-      given: owner,
+      given: { ...owner, accessToken: { ...owner.accessToken, grantType } },
       expect: {
         accessToken: { fields: { added: { probe: "undefined|undefined|baseline|baseline|stored" } } },
         identityWrites: [{ identity: "user-1", attribute: "description", values: ["stored"] }],
